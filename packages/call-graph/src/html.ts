@@ -1,0 +1,772 @@
+import {
+  escapeHtml as esc,
+  languageOf,
+  renderLine,
+  tokenizeLines,
+  type Language,
+  type Mark,
+  type Token,
+} from "./highlight.js";
+import type {
+  CallGraphResult,
+  DiffHunk,
+  EmbeddedFile,
+  FunctionSnapshot,
+  RelatedFunction,
+  SourceSegment,
+  SymbolRange,
+} from "./types.js";
+
+/** Lines revealed per click of an expander, matching GitHub. */
+const EXPAND_STEP = 20;
+
+// ---------------------------------------------------------------------------
+// Embedded file index
+
+export interface FileEntry {
+  key: string;
+  lang: Language;
+  lines: string[];
+  tokens: Token[][];
+  /** Per-line pre-highlighted HTML (no marks). */
+  html: string[];
+  symbols: SymbolRange[];
+}
+
+export type FileIndex = Map<string, FileEntry>;
+
+export function buildFileIndex(files: EmbeddedFile[]): FileIndex {
+  const index: FileIndex = new Map();
+  for (const file of files) {
+    const key = `${file.side}:${file.path}`;
+    const lang = languageOf(file.path);
+    const tokens = tokenizeLines(file.lines, lang);
+    index.set(key, {
+      key,
+      lang,
+      lines: file.lines,
+      tokens,
+      html: file.lines.map((line, i) => renderLine(line, tokens[i]!, [])),
+      symbols: file.symbols,
+    });
+  }
+  return index;
+}
+
+function symbolLabel(symbol: SymbolRange): string {
+  return ["class", "interface", "enum", "namespace"].includes(symbol.kind)
+    ? `${symbol.kind} ${symbol.name}`
+    : `${symbol.name}()`;
+}
+
+/** Outermost → innermost symbols containing a line: "class Ky › #retry()". */
+function crumbFor(symbols: SymbolRange[], line: number): string {
+  return symbols
+    .filter((s) => s.startLine <= line && s.endLine >= line)
+    .sort((a, b) => b.endLine - b.startLine - (a.endLine - a.startLine))
+    .map((s) => esc(symbolLabel(s)))
+    .join(" › ");
+}
+
+// ---------------------------------------------------------------------------
+// Code blocks: line rows, expander gaps
+
+export interface LineDecoration {
+  /** Extra classes on the row, e.g. ["hl"] or ["diff-add"]. */
+  cls?: string[];
+  marks?: Mark[];
+}
+
+export type Decorations = Map<number, LineDecoration>;
+
+function lineRow(
+  lineNumber: number | string,
+  width: number,
+  contentHtml: string,
+  cls: string[] = [],
+): string {
+  const classes = ["line", ...cls].join(" ");
+  return `<span class="${classes}"><span class="lineno">${String(lineNumber).padStart(width)}</span>${contentHtml}</span>`;
+}
+
+/** GitHub-style expander: ▲ reveals the gap's bottom, ▼ its top. */
+function gapRow(entry: FileEntry, from: number, to: number): string {
+  const count = to - from + 1;
+  if (count <= 0) return "";
+  const crumb = crumbFor(entry.symbols, Math.min(to + 1, entry.lines.length));
+  const buttons =
+    count <= EXPAND_STEP
+      ? '<button class="gap-btn gap-all" title="Expand all">↕</button>'
+      : '<button class="gap-btn gap-up" title="Expand up">▲</button><button class="gap-btn gap-down" title="Expand down">▼</button>';
+  return `<div class="gap" data-key="${esc(entry.key)}" data-from="${from}" data-to="${to}"><span class="gap-btns">${buttons}</span><span class="gap-count">⋯ ${count} hidden lines</span>${
+    crumb ? `<span class="gap-crumb">${crumb}</span>` : ""
+  }</div>`;
+}
+
+interface BlockOptions {
+  /** Embedded file backing this block; enables expanders when `gaps`. */
+  entry?: FileEntry | undefined;
+  gaps?: boolean;
+  decorations?: Decorations;
+  /** Tokenizer language for non-embedded segments (default from entry, else ts). */
+  lang?: Language;
+}
+
+/** Render source segments as a code block, with expander gaps between/around. */
+export function renderCodeBlock(segments: SourceSegment[], opts: BlockOptions): string {
+  const { entry, decorations } = opts;
+  const gaps = Boolean(opts.gaps && entry);
+  const width = entry
+    ? String(entry.lines.length).length
+    : String(Math.max(...segments.map((s) => s.startLine + s.lines.length - 1), 1)).length;
+
+  const rows: string[] = [];
+  let previousEnd = 0;
+  for (const segment of segments) {
+    if (gaps && entry) {
+      rows.push(gapRow(entry, previousEnd + 1, segment.startLine - 1));
+    } else if (previousEnd > 0 && segment.startLine > previousEnd + 1) {
+      rows.push(
+        `<span class="line elide">${" ".repeat(width)}⋯ ${segment.startLine - previousEnd - 1} lines omitted ⋯</span>`,
+      );
+    }
+    const localTokens = entry
+      ? null
+      : tokenizeLines(segment.lines, opts.lang ?? "ts");
+    segment.lines.forEach((text, i) => {
+      const n = segment.startLine + i;
+      const deco = decorations?.get(n);
+      const content =
+        entry && !deco?.marks
+          ? (entry.html[n - 1] ?? esc(text))
+          : renderLine(
+              text,
+              entry ? (entry.tokens[n - 1] ?? []) : localTokens![i]!,
+              deco?.marks ?? [],
+            );
+      rows.push(lineRow(n, width, content, deco?.cls ?? []));
+    });
+    previousEnd = segment.startLine + segment.lines.length - 1;
+  }
+  if (gaps && entry && previousEnd < entry.lines.length) {
+    rows.push(gapRow(entry, previousEnd + 1, entry.lines.length));
+  }
+  return `<pre class="source" data-w="${width}">${rows.join("")}</pre>`;
+}
+
+// ---------------------------------------------------------------------------
+// Diff hunks (target card): hunk header + lines, expander gaps around
+
+function renderHunkRows(hunk: DiffHunk, width: number, lang: Language): string[] {
+  const rows: string[] = [];
+  const contents = hunk.lines.map((l) => l.slice(1));
+  const tokens = tokenizeLines(contents, lang);
+  let newN = hunk.newStart;
+  hunk.lines.forEach((line, i) => {
+    const markerCls =
+      line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-del" : "";
+    const html = renderLine(contents[i]!, tokens[i]!, []);
+    if (line.startsWith("-")) {
+      rows.push(lineRow("−", width, html, ["diff-del"]));
+    } else if (line.startsWith("\\")) {
+      rows.push(lineRow("", width, esc(line)));
+    } else {
+      rows.push(lineRow(newN, width, html, markerCls ? [markerCls] : []));
+      newN++;
+    }
+  });
+  return rows;
+}
+
+/** Hunks with GitHub-style expandable context between and around them. */
+export function renderHunksBlock(
+  hunks: DiffHunk[],
+  entry: FileEntry | undefined,
+  lang?: Language,
+): string {
+  if (!hunks.length) return "";
+  const hunkLang = lang ?? entry?.lang ?? "ts";
+  const sorted = [...hunks].sort((a, b) => a.newStart - b.newStart);
+  const width = entry
+    ? String(entry.lines.length).length
+    : String(Math.max(...sorted.map((h) => h.newStart + h.newLines))).length;
+
+  const rows: string[] = [];
+  let previousEnd = 0;
+  for (const hunk of sorted) {
+    if (entry) rows.push(gapRow(entry, previousEnd + 1, hunk.newStart - 1));
+    const crumb = entry ? crumbFor(entry.symbols, hunk.newStart) : "";
+    rows.push(
+      `<span class="line hunk-header">${esc(hunk.header)}${crumb ? ` <span class="gap-crumb">${crumb}</span>` : ""}</span>`,
+    );
+    rows.push(...renderHunkRows(hunk, width, hunkLang));
+    previousEnd = hunk.newStart + Math.max(hunk.newLines, 1) - 1;
+  }
+  if (entry && previousEnd < entry.lines.length) {
+    rows.push(gapRow(entry, previousEnd + 1, entry.lines.length));
+  }
+  return `<pre class="source" data-w="${width}">${rows.join("")}</pre>`;
+}
+
+// ---------------------------------------------------------------------------
+// Snapshots (one side of a caller/callee/target)
+
+interface SnapshotDisplay {
+  /** Highlight the call to the target inside the source (callers). */
+  highlightCallSites?: boolean;
+  /** List call sites separately — they live in another file (callees). */
+  listCallSites?: boolean;
+  /** Location only, no source body (the target — its hunks show the change). */
+  hideSource?: boolean;
+  /** When diff hunks exist, show only them — no before/after source (callees). */
+  diffOnly?: boolean;
+}
+
+/** Same code, ignoring line-number shifts from edits elsewhere in the file. */
+function sameSource(a: FunctionSnapshot, b: FunctionSnapshot): boolean {
+  return (
+    a.file === b.file &&
+    a.source.length === b.source.length &&
+    a.source.every(
+      (segment, i) => segment.lines.join("\n") === b.source[i]!.lines.join("\n"),
+    )
+  );
+}
+
+function callSiteDecorations(snapshot: FunctionSnapshot): Decorations {
+  const decorations: Decorations = new Map();
+  for (const site of snapshot.callSites) {
+    const marks: Mark[] =
+      site.startColumn !== undefined && site.endColumn !== undefined
+        ? [{ start: site.startColumn, end: site.endColumn, cls: "callsite" }]
+        : [];
+    decorations.set(site.line, { cls: ["hl"], marks });
+  }
+  return decorations;
+}
+
+function renderSnapshot(
+  side: "before" | "after" | "both",
+  snapshot: FunctionSnapshot | null,
+  index: FileIndex,
+  display: SnapshotDisplay = {},
+): string {
+  if (!snapshot) {
+    return `<div class="side side-${side}"><span class="missing">not present ${side === "before" ? "before" : "after"} the PR</span></div>`;
+  }
+  const entry = index.get(`${side === "both" ? "after" : side}:${snapshot.file}`);
+  const sites = display.listCallSites
+    ? snapshot.callSites
+        .map(
+          (s) =>
+            `<li><span class="loc">L${s.line}</span> <code>${esc(s.snippet)}</code></li>`,
+        )
+        .join("")
+    : "";
+  const body = display.hideSource
+    ? ""
+    : renderCodeBlock(snapshot.source, {
+        entry,
+        gaps: true,
+        lang: languageOf(snapshot.file),
+        decorations: display.highlightCallSites
+          ? callSiteDecorations(snapshot)
+          : new Map(),
+      });
+  return `<div class="side side-${side}">
+    <div class="side-loc"><code>${esc(snapshot.file)}:${snapshot.startLine}–${snapshot.endLine}</code>${
+      snapshot.truncated ? ' <span class="badge">elided</span>' : ""
+    }</div>
+    ${sites ? `<div class="call-sites-label">call sites in target</div><ul class="call-sites">${sites}</ul>` : ""}
+    ${body}
+  </div>`;
+}
+
+/** Render before/after; a function identical on both sides gets one block. */
+function renderSides(
+  before: FunctionSnapshot | null,
+  after: FunctionSnapshot | null,
+  index: FileIndex,
+  display: SnapshotDisplay,
+): string {
+  if (before && after && sameSource(before, after)) {
+    return renderSnapshot("both", after, index, display);
+  }
+  return (
+    renderSnapshot("before", before, index, display) +
+    renderSnapshot("after", after, index, display)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Related functions and groups
+
+export function presenceBadge(
+  fn: Pick<RelatedFunction, "presence" | "changedInPr">,
+): string {
+  if (fn.presence === "both") {
+    return fn.changedInPr
+      ? '<span class="badge changed">changed</span>'
+      : '<span class="badge">unchanged</span>';
+  }
+  return `<span class="badge ${fn.presence === "after" ? "added" : "removed"}">${
+    fn.presence === "after" ? "added in PR" : "removed in PR"
+  }</span>`;
+}
+
+function renderRelated(
+  fn: RelatedFunction,
+  index: FileIndex,
+  display: SnapshotDisplay,
+): string {
+  const diffOnly = Boolean(display.diffOnly && fn.hunks.length);
+  return `<details class="fn presence-${fn.presence}${fn.changedInPr ? " is-changed" : ""}">
+    <summary><code class="fn-name">${esc(fn.name)}</code> <code class="fn-file">${esc(fn.file)}</code> ${presenceBadge(fn)}</summary>
+    <div class="fn-body">
+      ${diffOnly ? "" : renderSides(fn.before, fn.after, index, display)}
+      ${fn.hunks.length ? `<div class="hunks">${renderHunksBlock(fn.hunks, undefined, languageOf(fn.file))}</div>` : '<p class="missing">no diff hunks touch this function</p>'}
+    </div>
+  </details>`;
+}
+
+function renderGroup(
+  title: string,
+  kind: "callers" | "callees",
+  fns: RelatedFunction[],
+  index: FileIndex,
+): string {
+  const display: SnapshotDisplay =
+    kind === "callers"
+      ? { highlightCallSites: true }
+      : { listCallSites: true, diffOnly: true };
+  const items = fns.length
+    ? fns.map((fn) => renderRelated(fn, index, display)).join("\n")
+    : '<p class="missing">none found</p>';
+  return `<section class="group group-${kind}">
+    <h2>${title} <span class="count">${fns.length}</span></h2>
+    ${items}
+  </section>`;
+}
+
+// ---------------------------------------------------------------------------
+// Page chrome: CSS, embedded data, client JS
+
+export const CSS = `
+  :root {
+    color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif;
+    --tok-kw: #cf222e; --tok-str: #0a3069; --tok-com: #59636e; --tok-num: #0550ae;
+    --tok-fn: #8250df; --tok-type: #953800; --tok-lit: #0550ae;
+    --add-bg: rgba(46, 160, 67, 0.15); --del-bg: rgba(248, 81, 73, 0.15);
+    --accent: #0969da; --callsite-bg: rgba(9, 105, 218, 0.16);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --tok-kw: #ff7b72; --tok-str: #a5d6ff; --tok-com: #8b949e; --tok-num: #79c0ff;
+      --tok-fn: #d2a8ff; --tok-type: #ffa657; --tok-lit: #79c0ff;
+      --accent: #58a6ff; --callsite-bg: rgba(56, 139, 253, 0.25);
+    }
+  }
+  .tok-kw { color: var(--tok-kw); } .tok-str { color: var(--tok-str); }
+  .tok-com { color: var(--tok-com); font-style: italic; } .tok-num { color: var(--tok-num); }
+  .tok-fn { color: var(--tok-fn); } .tok-type { color: var(--tok-type); }
+  .tok-lit { color: var(--tok-lit); }
+  body { margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em; }
+  header h1 { margin-bottom: 0.2rem; }
+  header .meta { opacity: 0.7; font-size: 0.9rem; }
+  header a { color: inherit; }
+  .controls { display: flex; gap: 0.5rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
+  .controls button { padding: 0.3rem 0.8rem; cursor: pointer; }
+  .controls button[aria-pressed="true"] { outline: 2px solid currentColor; }
+  section.group h2 { border-bottom: 1px solid rgba(128,128,128,0.4); padding-bottom: 0.3rem; }
+  .count { opacity: 0.6; font-size: 0.8em; }
+  details.fn { border: 1px solid rgba(128,128,128,0.35); border-radius: 6px; margin: 0.5rem 0; }
+  details.fn summary { padding: 0.5rem 0.8rem; cursor: pointer; display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; }
+  details.fn .fn-name { font-weight: 700; }
+  details.fn .fn-file { opacity: 0.7; }
+  .fn-body { padding: 0 0.8rem 0.8rem; }
+  .badge { font-size: 0.7rem; text-transform: uppercase; padding: 0.1rem 0.4rem; border-radius: 4px; background: rgba(128,128,128,0.2); }
+  .badge.changed { background: rgba(230,160,0,0.25); }
+  .badge.added { background: var(--add-bg); }
+  .badge.removed { background: var(--del-bg); }
+  .side { margin: 0.4rem 0; padding: 0.4rem 0.6rem; border-left: 3px solid rgba(128,128,128,0.4); }
+  .side-before { border-left-color: #c0392b; }
+  .side-after { border-left-color: #27ae60; }
+  .side::before { display: block; font-size: 0.7rem; text-transform: uppercase; opacity: 0.6; }
+  .side-before::before { content: "before"; }
+  .side-after::before { content: "after"; }
+  .side-both::before { content: "before & after — identical"; }
+  .call-sites { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+  .call-sites-label { font-size: 0.7rem; text-transform: uppercase; opacity: 0.6; margin-top: 0.4rem; }
+  .loc { opacity: 0.6; font-size: 0.8em; }
+  .missing { opacity: 0.6; font-style: italic; }
+  pre.source { overflow-x: auto; background: rgba(128,128,128,0.08); border: 1px solid rgba(128,128,128,0.25); border-radius: 6px; padding: 0.6rem 0; margin: 0.5rem 0 0.2rem; line-height: 1.45; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.8rem; }
+  .source .line { display: block; padding: 0 0.6rem; }
+  .source .lineno { display: inline-block; opacity: 0.45; margin-right: 0.9rem; user-select: none; white-space: pre; }
+  .source .line.hl { background: rgba(230,160,0,0.14); }
+  .source .line.diff-add { background: var(--add-bg); }
+  .source .line.diff-del { background: var(--del-bg); }
+  .source .line.hunk-header { color: var(--tok-com); background: rgba(9,105,218,0.08); padding: 0.15rem 0.6rem; }
+  .source .line.elide { opacity: 0.55; font-style: italic; }
+  .callsite { background: var(--callsite-bg); border-radius: 3px; padding: 0.05rem 0; }
+  .csite { background: var(--callsite-bg); border-radius: 3px; cursor: pointer; text-decoration: underline dotted; }
+  .csite.active { outline: 2px solid var(--accent); }
+  .gap { display: flex; align-items: center; gap: 0.8rem; background: rgba(9,105,218,0.07); border-top: 1px solid rgba(9,105,218,0.2); border-bottom: 1px solid rgba(9,105,218,0.2); padding: 0.1rem 0.6rem; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.75rem; }
+  .gap-btns { display: inline-flex; gap: 2px; }
+  .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.8rem; padding: 0 0.3rem; }
+  .gap-btn:hover { background: var(--accent); color: white; border-radius: 3px; }
+  .gap-count { opacity: 0.65; }
+  .gap-crumb { opacity: 0.85; color: var(--accent); font-family: ui-monospace, Menlo, monospace; }
+  .target-card { border: 2px solid rgba(128,128,128,0.6); border-radius: 8px; padding: 0.8rem 1rem; margin-top: 1.5rem; }
+  .target-card h2 { margin: 0 0 0.4rem; }
+  body[data-view="before"] .side-after, body[data-view="after"] .side-before { display: none; }
+`;
+
+/** Expander behavior shared by all layouts. Written injection-safe (no template literals). */
+export const GAP_JS = `
+  var RD = JSON.parse(document.getElementById("render-data").textContent);
+  var STEP = RD.step;
+  function crumbFor(file, line) {
+    var parts = [];
+    for (var i = 0; i < file.symbols.length; i++) {
+      var s = file.symbols[i];
+      if (s[1] <= line && s[2] >= line) parts.push({ label: s[0], size: s[2] - s[1] });
+    }
+    parts.sort(function (a, b) { return b.size - a.size; });
+    return parts.map(function (p) { return p.label; }).join(" \\u203a ");
+  }
+  function rowHtml(file, n, w) {
+    var num = String(n); while (num.length < w) num = " " + num;
+    return '<span class="line"><span class="lineno">' + num + "</span>" + (file.html[n - 1] || "") + "</span>";
+  }
+  function gapInner(file, from, to) {
+    var count = to - from + 1;
+    var buttons = count <= STEP
+      ? '<button class="gap-btn gap-all" title="Expand all">\\u2195</button>'
+      : '<button class="gap-btn gap-up" title="Expand up">\\u25b2</button><button class="gap-btn gap-down" title="Expand down">\\u25bc</button>';
+    var crumb = crumbFor(file, Math.min(to + 1, file.count));
+    return '<span class="gap-btns">' + buttons + '</span><span class="gap-count">\\u22ef ' + count + " hidden lines</span>" +
+      (crumb ? '<span class="gap-crumb">' + crumb + "</span>" : "");
+  }
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest(".gap-btn");
+    if (!btn) return;
+    var gap = btn.closest(".gap");
+    var file = RD.files[gap.dataset.key];
+    if (!file) return;
+    var from = Number(gap.dataset.from), to = Number(gap.dataset.to);
+    var w = Number(gap.closest("pre").dataset.w);
+    var rows = "";
+    if (btn.classList.contains("gap-all") || to - from + 1 <= STEP) {
+      for (var n = from; n <= to; n++) rows += rowHtml(file, n, w);
+      gap.insertAdjacentHTML("beforebegin", rows);
+      gap.remove();
+      return;
+    }
+    if (btn.classList.contains("gap-down")) {
+      for (var n2 = from; n2 < from + STEP; n2++) rows += rowHtml(file, n2, w);
+      gap.insertAdjacentHTML("beforebegin", rows);
+      from += STEP;
+    } else {
+      for (var n3 = to - STEP + 1; n3 <= to; n3++) rows += rowHtml(file, n3, w);
+      gap.insertAdjacentHTML("afterend", rows);
+      to -= STEP;
+    }
+    gap.dataset.from = String(from);
+    gap.dataset.to = String(to);
+    gap.innerHTML = gapInner(file, from, to);
+  });
+`;
+
+export function renderDataBlob(index: FileIndex): string {
+  const files: Record<string, unknown> = {};
+  for (const [key, entry] of index) {
+    files[key] = {
+      html: entry.html,
+      count: entry.lines.length,
+      symbols: entry.symbols.map((s) => [symbolLabel(s), s.startLine, s.endLine]),
+    };
+  }
+  return JSON.stringify({ step: EXPAND_STEP, files }).replaceAll("</", "<\\/");
+}
+
+export interface PageMeta {
+  prUrl: string;
+  prTitle: string;
+  functionName: string;
+  base: { ref: string; sha: string };
+  head: { ref: string; sha: string };
+}
+
+export function pageHead(result: PageMeta, extraCss: string): string {
+  return `<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(result.functionName)} — PR call graph</title>
+<style>${CSS}${extraCss}</style>`;
+}
+
+export function pageHeader(result: PageMeta): string {
+  return `<header>
+  <h1><code>${esc(result.functionName)}</code></h1>
+  <p class="meta">
+    <a href="${esc(result.prUrl)}">${esc(result.prTitle)}</a> ·
+    ${esc(result.base.ref)} <code>${esc(result.base.sha.slice(0, 8))}</code> →
+    <code>${esc(result.head.sha.slice(0, 8))}</code>
+  </p>
+</header>`;
+}
+
+export function dataScripts(result: unknown, index: FileIndex): string {
+  return `<script type="application/json" id="call-graph-data">${JSON.stringify(result).replaceAll("</", "<\\/")}</script>
+<script type="application/json" id="render-data">${renderDataBlob(index)}</script>`;
+}
+
+// ---------------------------------------------------------------------------
+// Stacked layout (callers / target / callees, top to bottom)
+
+/** Render an analysis result as a self-contained HTML page. */
+export function renderCallGraphHtml(result: CallGraphResult): string {
+  const index = buildFileIndex(result.files);
+  const { target } = result;
+  const targetEntry =
+    index.get(`after:${target.after?.file ?? ""}`) ??
+    index.get(`before:${target.before?.file ?? ""}`);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+${pageHead(result, "\n  body { max-width: 60rem; }")}
+</head>
+<body data-view="both">
+${pageHeader(result)}
+
+<div class="controls">
+  <span>Show:</span>
+  <button data-view="both" aria-pressed="true">Both</button>
+  <button data-view="before" aria-pressed="false">Before</button>
+  <button data-view="after" aria-pressed="false">After</button>
+  <span style="flex:1"></span>
+  <button id="expand-all">Expand all</button>
+  <button id="collapse-all">Collapse all</button>
+</div>
+
+${renderGroup("Callers", "callers", result.callers, index)}
+
+<section class="target-card">
+  <h2>Target: <code>${esc(target.name)}</code>
+    ${target.changedInPr ? '<span class="badge changed">changed</span>' : '<span class="badge">unchanged</span>'}
+  </h2>
+  ${renderSides(target.before, target.after, index, { hideSource: true })}
+  ${target.hunks.length ? `<div class="hunks">${renderHunksBlock(target.hunks, targetEntry)}</div>` : ""}
+</section>
+
+${renderGroup("Callees", "callees", result.callees, index)}
+
+${dataScripts(result, index)}
+<script>
+${GAP_JS}
+  for (const button of document.querySelectorAll('.controls button[data-view]')) {
+    button.addEventListener("click", () => {
+      document.body.dataset.view = button.dataset.view;
+      for (const other of document.querySelectorAll('.controls button[data-view]')) {
+        other.setAttribute("aria-pressed", String(other === button));
+      }
+    });
+  }
+  const setAll = (open) => {
+    for (const details of document.querySelectorAll("details.fn")) details.open = open;
+  };
+  document.getElementById("expand-all").addEventListener("click", () => setAll(true));
+  document.getElementById("collapse-all").addEventListener("click", () => setAll(false));
+</script>
+</body>
+</html>
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Columns layout (callers | target | selected callee)
+
+/** New-file line numbers added by these hunks. */
+function addedLines(hunks: DiffHunk[]): Set<number> {
+  const added = new Set<number>();
+  for (const hunk of hunks) {
+    let newN = hunk.newStart;
+    for (const line of hunk.lines) {
+      if (line.startsWith("-") || line.startsWith("\\")) continue;
+      if (line.startsWith("+")) added.add(newN);
+      newN++;
+    }
+  }
+  return added;
+}
+
+function calleePanel(fn: RelatedFunction, i: number, index: FileIndex): string {
+  return `<article class="callee-panel" data-idx="${i}" hidden>
+    <h3><code class="fn-name">${esc(fn.name)}</code> <code class="fn-file">${esc(fn.file)}</code> ${presenceBadge(fn)}</h3>
+    <p class="from-site missing"></p>
+    ${
+      fn.hunks.length
+        ? `<div class="hunks">${renderHunksBlock(fn.hunks, undefined, languageOf(fn.file))}</div>`
+        : renderSides(fn.before, fn.after, index, {})
+    }
+  </article>`;
+}
+
+/**
+ * Three-column variant: callers | target | callee. Clicking a callee call
+ * site in the target's source selects which callee shows on the right.
+ */
+export function renderCallGraphColumnsHtml(result: CallGraphResult): string {
+  const index = buildFileIndex(result.files);
+  const { target } = result;
+  const side: "before" | "after" = target.after ? "after" : "before";
+  const snapshot = target.after ?? target.before;
+  if (!snapshot) throw new Error("target function has no source on either side");
+  const entry = index.get(`${side}:${snapshot.file}`);
+
+  // Decorate the target's source: PR-added lines tinted, callee calls clickable.
+  const decorations: Decorations = new Map();
+  if (side === "after") {
+    for (const line of addedLines(target.hunks)) {
+      decorations.set(line, { cls: ["diff-add"] });
+    }
+  }
+  result.callees.forEach((callee, i) => {
+    const sites = (side === "after" ? callee.after : callee.before)?.callSites ?? [];
+    for (const site of sites) {
+      if (site.startColumn === undefined || site.endColumn === undefined) continue;
+      const existing = decorations.get(site.line) ?? {};
+      decorations.set(site.line, {
+        ...existing,
+        marks: [
+          ...(existing.marks ?? []),
+          {
+            start: site.startColumn,
+            end: site.endColumn,
+            cls: "csite",
+            attrs: `data-callee="${i}" role="button" tabindex="0"`,
+          },
+        ],
+      });
+    }
+  });
+
+  const targetBlock = renderCodeBlock(snapshot.source, {
+    entry,
+    gaps: true,
+    lang: languageOf(snapshot.file),
+    decorations,
+  });
+
+  const columnsCss = `
+  body.columns { max-width: none; padding: 1rem 1.2rem 2rem; }
+  .cols {
+    --rail: 34px; --gap: 12px;
+    position: relative; display: flex; gap: var(--gap);
+    height: calc(100vh - 130px); overflow: hidden;
+  }
+  .col {
+    flex: none; width: calc((100% - var(--rail) - 2 * var(--gap)) / 2);
+    height: 100%; overflow: auto; box-sizing: border-box;
+    border: 1px solid rgba(128,128,128,0.3); border-radius: 8px; padding: 0.6rem 0.8rem;
+  }
+  /* iOS-style push: slide the strip left by animating the first column's margin. */
+  .col-callers { margin-left: 0; transition: margin-left 0.4s cubic-bezier(0.32, 0.72, 0, 1); }
+  .cols.slid .col-callers { margin-left: calc(1.5 * var(--rail) - 50%); }
+  .col-callees { visibility: hidden; }
+  .cols.has-selection .col-callees { visibility: visible; }
+  .col > h2 { position: sticky; top: -0.6rem; margin: -0.6rem -0.8rem 0.5rem; padding: 0.6rem 0.8rem; background: Canvas; border-bottom: 1px solid rgba(128,128,128,0.3); font-size: 1rem; z-index: 1; }
+  .placeholder { opacity: 0.6; font-style: italic; }
+  .rail {
+    position: absolute; top: 0; bottom: 0; width: var(--rail); z-index: 2;
+    display: none; align-items: center; justify-content: center;
+    border: 1px solid rgba(128,128,128,0.35); border-radius: 8px;
+    background: Canvas; color: var(--accent); cursor: pointer;
+    writing-mode: vertical-rl; text-orientation: mixed;
+    font: 600 0.75rem ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.05em; padding: 0.6rem 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .rail:hover { background: var(--callsite-bg); }
+  .rail-left { left: 0; }
+  .rail-right { right: 0; }
+  .cols.slid .rail-left { display: flex; }
+  .cols.has-selection:not(.slid) .rail-right { display: flex; }
+`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+${pageHead(result, columnsCss)}
+</head>
+<body class="columns" data-view="both">
+${pageHeader(result)}
+
+<div class="cols">
+  <button class="rail rail-left" title="Back to callers">◀ Callers</button>
+  <button class="rail rail-right" title="Show last callee">callee ▶</button>
+  <section class="col col-callers">
+    <h2>Callers <span class="count">${result.callers.length}</span></h2>
+    ${
+      result.callers.length
+        ? result.callers
+            .map((fn) => renderRelated(fn, index, { highlightCallSites: true }))
+            .join("\n")
+        : '<p class="missing">none found</p>'
+    }
+  </section>
+
+  <section class="col col-target">
+    <h2>Target: <code>${esc(target.name)}</code>
+      ${target.changedInPr ? '<span class="badge changed">changed</span>' : '<span class="badge">unchanged</span>'}
+    </h2>
+    <div class="side-loc"><code>${esc(snapshot.file)}:${snapshot.startLine}–${snapshot.endLine}</code> <span class="badge">${side}</span></div>
+    <p class="missing">click a highlighted call to open that callee →</p>
+    ${targetBlock}
+  </section>
+
+  <section class="col col-callees">
+    <h2>Callee</h2>
+    <p class="placeholder">Click a call site in the target to show the callee here.</p>
+    ${result.callees.map((fn, i) => calleePanel(fn, i, index)).join("\n")}
+  </section>
+</div>
+
+${dataScripts(result, index)}
+<script>
+${GAP_JS}
+  var cols = document.querySelector(".cols");
+  var railRight = document.querySelector(".rail-right");
+  document.addEventListener("click", function (e) {
+    var site = e.target.closest(".csite");
+    if (!site) return;
+    var idx = site.dataset.callee;
+    var panels = document.querySelectorAll(".callee-panel");
+    for (var i = 0; i < panels.length; i++) panels[i].hidden = panels[i].dataset.idx !== idx;
+    var placeholder = document.querySelector(".col-callees .placeholder");
+    if (placeholder) placeholder.hidden = true;
+    var active = document.querySelectorAll(".csite.active");
+    for (var j = 0; j < active.length; j++) active[j].classList.remove("active");
+    site.classList.add("active");
+    var panel = document.querySelector('.callee-panel[data-idx="' + idx + '"]');
+    var line = site.closest(".line");
+    if (panel && line) {
+      panel.querySelector(".from-site").textContent = "called from: " + line.textContent.trim();
+    }
+    var name = panel && panel.querySelector(".fn-name");
+    if (name) railRight.textContent = name.textContent + " \\u25b6";
+    cols.classList.add("has-selection", "slid");
+    document.querySelector(".col-callees").scrollTop = 0;
+  });
+  document.querySelector(".rail-left").addEventListener("click", function () {
+    cols.classList.remove("slid");
+  });
+  railRight.addEventListener("click", function () {
+    cols.classList.add("slid");
+  });
+</script>
+</body>
+</html>
+`;
+}

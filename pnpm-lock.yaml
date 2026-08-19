@@ -77,6 +77,28 @@ importers:
         specifier: ^3.0.5
         version: 3.2.7(@types/node@22.20.1)(tsx@4.23.12)
 
+  packages/call-graph:
+    dependencies:
+      pyright:
+        specifier: ^1.1.390
+        version: 1.1.413
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.0
+        version: 22.20.1
+      tsup:
+        specifier: ^8.3.6
+        version: 8.5.1(postcss@8.5.26)(tsx@4.23.12)(typescript@5.9.3)
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.12
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.12)
+
   packages/shared:
     dependencies:
       zod:
@@ -1125,6 +1147,11 @@ packages:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
 
+  pyright@1.1.413:
+    resolution: {integrity: sha512-1lpxKrh0DHHpfAQOfciZo2ojua2jase3wwO9at8kldc+F/p1PBscxA5CQ3G1qg5lMOMhXo6ZaiMLMXEAqADIAg==}
+    engines: {node: '>=14.0.0'}
+    hasBin: true
+
   react-dom@19.2.8:
     resolution: {integrity: sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ==}
     peerDependencies:
@@ -2142,6 +2169,10 @@ snapshots:
       nanoid: 3.3.18
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  pyright@1.1.413:
+    optionalDependencies:
+      fsevents: 2.3.3
 
   react-dom@19.2.8(react@19.2.8):
     dependencies:
