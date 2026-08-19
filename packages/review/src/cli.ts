@@ -109,10 +109,11 @@ async function main(): Promise<void> {
     log(`Slices written to ${reportFile}`);
   }
 
-  const { report, index } = await loadRenderEntry(reportFile, workDir);
+  const { report, index, headDir } = await loadRenderEntry(reportFile, workDir);
   const input = await buildSliceExplorerInput({
     report,
     index,
+    headDir,
     ...(workDir ? { workDir } : {}),
     ...(maxGraphs !== undefined ? { maxGraphs } : {}),
     ...(values.quiet ? {} : { onProgress: log }),

@@ -152,7 +152,12 @@ export async function loadRenderEntry(
     number: report.pr.number,
   });
   const checkouts = prepareCheckouts(info, workDir);
-  return { report, index: indexDiff(parseUnifiedDiff(checkouts.diffText)) };
+  return {
+    report,
+    index: indexDiff(parseUnifiedDiff(checkouts.diffText)),
+    baseDir: checkouts.baseDir,
+    headDir: checkouts.headDir,
+  };
 }
 
 export function writeSliceReport(report: SliceReport, outFile: string): string {

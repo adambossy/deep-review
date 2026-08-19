@@ -13,6 +13,9 @@ function esc(text: string): string {
 export interface RenderEntry {
   report: SliceReport;
   index: DiffIndex;
+  /** The worktrees the diff was taken between. */
+  baseDir: string;
+  headDir: string;
 }
 
 const CSS = `

@@ -48,7 +48,31 @@ const fragment = {
   hunkHeader: "@@ -1,2 +1,3 @@",
   lines: [" const x = 1;", "+retry();", "-const retryDelayed = 2;"],
   newLineNumbers: [1, 2, null] as (number | null)[],
+  headStart: 1,
+  headEnd: 2,
 };
+
+/** A second fragment in the same file, far enough away to leave a gap. */
+const farFragment = {
+  id: "a.ts#1@1-1",
+  file: "a.ts",
+  summary: "later change",
+  hunkHeader: "@@ -40,1 +40,1 @@",
+  lines: ["+const y = 2;"],
+  newLineNumbers: [40] as (number | null)[],
+  headStart: 40,
+  headEnd: 40,
+};
+
+/** The head-side text the file block needs for context and expanders. */
+const files = [
+  {
+    side: "after" as const,
+    path: "a.ts",
+    lines: Array.from({ length: 60 }, (_, i) => `line ${i + 1};`),
+    symbols: [],
+  },
+];
 
 function render(overrides: Partial<SliceInput> = {}): string {
   return renderSliceExplorerHtml({
@@ -57,6 +81,7 @@ function render(overrides: Partial<SliceInput> = {}): string {
     repo: "a/b",
     number: 1,
     overview: "does a thing",
+    files,
     slices: [
       {
         id: "slice-1",
@@ -64,7 +89,7 @@ function render(overrides: Partial<SliceInput> = {}): string {
         summary: "s",
         rationale: "r",
         target: { file: "a.ts", name: "retry" },
-        fragments: [fragment],
+        fragments: [fragment, farFragment],
         graph,
         ...overrides,
       },
@@ -112,5 +137,27 @@ describe("renderSliceExplorerHtml", () => {
 
   it("escapes the per-slice name map so it survives as an attribute", () => {
     expect(html).toContain("data-names=\"{&quot;a.ts#retry&quot;");
+  });
+
+  it("renders a file's fragments as one block, not one box each", () => {
+    // Both of slice one's fragments are in a.ts, so they share a block.
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
+    expect([...panel.matchAll(/class="file-block"/g)]).toHaveLength(1);
+    expect([...panel.matchAll(/class="source"/g)]).toHaveLength(1);
+    expect([...panel.matchAll(/class="line frag-note"/g)]).toHaveLength(2);
+  });
+
+  it("puts an expander over the run hidden between two fragments", () => {
+    expect(html).toContain('data-from="8" data-to="34"');
+  });
+
+  it("shows context around a fragment and an expander over the tail", () => {
+    // Five lines of trailing context after the fragment ending at line 2,
+    // and nothing beyond it until the next fragment's own context.
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
+    expect(panel).toContain('<span class="lineno"> 7</span>');
+    expect(panel).not.toContain('<span class="lineno"> 8</span>');
+    expect(panel).toContain('<span class="lineno">35</span>');
+    expect(panel).toContain('data-from="46" data-to="60"');
   });
 });

@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import {
   analyzePrCallPath,
   type CallPathResult,
+  type EmbeddedFile,
   type SliceExplorerInput,
   type SliceInput,
 } from "@deep-review/call-graph";
@@ -12,6 +15,8 @@ export interface BuildOptions {
   index: DiffIndex;
   /** Where the clone/worktrees are cached, shared with the slicing run. */
   workDir?: string;
+  /** The head worktree, read for the context around each fragment. */
+  headDir?: string;
   /** Analyze at most this many slices' call graphs. */
   maxGraphs?: number;
   onProgress?: (message: string) => void;
@@ -23,14 +28,79 @@ function fragmentInput(fragment: Fragment, index: DiffIndex) {
   if (!hunk) return null;
   const from = fragment.startLine - 1;
   const to = fragment.endLine;
+  const newLineNumbers = hunk.newLineNumbers.slice(from, to);
+
+  // Where the fragment sits in the head-side file, which is what orders it
+  // among its file's other fragments. A fragment that only removes lines
+  // has no head-side extent of its own, so it is anchored between the lines
+  // that survive around it: headEnd one before headStart, an empty range.
+  const heads = newLineNumbers.filter((n): n is number => n !== null);
+  let headStart: number;
+  let headEnd: number;
+  if (heads.length > 0) {
+    headStart = heads[0]!;
+    headEnd = heads[heads.length - 1]!;
+  } else {
+    const after = hunk.newLineNumbers.slice(to).find((n) => n != null);
+    const before = hunk.newLineNumbers
+      .slice(0, from)
+      .reduce<number | null>((last, n) => n ?? last, null);
+    // Nothing on either side means the hunk is all removals; anchor at the
+    // first head line the hunk covers, or the top of the file.
+    const first = hunk.newLineNumbers.find((n) => n != null);
+    headStart = after ?? (before !== null ? before + 1 : (first ?? 1));
+    headEnd = headStart - 1;
+  }
+
   return {
     id: fragment.id,
     file: fragment.file,
     summary: fragment.summary,
     hunkHeader: hunk.header,
     lines: hunk.lines.slice(from, to),
-    newLineNumbers: hunk.newLineNumbers.slice(from, to),
+    newLineNumbers,
+    headStart,
+    headEnd,
   };
+}
+
+/**
+ * Head-side text of every file the slices touch, so a file's fragments can
+ * be shown as one continuous stretch with real context between them. Files
+ * the PR deleted are absent from the head worktree and simply omitted; the
+ * renderer falls back to fragment-by-fragment for those.
+ */
+function readChangedFiles(
+  report: SliceReport,
+  headDir: string,
+  log: (message: string) => void,
+): EmbeddedFile[] {
+  const paths = new Set(
+    report.slices.flatMap((s) => s.fragments.map((f) => f.file)),
+  );
+  const files: EmbeddedFile[] = [];
+  let missing = 0;
+  for (const path of paths) {
+    const full = resolve(headDir, path);
+    if (!full.startsWith(resolve(headDir) + sep)) continue;
+    try {
+      files.push({
+        side: "after",
+        path,
+        lines: readFileSync(full, "utf8").split("\n"),
+        // The language service is not run here, so expanders in these files
+        // get no symbol breadcrumb. A file a call graph also embedded keeps
+        // the richer entry — the renderer prefers it.
+        symbols: [],
+      });
+    } catch {
+      missing++;
+    }
+  }
+  if (missing > 0) {
+    log(`${missing} changed file${missing === 1 ? "" : "s"} not in the head checkout (deleted?); shown without context.`);
+  }
+  return files;
 }
 
 /**
@@ -110,5 +180,8 @@ export async function buildSliceExplorerInput(
     number: report.pr.number,
     overview: report.overview,
     slices,
+    files: options.headDir
+      ? readChangedFiles(report, options.headDir, log)
+      : [],
   };
 }

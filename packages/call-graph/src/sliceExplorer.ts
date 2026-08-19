@@ -10,8 +10,16 @@ import {
   tokenizeLines,
   type Mark,
 } from "./highlight.js";
-import { buildFileIndex, CSS, GAP_JS, renderDataBlob } from "./html.js";
-import type { CallPathResult } from "./types.js";
+import {
+  buildFileIndex,
+  CSS,
+  GAP_JS,
+  gapRow,
+  lineRow,
+  renderDataBlob,
+  type FileIndex,
+} from "./html.js";
+import type { CallPathResult, EmbeddedFile } from "./types.js";
 
 /**
  * One fragment of a slice: a contiguous run of diff lines. Given
@@ -28,6 +36,15 @@ export interface SliceFragmentInput {
   lines: string[];
   /** Head-side file line per entry of `lines`; null for removed lines. */
   newLineNumbers: (number | null)[];
+  /**
+   * The fragment's extent in the head-side file, used to place it among its
+   * file's other fragments and to work out how much context surrounds it.
+   * A fragment that only removes lines has no extent, and is marked by
+   * `headEnd === headStart - 1` — it sits between two lines rather than on
+   * any of them.
+   */
+  headStart: number;
+  headEnd: number;
 }
 
 export interface SliceInput {
@@ -52,6 +69,14 @@ export interface SliceExplorerInput {
   number: number;
   overview: string;
   slices: SliceInput[];
+  /**
+   * Head-side text of every file the slices touch. This is what lets a
+   * file's fragments be shown as one continuous stretch of the file, with
+   * real context between them and expanders over what stays hidden. A file
+   * missing here (one the PR deleted, say) falls back to fragment-by-
+   * fragment rendering.
+   */
+  files: EmbeddedFile[];
 }
 
 /** Occurrences of a graph symbol in one line of source, as tappable marks. */
@@ -82,55 +107,138 @@ function symbolMarks(
   return marks.sort((a, b) => a.start - b.start);
 }
 
-/** A fragment's diff lines, tinted, numbered, and symbol-marked. */
-function renderFragment(
+/** Lines of the head-side file shown either side of a fragment. */
+const FRAGMENT_CONTEXT = 5;
+
+type Symbols = { name: string; nodeId: string }[];
+
+/** The fragment's own diff rows: additions tinted, removals kept in place. */
+function fragmentRows(
   fragment: SliceFragmentInput,
-  symbols: { name: string; nodeId: string }[],
-): string {
+  width: number,
+  symbols: Symbols,
+): string[] {
   const lang = languageOf(fragment.file);
   const contents = fragment.lines.map((l) => l.slice(1));
   const tokens = tokenizeLines(contents, lang);
-  const width = Math.max(
-    4,
-    String(
-      Math.max(...fragment.newLineNumbers.map((n) => n ?? 0), 1),
-    ).length,
-  );
 
-  const rows = fragment.lines.map((line, i) => {
+  return fragment.lines.map((line, i) => {
     if (line.startsWith("\\")) {
-      return `<span class="line"><span class="lineno">${" ".repeat(width)}</span>${esc(line)}</span>`;
+      return lineRow("", width, esc(line));
     }
-    const cls = line.startsWith("+")
-      ? " diff-add"
-      : line.startsWith("-")
-        ? " diff-del"
-        : "";
-    const no = line.startsWith("-")
-      ? "−".padStart(width)
-      : String(fragment.newLineNumbers[i] ?? "").padStart(width);
     const html = renderLine(
       contents[i]!,
       tokens[i]!,
       symbolMarks(contents[i]!, symbols),
     );
-    return `<span class="line${cls}"><span class="lineno">${no}</span>${html}</span>`;
+    if (line.startsWith("-")) return lineRow("−", width, html, ["diff-del"]);
+    return lineRow(
+      fragment.newLineNumbers[i] ?? "",
+      width,
+      html,
+      line.startsWith("+") ? ["diff-add"] : [],
+    );
+  });
+}
+
+/** A note naming the fragment, sitting inline where its lines begin. */
+function fragmentNote(fragment: SliceFragmentInput, width: number): string {
+  return `<span class="line frag-note"><span class="lineno">${" ".repeat(width)}</span><code class="frag-id">${esc(fragment.id)}</code> ${esc(fragment.summary)}</span>`;
+}
+
+/**
+ * Every fragment a slice has in one file, rendered as one continuous stretch
+ * of that file: each fragment surrounded by real context, the runs between
+ * them collapsed behind expanders. Reading a file's changes should not mean
+ * reassembling them from separate boxes.
+ */
+function renderFileBlock(
+  file: string,
+  fragments: SliceFragmentInput[],
+  entry: ReturnType<FileIndex["get"]>,
+  symbols: Symbols,
+): string {
+  // Without the file's text there is no context to show and nothing to
+  // expand into, so each fragment stands alone.
+  if (!entry) {
+    const width = 4;
+    const rows = fragments.flatMap((f) => [
+      `<span class="line hunk-header">${esc(f.hunkHeader)}</span>`,
+      fragmentNote(f, width),
+      ...fragmentRows(f, width, symbols),
+    ]);
+    return `<div class="file-block"><div class="file-head"><code>${esc(file)}</code></div><pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
+  }
+
+  const width = String(entry.lines.length).length;
+  const ordered = [...fragments].sort(
+    (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
+  );
+  const rows: string[] = [];
+  /** Last head-side line already emitted; nothing may be emitted twice. */
+  let cursor = 0;
+
+  const contextRows = (from: number, to: number): void => {
+    for (let n = Math.max(from, 1); n <= Math.min(to, entry.lines.length); n++) {
+      const marks = symbolMarks(entry.lines[n - 1] ?? "", symbols);
+      const html = marks.length
+        ? renderLine(entry.lines[n - 1] ?? "", entry.tokens[n - 1] ?? [], marks)
+        : (entry.html[n - 1] ?? "");
+      rows.push(lineRow(n, width, html));
+      cursor = Math.max(cursor, n);
+    }
+  };
+
+  ordered.forEach((fragment, i) => {
+    const wanted = Math.max(1, fragment.headStart - FRAGMENT_CONTEXT);
+    if (wanted > cursor + 1) {
+      rows.push(gapRow(entry, cursor + 1, wanted - 1));
+      cursor = wanted - 1;
+    }
+    contextRows(cursor + 1, fragment.headStart - 1);
+    rows.push(fragmentNote(fragment, width));
+    rows.push(...fragmentRows(fragment, width, symbols));
+    cursor = Math.max(cursor, fragment.headEnd);
+
+    // Trailing context, stopping short of the next fragment's own leading
+    // context so the two never render the same line twice.
+    const next = ordered[i + 1];
+    const limit = Math.min(
+      cursor + FRAGMENT_CONTEXT,
+      next ? next.headStart - 1 : entry.lines.length,
+    );
+    contextRows(cursor + 1, limit);
   });
 
-  return `<div class="frag">
-    <div class="frag-head"><code class="frag-id">${esc(fragment.id)}</code><span class="frag-file">${esc(fragment.file)}</span></div>
-    <p class="frag-sum">${esc(fragment.summary)}</p>
-    <span class="line hunk-header">${esc(fragment.hunkHeader)}</span>
+  if (cursor < entry.lines.length) {
+    rows.push(gapRow(entry, cursor + 1, entry.lines.length));
+  }
+
+  return `<div class="file-block">
+    <div class="file-head"><code>${esc(file)}</code></div>
     <pre class="source" data-w="${width}">${rows.join("")}</pre>
   </div>`;
 }
 
 /** The slice's own panel: everything the PR changed for this one purpose. */
-function renderSlicePanel(slice: SliceInput, rank: number): string {
+function renderSlicePanel(
+  slice: SliceInput,
+  rank: number,
+  index: FileIndex,
+): string {
   const symbols = (slice.graph?.nodes ?? []).map((n) => ({
     name: n.name.split(".").pop() ?? n.name,
     nodeId: n.id,
   }));
+
+  // Group by file, keeping the order the slice listed them in, so the most
+  // important file of the slice still leads.
+  const byFile = new Map<string, SliceFragmentInput[]>();
+  for (const fragment of slice.fragments) {
+    const group = byFile.get(fragment.file);
+    if (group) group.push(fragment);
+    else byFile.set(fragment.file, [fragment]);
+  }
   const lines = slice.fragments.reduce((n, f) => n + f.lines.length, 0);
   const files = new Set(slice.fragments.map((f) => f.file));
 
@@ -150,7 +258,7 @@ function renderSlicePanel(slice: SliceInput, rank: number): string {
         ? '<p class="hint">tap a highlighted symbol to walk into its call graph</p>'
         : ""
     }
-    ${slice.fragments.map((f) => renderFragment(f, symbols)).join("")}
+    ${[...byFile].map(([file, group]) => renderFileBlock(file, group, index.get(`after:${file}`), symbols)).join("")}
   </article>`;
 }
 
@@ -189,13 +297,17 @@ const SLICE_CSS = `
   .slice-badges { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
   .badge.target { background: var(--callsite-bg); color: var(--accent); }
   .hint { margin: 0 0 0.8rem; font-size: 0.75rem; color: var(--tok-com); }
-  .frag { margin: 0 0 1rem; }
-  .frag-head { display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; font-size: 0.72rem; }
+  .file-block { margin: 0 0 1.2rem; }
+  .file-head { font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem;
+               color: var(--accent); margin-bottom: 0.25rem; }
   .frag-id { color: var(--accent); }
-  .frag-file { color: var(--tok-com); }
-  .frag-sum { margin: 0.15rem 0 0.3rem; font-size: 0.8rem; }
-  .frag .hunk-header { display: block; font-family: ui-monospace, Menlo, monospace;
-                       font-size: 0.75rem; color: var(--tok-com); }
+  /* The fragment's own label, sitting inline where its lines begin — the
+     file block stays one continuous listing rather than a stack of boxes. */
+  .frag-note { background: rgba(9,105,218,0.07); border-top: 1px solid rgba(9,105,218,0.18);
+               border-bottom: 1px solid rgba(9,105,218,0.18);
+               font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.75rem;
+               padding: 0.15rem 0; }
+  .frag-note .frag-id { font-family: ui-monospace, Menlo, monospace; margin-right: 0.4rem; }
 
   .progress { display: flex; align-items: center; gap: 0.6rem; font-size: 0.78rem;
               color: var(--tok-com); margin: 0.3rem 0 0.5rem; }
@@ -303,9 +415,13 @@ const DECK_JS = `
 export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   // One file index for the whole page: the expander script reads a single
   // `#render-data` blob, and files shared between slices key identically.
-  const index = buildFileIndex(
-    input.slices.flatMap((s) => s.graph?.files ?? []),
-  );
+  // The changed files come first so that a file a call graph also embedded
+  // wins — those entries carry the symbol table the expanders use for
+  // breadcrumbs.
+  const index = buildFileIndex([
+    ...input.files,
+    ...input.slices.flatMap((s) => s.graph?.files ?? []),
+  ]);
 
   const views = input.slices
     .map((slice, i) => {
@@ -323,7 +439,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
         <div class="viewport">
           <button class="rail rail-left"></button>
           <button class="rail rail-right"></button>
-          <div class="track">${renderSlicePanel(slice, i + 1)}</div>
+          <div class="track">${renderSlicePanel(slice, i + 1, index)}</div>
         </div>
         <div class="panel-defs" hidden>${panels}</div>
       </section>`;

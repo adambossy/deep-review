@@ -79,7 +79,7 @@ export interface LineDecoration {
 
 export type Decorations = Map<number, LineDecoration>;
 
-function lineRow(
+export function lineRow(
   lineNumber: number | string,
   width: number,
   contentHtml: string,
@@ -90,7 +90,7 @@ function lineRow(
 }
 
 /** GitHub-style expander: ▲ reveals the gap's bottom, ▼ its top. */
-function gapRow(entry: FileEntry, from: number, to: number): string {
+export function gapRow(entry: FileEntry, from: number, to: number): string {
   const count = to - from + 1;
   if (count <= 0) return "";
   const crumb = crumbFor(entry.symbols, Math.min(to + 1, entry.lines.length));
