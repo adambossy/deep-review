@@ -13,7 +13,12 @@ function snapshot(file: string, lines: string[]): FunctionSnapshot {
   };
 }
 
-function node(id: string, name: string, file: string): PathNode {
+function node(
+  id: string,
+  name: string,
+  file: string,
+  nameLine = 1,
+): PathNode {
   return {
     id,
     name,
@@ -24,7 +29,7 @@ function node(id: string, name: string, file: string): PathNode {
     hunks: [],
     changedInPr: false,
     expanded: true,
-    nameLine: 1,
+    nameLine,
     nameColumn: 9,
   };
 }
@@ -36,7 +41,10 @@ const graph: CallPathResult = {
   base: { ref: "main", sha: "a".repeat(40) },
   head: { ref: "pull/1/head", sha: "b".repeat(40) },
   rootId: "a.ts#retry",
-  nodes: [node("a.ts#retry", "retry", "a.ts"), node("a.ts#retryDelay", "retryDelay", "a.ts")],
+  nodes: [
+    node("a.ts#retry", "retry", "a.ts", 3),
+    node("a.ts#retryDelay", "retryDelay", "a.ts", 50),
+  ],
   edges: [],
   files: [],
 };
@@ -46,10 +54,15 @@ const fragment = {
   file: "a.ts",
   summary: "calls retry",
   hunkHeader: "@@ -1,2 +1,3 @@",
-  lines: [" const x = 1;", "+retry();", "-const retryDelayed = 2;"],
-  newLineNumbers: [1, 2, null] as (number | null)[],
+  lines: [
+    " const x = 1;",
+    "+retry();",
+    "-const retryDelayed = 2;",
+    "+function retry() {}",
+  ],
+  newLineNumbers: [1, 2, null, 3] as (number | null)[],
   headStart: 1,
-  headEnd: 2,
+  headEnd: 3,
 };
 
 /** A second fragment in the same file, far enough away to leave a gap. */
@@ -122,8 +135,21 @@ describe("renderSliceExplorerHtml", () => {
   });
 
   it("matches whole words only, so retryDelayed is not a call to retry", () => {
-    const marks = [...html.matchAll(/data-target="a\.ts#retry"/g)];
-    expect(marks).toHaveLength(1);
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
+    expect([...panel.matchAll(/data-target="a\.ts#retry"/g)]).toHaveLength(1);
+  });
+
+  it("does not make a function's own declaration tappable", () => {
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
+    const rows = panel.split('<span class="line').slice(1);
+    const declRows = rows.filter((r) => r.includes("function"));
+    const markedRows = rows.filter((r) => r.includes('data-target="a.ts#retry"'));
+    // The call to retry is tappable...
+    expect(markedRows).toHaveLength(1);
+    // ...and the line declaring it is not, though the name is right there.
+    expect(declRows).toHaveLength(1);
+    expect(declRows[0]).toContain("retry");
+    expect(declRows[0]).not.toContain("data-target");
   });
 
   it("emits one render-data blob for the whole page", () => {
@@ -161,15 +187,17 @@ describe("renderSliceExplorerHtml", () => {
   });
 
   it("puts an expander over the run hidden between two fragments", () => {
-    expect(html).toContain('data-from="8" data-to="34"');
+    // The first fragment ends at line 3 and shows 5 lines after it; the next
+    // starts at 40 and shows 5 before it, leaving 9..34 hidden.
+    expect(html).toContain('data-from="9" data-to="34"');
   });
 
   it("shows context around a fragment and an expander over the tail", () => {
-    // Five lines of trailing context after the fragment ending at line 2,
+    // Five lines of trailing context after the fragment ending at line 3,
     // and nothing beyond it until the next fragment's own context.
     const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
-    expect(panel).toContain('<span class="lineno"> 7</span>');
-    expect(panel).not.toContain('<span class="lineno"> 8</span>');
+    expect(panel).toContain('<span class="lineno"> 8</span>');
+    expect(panel).not.toContain('<span class="lineno"> 9</span>');
     expect(panel).toContain('<span class="lineno">35</span>');
     expect(panel).toContain('data-from="46" data-to="60"');
   });

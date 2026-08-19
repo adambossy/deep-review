@@ -79,13 +79,37 @@ export interface SliceExplorerInput {
   files: EmbeddedFile[];
 }
 
-/** Occurrences of a graph symbol in one line of source, as tappable marks. */
+interface GraphSymbol {
+  name: string;
+  nodeId: string;
+  /** Where this function is declared at head, when it exists there. */
+  declFile: string | null;
+  declLine: number | null;
+}
+
+type Symbols = GraphSymbol[];
+
+/** `def name`, `class name`, `function name` — the word introduces, not calls. */
+const DECLARES = /(?:^|[^A-Za-z0-9_$])(?:def|class|function|fn|func|struct|interface|type|enum)\s+$/;
+
+/**
+ * Occurrences of a graph symbol in one line of source, as tappable marks.
+ *
+ * A function's own declaration is deliberately not marked: its body is right
+ * there on the page, so tapping it would slide in a panel for what the
+ * reader is already looking at. The language service tells us where each
+ * function is declared; the keyword check catches the rest, including
+ * functions the walk reached only on the base side.
+ */
 function symbolMarks(
   content: string,
-  symbols: { name: string; nodeId: string }[],
+  symbols: Symbols,
+  file: string,
+  line: number | null,
 ): Mark[] {
   const marks: Mark[] = [];
   for (const symbol of symbols) {
+    if (symbol.declFile === file && symbol.declLine === line) continue;
     let from = 0;
     for (;;) {
       const at = content.indexOf(symbol.name, from);
@@ -94,14 +118,14 @@ function symbolMarks(
       const before = content[at - 1] ?? " ";
       const after = content[from] ?? " ";
       // Whole-word only: `retry` must not light up inside `retryDelay`.
-      if (!/[A-Za-z0-9_$]/.test(before) && !/[A-Za-z0-9_$]/.test(after)) {
-        marks.push({
-          start: at,
-          end: from,
-          cls: "csite",
-          attrs: `data-target="${esc(symbol.nodeId)}" role="button" tabindex="0"`,
-        });
-      }
+      if (/[A-Za-z0-9_$]/.test(before) || /[A-Za-z0-9_$]/.test(after)) continue;
+      if (DECLARES.test(content.slice(0, at))) continue;
+      marks.push({
+        start: at,
+        end: from,
+        cls: "csite",
+        attrs: `data-target="${esc(symbol.nodeId)}" role="button" tabindex="0"`,
+      });
     }
   }
   return marks.sort((a, b) => a.start - b.start);
@@ -109,8 +133,6 @@ function symbolMarks(
 
 /** Lines of the head-side file shown either side of a fragment. */
 const FRAGMENT_CONTEXT = 5;
-
-type Symbols = { name: string; nodeId: string }[];
 
 /** The fragment's own diff rows: additions tinted, removals kept in place. */
 function fragmentRows(
@@ -129,7 +151,9 @@ function fragmentRows(
     const html = renderLine(
       contents[i]!,
       tokens[i]!,
-      symbolMarks(contents[i]!, symbols),
+      // A removed line has no head-side number, so it can never be the
+      // declaration site the head-side check compares against.
+      symbolMarks(contents[i]!, symbols, fragment.file, fragment.newLineNumbers[i] ?? null),
     );
     if (line.startsWith("-")) return lineRow("−", width, html, ["diff-del"]);
     return lineRow(
@@ -178,7 +202,7 @@ function renderFileBlock(
 
   const contextRows = (from: number, to: number): void => {
     for (let n = Math.max(from, 1); n <= Math.min(to, entry.lines.length); n++) {
-      const marks = symbolMarks(entry.lines[n - 1] ?? "", symbols);
+      const marks = symbolMarks(entry.lines[n - 1] ?? "", symbols, file, n);
       const html = marks.length
         ? renderLine(entry.lines[n - 1] ?? "", entry.tokens[n - 1] ?? [], marks)
         : (entry.html[n - 1] ?? "");
@@ -223,9 +247,13 @@ function renderSlicePanel(
   rank: number,
   index: FileIndex,
 ): string {
-  const symbols = (slice.graph?.nodes ?? []).map((n) => ({
+  const symbols: Symbols = (slice.graph?.nodes ?? []).map((n) => ({
     name: n.name.split(".").pop() ?? n.name,
     nodeId: n.id,
+    // nameLine is given in the node's preferred revision, so it only locates
+    // a head-side declaration when the function exists after the PR.
+    declFile: n.after ? n.after.file : null,
+    declLine: n.after ? n.nameLine : null,
   }));
 
   // Group by file, keeping the order the slice listed them in, so the most
