@@ -25,7 +25,7 @@ function git(args: string[], cwd: string): string {
 export function defaultWorkDir(info: PrInfo): string {
   return path.join(
     os.tmpdir(),
-    "deep-review-call-graph",
+    "deep-review",
     `${info.owner}-${info.repo}-pr${info.number}`,
   );
 }

@@ -1,5 +1,5 @@
 import type { DeclRef, LanguageBackend, RelationEntry } from "./backend.js";
-import { hunksForFileRange } from "./diff.js";
+import { hunksForFileRange } from "@deep-review/pr";
 import type {
   CallSite,
   DiffHunk,

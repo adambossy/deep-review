@@ -3,12 +3,16 @@ import type {
   FunctionRelations,
   LanguageBackend,
 } from "./backend.js";
-import { changedPaths, hunksOverlapping, parseUnifiedDiff } from "./diff.js";
-import { fetchPrInfo } from "./github.js";
-import { prepareCheckouts } from "./git.js";
+import {
+  changedPaths,
+  fetchPrInfo,
+  hunksOverlapping,
+  parsePrUrl,
+  parseUnifiedDiff,
+  prepareCheckouts,
+} from "@deep-review/pr";
 import { mergeGraphs, walkCallGraph, type SideGraph } from "./graph.js";
 import { LspBackend, pyrightConfig } from "./lspBackend.js";
-import { parsePrUrl } from "./prUrl.js";
 import { TsBackend } from "./tsBackend.js";
 import type {
   CallGraphResult,
