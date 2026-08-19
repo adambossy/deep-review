@@ -34,6 +34,8 @@ export interface AnalyzeOptions {
 interface PrContext {
   info: Awaited<ReturnType<typeof fetchPrInfo>>;
   baseDir: string;
+  /** The commit the PR branched from; what baseDir is checked out at. */
+  mergeBaseSha: string;
   headDir: string;
   files: FileDiff[];
   preferred: Set<string>;
@@ -42,9 +44,19 @@ interface PrContext {
 async function preparePr(options: AnalyzeOptions): Promise<PrContext> {
   const ref = parsePrUrl(options.prUrl);
   const info = await fetchPrInfo(ref);
-  const { baseDir, headDir, diffText } = prepareCheckouts(info, options.workDir);
+  const { baseDir, headDir, mergeBaseSha, diffText } = prepareCheckouts(
+    info,
+    options.workDir,
+  );
   const files = parseUnifiedDiff(diffText);
-  return { info, baseDir, headDir, files, preferred: changedPaths(files) };
+  return {
+    info,
+    baseDir,
+    mergeBaseSha,
+    headDir,
+    files,
+    preferred: changedPaths(files),
+  };
 }
 
 /**
@@ -170,7 +182,8 @@ async function embedFiles(
 export async function analyzePrCallGraph(
   options: AnalyzeOptions,
 ): Promise<CallGraphResult> {
-  const { info, baseDir, headDir, files, preferred } = await preparePr(options);
+  const { info, baseDir, mergeBaseSha, headDir, files, preferred } =
+    await preparePr(options);
 
   const allBackends: LanguageBackend[] = [];
   try {
@@ -215,7 +228,7 @@ export async function analyzePrCallGraph(
       prUrl: options.prUrl,
       prTitle: info.title,
       functionName: options.functionName,
-      base: { ref: info.baseRef, sha: info.baseSha },
+      base: { ref: info.baseRef, sha: mergeBaseSha },
       head: { ref: `pull/${info.number}/head`, sha: info.headSha },
       target: {
         name: options.functionName,
@@ -252,7 +265,8 @@ export interface PathOptions extends AnalyzeOptions {
 export async function analyzePrCallPath(
   options: PathOptions,
 ): Promise<CallPathResult> {
-  const { info, baseDir, headDir, files, preferred } = await preparePr(options);
+  const { info, baseDir, mergeBaseSha, headDir, files, preferred } =
+    await preparePr(options);
   const limits = {
     ...(options.maxDepth !== undefined ? { maxDepth: options.maxDepth } : {}),
   };
@@ -305,7 +319,7 @@ export async function analyzePrCallPath(
       prUrl: options.prUrl,
       prTitle: info.title,
       functionName: options.functionName,
-      base: { ref: info.baseRef, sha: info.baseSha },
+      base: { ref: info.baseRef, sha: mergeBaseSha },
       head: { ref: `pull/${info.number}/head`, sha: info.headSha },
       rootId,
       nodes,

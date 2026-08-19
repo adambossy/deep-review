@@ -5,11 +5,19 @@ import path from "node:path";
 import type { PrInfo } from "./github.js";
 
 export interface Checkouts {
-  /** Working tree at the PR's base commit. */
+  /** Working tree at the merge base — the PR's "before". */
   baseDir: string;
   /** Working tree at the PR's head commit. */
   headDir: string;
-  /** `git diff base head` output. */
+  /**
+   * The commit the PR branched from: `git merge-base baseSha headSha`, not
+   * `baseSha` itself. GitHub reports `base.sha` as the current tip of the base
+   * branch, so on a branch that has fallen behind, diffing against it pulls in
+   * every unrelated commit that landed on the base since. This is the commit
+   * GitHub's own "Files changed" compares against.
+   */
+  mergeBaseSha: string;
+  /** `git diff mergeBase head` output. */
   diffText: string;
 }
 
@@ -66,15 +74,20 @@ export function prepareCheckouts(info: PrInfo, workDir?: string): Checkouts {
     );
   }
 
+  const mergeBaseSha = git(
+    ["merge-base", info.baseSha, info.headSha],
+    repoDir,
+  ).trim();
+
   const baseDir = path.join(root, "base");
   const headDir = path.join(root, "head");
-  ensureWorktree(repoDir, baseDir, info.baseSha);
+  ensureWorktree(repoDir, baseDir, mergeBaseSha);
   ensureWorktree(repoDir, headDir, info.headSha);
 
   const diffText = git(
-    ["diff", "--unified=3", info.baseSha, info.headSha],
+    ["diff", "--unified=3", mergeBaseSha, info.headSha],
     repoDir,
   );
 
-  return { baseDir, headDir, diffText };
+  return { baseDir, headDir, mergeBaseSha, diffText };
 }
