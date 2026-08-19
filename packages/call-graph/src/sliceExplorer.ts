@@ -141,9 +141,14 @@ function fragmentRows(
   });
 }
 
-/** A note naming the fragment, sitting inline where its lines begin. */
+/**
+ * A marker where the fragment's lines begin, naming it so a row on screen
+ * can be traced back to the slice JSON. The fragment's own one-line summary
+ * is deliberately not shown: at this density it competed with the code for
+ * attention. It stays in the data for another use.
+ */
 function fragmentNote(fragment: SliceFragmentInput, width: number): string {
-  return `<span class="line frag-note"><span class="lineno">${" ".repeat(width)}</span><code class="frag-id">${esc(fragment.id)}</code> ${esc(fragment.summary)}</span>`;
+  return `<span class="line frag-note"><span class="lineno">${" ".repeat(width)}</span><code class="frag-id">${esc(fragment.id)}</code></span>`;
 }
 
 /**
@@ -301,13 +306,11 @@ const SLICE_CSS = `
   .file-head { font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem;
                color: var(--accent); margin-bottom: 0.25rem; }
   .frag-id { color: var(--accent); }
-  /* The fragment's own label, sitting inline where its lines begin — the
-     file block stays one continuous listing rather than a stack of boxes. */
-  .frag-note { background: rgba(9,105,218,0.07); border-top: 1px solid rgba(9,105,218,0.18);
-               border-bottom: 1px solid rgba(9,105,218,0.18);
-               font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.75rem;
-               padding: 0.15rem 0; }
-  .frag-note .frag-id { font-family: ui-monospace, Menlo, monospace; margin-right: 0.4rem; }
+  /* The fragment's marker, sitting inline where its lines begin — the file
+     block stays one continuous listing rather than a stack of boxes. Quiet
+     enough to be a boundary rather than a heading. */
+  .frag-note { border-top: 1px solid rgba(9,105,218,0.18); font-size: 0.7rem;
+               opacity: 0.65; padding: 0.1rem 0; }
 
   .progress { display: flex; align-items: center; gap: 0.6rem; font-size: 0.78rem;
               color: var(--tok-com); margin: 0.3rem 0 0.5rem; }

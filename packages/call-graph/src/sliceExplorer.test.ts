@@ -147,6 +147,13 @@ describe("renderSliceExplorerHtml", () => {
     expect([...panel.matchAll(/class="line frag-note"/g)]).toHaveLength(2);
   });
 
+  it("marks each fragment by id but keeps its summary out of the page", () => {
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
+    expect(panel).toContain("a.ts#0@1-3");
+    expect(panel).not.toContain("calls retry");
+    expect(panel).not.toContain("later change");
+  });
+
   it("puts an expander over the run hidden between two fragments", () => {
     expect(html).toContain('data-from="8" data-to="34"');
   });
