@@ -13,4 +13,10 @@ export {
 } from "./report.js";
 export { renderCallGraphHtml, renderCallGraphColumnsHtml } from "./html.js";
 export { renderCallPathExplorerHtml } from "./explorer.js";
+export {
+  renderSliceExplorerHtml,
+  type SliceExplorerInput,
+  type SliceInput,
+  type SliceFragmentInput,
+} from "./sliceExplorer.js";
 export type * from "./types.js";

@@ -41,6 +41,42 @@ _Avoid_: touched, modified, dirty
 One contiguous block of a unified diff (`@@ -a,b +c,d @@` plus its lines).
 The unit in which PR changes are attached to functions.
 
+### Slicing
+
+**Slice**:
+A set of fragments that together accomplish one coherent change. Slices are
+ordered by how central they are to what the PR is for: reverting the first
+slice would defeat the PR's purpose, reverting the last would barely dent it.
+_Avoid_: group, cluster, theme
+
+**Fragment**:
+A contiguous run of lines inside one hunk, and the unit a slice is built
+from. Hunks are too coarse to assign directly — a newly added file arrives
+as one hunk that may serve several unrelated purposes — so hunks are cut
+into fragments and fragments are what slices hold.
+_Avoid_: chunk (collides with hunk), segment, sub-hunk
+
+**Partition**:
+The invariant the slicing agent's output must satisfy: every added and
+removed line of the diff belongs to exactly one fragment, and every fragment
+to exactly one slice. Checked mechanically, because a change assigned to no
+slice and a change assigned to two both read as normal output.
+
+**Hunk id**:
+A hunk's stable address — its head-side path and its index among that file's
+hunks, e.g. `src/report.ts#2`. Fragment ids extend it with their line range:
+`src/report.ts#2@14-31`.
+
+**Hunk-local line**:
+A line's 1-based position within a hunk body, counting context, added, and
+removed lines alike. The coordinate fragments are defined in, and distinct
+from the line's position in the file.
+
+**Annotated diff**:
+The rendering of the diff handed to the slicing agent: each hunk labeled
+with its id, each line carrying both its hunk-local number and its head-side
+file line. The contract between the prompt and the partition check.
+
 **Call site**:
 The exact place (line and column span) where a caller invokes a function.
 Call sites always live in the caller's source.
@@ -83,6 +119,26 @@ direction with an iOS-style slide.
 **Panel**:
 One function's card in the explorer: its badges, called-by rows, diff, and
 source.
+
+**Slice explorer**:
+The two-axis fusion of slices and the explorer. Vertically it moves between
+slices in priority order; horizontally each slice walks its own call graph.
+The two axes are independent — every slice keeps its own track and position.
+
+**Deck**:
+The vertical stack of slice views, one filling the stage at a time. The
+vertical counterpart of a track.
+_Avoid_: carousel, stack (overloaded), pager
+
+**Slice panel**:
+The first panel in a slice's track: the slice's title, summary, rationale,
+and every fragment's diff. The starting point for a horizontal walk.
+
+**Overscroll**:
+Continuing to scroll after a slice's content has run out. Past a threshold
+it carries the reader to the adjacent slice — down from the bottom, up from
+the top.
+_Avoid_: bounce, rubber-band (the browser's own effect, which this replaces)
 
 **Walk down**:
 Navigate from a function to one of its callees by tapping a call in its

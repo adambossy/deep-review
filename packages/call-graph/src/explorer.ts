@@ -34,7 +34,7 @@ function sitesFor(side: "before" | "after", edge: { before: CallSite[]; after: C
 /** Lines of surrounding file context shown around a function, like `diff -U10`. */
 const PANEL_CONTEXT = 10;
 
-function renderPanel(node: PathNode, result: CallPathResult, index: FileIndex): string {
+export function renderPanel(node: PathNode, result: CallPathResult, index: FileIndex): string {
   const side: "before" | "after" = node.after ? "after" : "before";
   const snapshot = (node.after ?? node.before)!;
   const entry = index.get(`${side}:${snapshot.file}`);
@@ -135,7 +135,7 @@ function renderPanel(node: PathNode, result: CallPathResult, index: FileIndex): 
   </article>`;
 }
 
-const EXPLORER_CSS = `
+export const EXPLORER_CSS = `
   body.explorer { max-width: none; padding: 1rem 1.2rem 2rem; }
   .viewport {
     --rail: 34px; --gap: 12px;
@@ -185,16 +185,23 @@ const EXPLORER_CSS = `
   .sym-link.sym-dim { opacity: 0.45; }
 `;
 
-const NAV_JS = `
-  var NAMES = JSON.parse(document.getElementById("node-names").textContent);
-  var defs = document.getElementById("panel-defs");
-  var viewport = document.querySelector(".viewport");
-  var track = document.querySelector(".track");
-  var railLeft = document.querySelector(".rail-left");
-  var railRight = document.querySelector(".rail-right");
+/**
+ * Horizontal navigation, scoped to a root element rather than the document,
+ * so a page can host several independent tracks — one per slice in the
+ * slice explorer, which stacks these vertically.
+ */
+export const EXPLORER_NAV_JS = `
+function initExplorer(root, NAMES) {
+  var defs = root.querySelector(".panel-defs");
+  var viewport = root.querySelector(".viewport");
+  var track = root.querySelector(".track");
+  var railLeft = root.querySelector(".rail-left");
+  var railRight = root.querySelector(".rail-right");
+  if (!viewport || !track) return;
   var pos = 0;
+  function esc1(id) { return window.CSS && CSS.escape ? CSS.escape(id) : id; }
   function panelFor(id) {
-    var def = defs.querySelector('[data-node="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+    var def = defs && defs.querySelector('[data-node="' + esc1(id) + '"]');
     return def ? def.cloneNode(true) : null;
   }
   function nodeAt(i) {
@@ -206,8 +213,8 @@ const NAV_JS = `
     track.style.setProperty("--pos", String(pos));
     viewport.classList.toggle("can-back", pos > 0);
     viewport.classList.toggle("can-fwd", count > pos + 2);
-    if (pos > 0) railLeft.textContent = "\\u25c0 " + (NAMES[nodeAt(pos - 1)] || "back");
-    if (count > pos + 2) railRight.textContent = (NAMES[nodeAt(pos + 2)] || "forward") + " \\u25b6";
+    if (pos > 0 && railLeft) railLeft.textContent = "\\u25c0 " + (NAMES[nodeAt(pos - 1)] || "back");
+    if (count > pos + 2 && railRight) railRight.textContent = (NAMES[nodeAt(pos + 2)] || "forward") + " \\u25b6";
   }
   function setPos(p, animate) {
     if (!animate) track.classList.add("no-anim");
@@ -236,8 +243,6 @@ const NAV_JS = `
     while (fromIndex > 0) { track.removeChild(track.firstChild); fromIndex--; }
     track.insertBefore(panel, track.firstChild);
     if (oldSlot <= 0) {
-      /* Tapped panel was in the left slot: hold it in place off-animation,
-         then slide right so the caller sweeps in from the left edge. */
       setPos(1, false);
       setPos(0, true);
     } else {
@@ -248,18 +253,16 @@ const NAV_JS = `
   /* Tie the clicked symbol to the panel it opened: both turn accent blue;
      the clicked one fades partially as the panes slide. */
   function linkSymbols(link, destPanel) {
-    var old = document.querySelectorAll(".sym-link");
+    var old = root.querySelectorAll(".sym-link");
     for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
     var clicked;
     if (link.classList.contains("caller-row")) {
       clicked = [link.querySelector(".fn-name") || link];
     } else {
-      /* A call like this.#calc spans several token spans; light them all. */
       var line = link.closest(".line") || link.parentNode;
-      clicked = line.querySelectorAll('.csite[data-target="' + (window.CSS && CSS.escape ? CSS.escape(link.dataset.target) : link.dataset.target) + '"]');
+      clicked = line.querySelectorAll('.csite[data-target="' + esc1(link.dataset.target) + '"]');
     }
     for (var j = 0; j < clicked.length; j++) clicked[j].classList.add("sym-link");
-    /* The opened panel's own symbol name gets the low-opacity blue directly. */
     var dest = destPanel ? destPanel.querySelectorAll(".self-sym") : [];
     for (var d = 0; d < dest.length; d++) dest[d].classList.add("sym-link", "sym-dim");
     requestAnimationFrame(function () {
@@ -268,7 +271,7 @@ const NAV_JS = `
       });
     });
   }
-  document.addEventListener("click", function (e) {
+  root.addEventListener("click", function (e) {
     var link = e.target.closest(".csite, .caller-row");
     if (link && link.dataset.target) {
       var panel = link.closest(".panel");
@@ -284,14 +287,9 @@ const NAV_JS = `
     else if (e.target.closest(".rail-right")) setPos(Math.min(track.children.length - 2, pos + 1), true);
   });
   updateRails();
+}
 `;
 
-/**
- * Recursive navigator over the walked call graph: two panes at ~50/50, iOS
- * push/pop sliding. Tapping a call in a panel's source pushes that callee;
- * tapping a "called by" row pushes that caller — so a changed code path can
- * be walked end to end from either boundary.
- */
 export function renderCallPathExplorerHtml(result: CallPathResult): string {
   const index = buildFileIndex(result.files);
   const root = result.nodes.find((n) => n.id === result.rootId);
@@ -316,13 +314,14 @@ ${pageHeader(result)}
   <div class="track">${rootPanel}</div>
 </div>
 
-<div id="panel-defs" hidden>${panels}</div>
+<div id="panel-defs" class="panel-defs" hidden>${panels}</div>
 
 <script type="application/json" id="node-names">${JSON.stringify(names).replaceAll("</", "<\\/")}</script>
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
-${NAV_JS}
+${EXPLORER_NAV_JS}
+initExplorer(document.body, JSON.parse(document.getElementById("node-names").textContent));
 </script>
 </body>
 </html>
