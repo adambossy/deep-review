@@ -144,14 +144,20 @@ describe("renderSliceExplorerHtml", () => {
     const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
     expect([...panel.matchAll(/class="file-block"/g)]).toHaveLength(1);
     expect([...panel.matchAll(/class="source"/g)]).toHaveLength(1);
-    expect([...panel.matchAll(/class="line frag-note"/g)]).toHaveLength(2);
   });
 
-  it("marks each fragment by id but keeps its summary out of the page", () => {
+  it("puts nothing between the fragments to break the listing", () => {
     const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
-    expect(panel).toContain("a.ts#0@1-3");
+    // Neither the fragment ids nor their summaries reach the page.
+    expect(panel).not.toContain("a.ts#0@1-3");
     expect(panel).not.toContain("calls retry");
     expect(panel).not.toContain("later change");
+    // Only the code rows and the expanders between them.
+    const block = /<pre class="source"[\s\S]*?<\/pre>/.exec(panel)![0];
+    const rows = [...block.matchAll(/<span class="line( [^"]*)?"/g)].map((m) =>
+      (m[1] ?? "").trim(),
+    );
+    expect(new Set(rows)).toEqual(new Set(["", "diff-add", "diff-del"]));
   });
 
   it("puts an expander over the run hidden between two fragments", () => {

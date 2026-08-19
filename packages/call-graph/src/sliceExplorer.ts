@@ -142,20 +142,14 @@ function fragmentRows(
 }
 
 /**
- * A marker where the fragment's lines begin, naming it so a row on screen
- * can be traced back to the slice JSON. The fragment's own one-line summary
- * is deliberately not shown: at this density it competed with the code for
- * attention. It stays in the data for another use.
- */
-function fragmentNote(fragment: SliceFragmentInput, width: number): string {
-  return `<span class="line frag-note"><span class="lineno">${" ".repeat(width)}</span><code class="frag-id">${esc(fragment.id)}</code></span>`;
-}
-
-/**
  * Every fragment a slice has in one file, rendered as one continuous stretch
  * of that file: each fragment surrounded by real context, the runs between
  * them collapsed behind expanders. Reading a file's changes should not mean
  * reassembling them from separate boxes.
+ *
+ * Nothing is interleaved between the fragments — no ids, no summaries. The
+ * tinting already says which lines changed, and anything else in the column
+ * breaks the listing the reader is trying to follow.
  */
 function renderFileBlock(
   file: string,
@@ -169,7 +163,6 @@ function renderFileBlock(
     const width = 4;
     const rows = fragments.flatMap((f) => [
       `<span class="line hunk-header">${esc(f.hunkHeader)}</span>`,
-      fragmentNote(f, width),
       ...fragmentRows(f, width, symbols),
     ]);
     return `<div class="file-block"><div class="file-head"><code>${esc(file)}</code></div><pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
@@ -201,7 +194,6 @@ function renderFileBlock(
       cursor = wanted - 1;
     }
     contextRows(cursor + 1, fragment.headStart - 1);
-    rows.push(fragmentNote(fragment, width));
     rows.push(...fragmentRows(fragment, width, symbols));
     cursor = Math.max(cursor, fragment.headEnd);
 
@@ -305,12 +297,6 @@ const SLICE_CSS = `
   .file-block { margin: 0 0 1.2rem; }
   .file-head { font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem;
                color: var(--accent); margin-bottom: 0.25rem; }
-  .frag-id { color: var(--accent); }
-  /* The fragment's marker, sitting inline where its lines begin — the file
-     block stays one continuous listing rather than a stack of boxes. Quiet
-     enough to be a boundary rather than a heading. */
-  .frag-note { border-top: 1px solid rgba(9,105,218,0.18); font-size: 0.7rem;
-               opacity: 0.65; padding: 0.1rem 0; }
 
   .progress { display: flex; align-items: center; gap: 0.6rem; font-size: 0.78rem;
               color: var(--tok-com); margin: 0.3rem 0 0.5rem; }
