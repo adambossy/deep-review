@@ -1,5 +1,9 @@
 node_modules/
+.pnpm-store/
 dist/
+slices-*.json
+pr-slices.html
+review-*.html
 *.tsbuildinfo
 .env
 .env.*
