@@ -175,6 +175,24 @@ function fragmentRows(
  * tinting already says which lines changed, and anything else in the column
  * breaks the listing the reader is trying to follow.
  */
+/** "packages/webhooks/src/retry.ts" → dimmed directory, bold basename, +/− stats. */
+function fileHead(file: string, fragments: SliceFragmentInput[]): string {
+  const cut = file.lastIndexOf("/") + 1;
+  const adds = fragments.reduce(
+    (n, f) => n + f.lines.filter((l) => l.startsWith("+")).length,
+    0,
+  );
+  const dels = fragments.reduce(
+    (n, f) => n + f.lines.filter((l) => l.startsWith("-")).length,
+    0,
+  );
+  return `<div class="file-head"><code>${
+    cut > 0 ? `<span class="dir">${esc(file.slice(0, cut))}</span>` : ""
+  }<span class="name">${esc(file.slice(cut))}</span></code><span class="stat">${
+    adds ? `<span class="plus">+${adds}</span>` : ""
+  }${dels ? `<span class="minus">−${dels}</span>` : ""}</span></div>`;
+}
+
 function renderFileBlock(
   file: string,
   fragments: SliceFragmentInput[],
@@ -189,7 +207,7 @@ function renderFileBlock(
       `<span class="line hunk-header">${esc(f.hunkHeader)}</span>`,
       ...fragmentRows(f, width, symbols),
     ]);
-    return `<div class="file-block"><div class="file-head"><code>${esc(file)}</code></div><pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
+    return `<div class="file-block">${fileHead(file, fragments)}<pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
   }
 
   const width = String(entry.lines.length).length;
@@ -236,7 +254,7 @@ function renderFileBlock(
   }
 
   return `<div class="file-block">
-    <div class="file-head"><code>${esc(file)}</code></div>
+    ${fileHead(file, fragments)}
     <pre class="source" data-w="${width}">${rows.join("")}</pre>
   </div>`;
 }
@@ -245,6 +263,7 @@ function renderFileBlock(
 function renderSlicePanel(
   slice: SliceInput,
   rank: number,
+  total: number,
   index: FileIndex,
 ): string {
   const symbols: Symbols = (slice.graph?.nodes ?? []).map((n) => ({
@@ -268,28 +287,33 @@ function renderSlicePanel(
   const files = new Set(slice.fragments.map((f) => f.file));
 
   return `<article class="panel slice-panel" data-node="__slice__">
-    <h3><span class="rank">${rank}</span> ${esc(slice.title)}</h3>
+    <span class="eyebrow">Slice ${rank} of ${total}</span>
+    <h3 class="slice-title">${esc(slice.title)}</h3>
     <p class="slice-summary">${esc(slice.summary)}</p>
     <p class="slice-rationale">${esc(slice.rationale)}</p>
     <div class="slice-badges">
       <span class="badge">${slice.fragments.length} fragment${slice.fragments.length === 1 ? "" : "s"}</span>
       <span class="badge">${lines} lines</span>
       <span class="badge">${files.size} file${files.size === 1 ? "" : "s"}</span>
-      ${slice.target ? `<span class="badge target">target ${esc(slice.target.name)}</span>` : ""}
+      ${slice.target ? `<span class="badge target">→ ${esc(slice.target.name)}</span>` : ""}
       ${slice.graph ? "" : '<span class="badge">no call graph</span>'}
+      ${
+        slice.graph
+          ? '<span class="hint">tap a highlighted symbol to walk into its call graph</span>'
+          : ""
+      }
     </div>
-    ${
-      slice.graph
-        ? '<p class="hint">tap a highlighted symbol to walk into its call graph</p>'
-        : ""
-    }
     ${[...byFile].map(([file, group]) => renderFileBlock(file, group, index.get(`after:${file}`), symbols)).join("")}
   </article>`;
 }
 
 const SLICE_CSS = `
-  body.slice-explorer { max-width: none; padding: 0.8rem 1rem 0; }
-  .stage { position: relative; overflow: hidden; height: calc(100vh - 96px); }
+  body.slice-explorer {
+    max-width: none; margin: 0; padding: 0;
+    display: grid; grid-template-columns: 240px 1fr;
+  }
+  .main { padding: 0.8rem 1rem; min-width: 0; }
+  .stage { position: relative; overflow: hidden; height: calc(100vh - 1.6rem); }
   .deck {
     display: flex; flex-direction: column; height: 100%;
     transform: translateY(calc(var(--slice, 0) * -100%));
@@ -299,39 +323,76 @@ const SLICE_CSS = `
   .slice-view { flex: none; height: 100%; }
   .slice-view .viewport { height: 100%; }
 
+  .side {
+    box-sizing: border-box; height: 100vh; position: sticky; top: 0;
+    border-right: 1px solid var(--line-c); padding: 1.1rem 0.9rem;
+    display: flex; flex-direction: column; gap: 1.2rem;
+  }
+  .side .pr { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-soft); text-decoration: none; }
+  .side .pr:hover { color: var(--accent); }
+  .side .pr-title { font-size: 0.8rem; font-weight: 600; margin-top: 0.25rem; line-height: 1.35; }
+  .side-label { font-size: 0.62rem; font-weight: 600; letter-spacing: 0.1em;
+                text-transform: uppercase; color: var(--ink-faint); margin-bottom: 0.4rem; }
+  .slice-nav { display: flex; flex-direction: column; gap: 2px; }
+  .slice-link {
+    display: flex; gap: 0.55rem; align-items: baseline; text-align: left;
+    padding: 0.42rem 0.55rem; border-radius: 6px; border: none;
+    background: none; color: var(--ink-soft); font: inherit; font-size: 0.78rem;
+    cursor: pointer; line-height: 1.3;
+  }
+  .slice-link:hover { background: var(--panel-2); color: var(--ink); }
+  .slice-link.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .slice-link .n { font-variant-numeric: tabular-nums; font-size: 0.68rem; opacity: 0.7; }
+  .side .foot { margin-top: auto; font-size: 0.7rem; color: var(--ink-faint); }
+  .progress-label { font-variant-numeric: tabular-nums; }
+
   .vrail {
     position: absolute; left: 50%; transform: translateX(-50%); z-index: 3;
     display: none; align-items: center; gap: 0.5rem; max-width: 60%;
-    border: 1px solid rgba(128,128,128,0.35); border-radius: 999px;
-    background: Canvas; color: var(--accent); cursor: pointer;
+    border: 1px solid var(--line-c); border-radius: 999px;
+    background: var(--panel); color: var(--accent); cursor: pointer;
     font: 600 0.75rem ui-sans-serif, system-ui, sans-serif;
     padding: 0.2rem 0.9rem; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis;
   }
-  .vrail:hover { background: var(--callsite-bg); }
+  .vrail:hover { background: var(--accent-soft); border-color: var(--accent); }
   .vrail-up { top: 4px; }
   .vrail-down { bottom: 4px; }
   .stage.can-up .vrail-up { display: flex; }
   .stage.can-down .vrail-down { display: flex; }
 
-  .slice-panel > h3 { display: flex; align-items: baseline; gap: 0.5rem; margin: 0 0 0.4rem; font-size: 1rem; }
-  .rank { font-size: 1.5rem; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .slice-summary { margin: 0 0 0.4rem; font-size: 0.88rem; }
-  .slice-rationale { margin: 0 0 0.5rem; padding-left: 0.7rem; font-size: 0.82rem;
-                     border-left: 2px solid rgba(128,128,128,0.3); color: var(--tok-com); }
-  .slice-badges { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
-  .badge.target { background: var(--callsite-bg); color: var(--accent); }
-  .hint { margin: 0 0 0.8rem; font-size: 0.75rem; color: var(--tok-com); }
-  .file-block { margin: 0 0 1.2rem; }
-  .file-head { font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem;
-               color: var(--accent); margin-bottom: 0.25rem; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    font-size: 0.65rem; font-weight: 600; letter-spacing: 0.09em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 0.4rem;
+  }
+  .eyebrow::before { content: ""; width: 16px; height: 1px; background: var(--accent); }
+  .slice-panel > h3.slice-title {
+    font-size: 1.35rem; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 0.5rem;
+  }
+  .slice-summary { margin: 0 0 0.55rem; font-size: 0.88rem; color: var(--ink-soft); max-width: 44rem; }
+  .slice-rationale { margin: 0 0 0.9rem; font-size: 0.8rem; color: var(--ink-faint); max-width: 44rem; }
+  .slice-badges { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; margin-bottom: 1.1rem; }
+  .badge.target { background: var(--accent-soft); color: var(--accent); border-color: transparent;
+                  font-family: var(--mono); }
+  .hint { font-size: 0.7rem; color: var(--ink-faint); margin-left: 0.3rem; }
 
-  .progress { display: flex; align-items: center; gap: 0.6rem; font-size: 0.78rem;
-              color: var(--tok-com); margin: 0.3rem 0 0.5rem; }
-  .pips { display: flex; gap: 3px; }
-  .pip { width: 22px; height: 4px; border-radius: 2px; background: rgba(128,128,128,0.3);
-         cursor: pointer; border: none; padding: 0; }
-  .pip.on { background: var(--accent); }
+  .file-block {
+    border: 1px solid var(--line-c); border-radius: 8px; overflow: hidden;
+    margin: 0 0 1.1rem; background: var(--panel);
+  }
+  .file-head {
+    display: flex; align-items: center; gap: 0.6rem;
+    padding: 0.5rem 0.9rem; background: var(--panel-2);
+    border-bottom: 1px solid var(--line-c);
+    font-family: var(--mono); font-size: 0.74rem;
+  }
+  .file-head .dir { color: var(--ink-faint); }
+  .file-head .name { color: var(--ink); font-weight: 600; }
+  .file-head .stat { margin-left: auto; font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+  .file-head .plus { color: var(--add-edge); }
+  .file-head .minus { color: var(--del-edge); margin-left: 0.4rem; }
+  .file-block pre.source { border: none; border-radius: 0; margin: 0; }
 `;
 
 /**
@@ -347,7 +408,7 @@ const DECK_JS = `
   var views = Array.prototype.slice.call(deck.children);
   var railUp = document.querySelector(".vrail-up");
   var railDown = document.querySelector(".vrail-down");
-  var pips = Array.prototype.slice.call(document.querySelectorAll(".pip"));
+  var pips = Array.prototype.slice.call(document.querySelectorAll(".slice-link"));
   var label = document.querySelector(".progress-label");
   var TITLES = JSON.parse(document.getElementById("slice-titles").textContent);
   var current = 0, locked = false, overscroll = 0, overscrollDown = true, lastWheel = 0;
@@ -456,17 +517,17 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
         <div class="viewport">
           <button class="rail rail-left"></button>
           <button class="rail rail-right"></button>
-          <div class="track">${renderSlicePanel(slice, i + 1, index)}</div>
+          <div class="track">${renderSlicePanel(slice, i + 1, input.slices.length, index)}</div>
         </div>
         <div class="panel-defs" hidden>${panels}</div>
       </section>`;
     })
     .join("\n");
 
-  const pips = input.slices
+  const sliceLinks = input.slices
     .map(
       (s, i) =>
-        `<button class="pip" title="${esc(`${i + 1}. ${s.title}`)}"></button>`,
+        `<button class="slice-link" title="${esc(`${i + 1}. ${s.title}`)}"><span class="n">${i + 1}</span> ${esc(s.title)}</button>`,
     )
     .join("");
   const titles = input.slices.map((s) => s.title);
@@ -480,18 +541,24 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 <style>${CSS}${EXPLORER_CSS}${SLICE_CSS}</style>
 </head>
 <body class="slice-explorer">
-<div class="progress">
-  <a href="${esc(input.prUrl)}">${esc(input.repo)}#${input.number}</a>
-  <span>${esc(input.prTitle)}</span>
-  <span class="pips">${pips}</span>
-  <span class="progress-label"></span>
-  <span>· scroll past the end of a slice to reach the next</span>
-</div>
+<aside class="side">
+  <div>
+    <a class="pr" href="${esc(input.prUrl)}">${esc(input.repo)}#${input.number}</a>
+    <div class="pr-title">${esc(input.prTitle)}</div>
+  </div>
+  <nav>
+    <div class="side-label">Slices · <span class="progress-label"></span></div>
+    <div class="slice-nav">${sliceLinks}</div>
+  </nav>
+  <div class="foot">scroll past the end of a slice to reach the next</div>
+</aside>
 
+<div class="main">
 <div class="stage">
   <button class="vrail vrail-up"></button>
   <button class="vrail vrail-down"></button>
   <div class="deck">${views}</div>
+</div>
 </div>
 
 <script type="application/json" id="slice-titles">${JSON.stringify(titles).replaceAll("</", "<\\/")}</script>

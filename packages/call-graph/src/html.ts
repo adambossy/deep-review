@@ -353,71 +353,96 @@ function renderGroup(
 
 export const CSS = `
   :root {
-    color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif;
-    --tok-kw: #cf222e; --tok-str: #0a3069; --tok-com: #59636e; --tok-num: #0550ae;
-    --tok-fn: #8250df; --tok-type: #953800; --tok-lit: #0550ae;
-    --add-bg: rgba(46, 160, 67, 0.15); --del-bg: rgba(248, 81, 73, 0.15);
-    --accent: #0969da; --callsite-bg: rgba(9, 105, 218, 0.16);
+    color-scheme: light dark;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+    --bg: #fafafa; --panel: #ffffff; --panel-2: #f4f4f5;
+    --ink: #18181b; --ink-soft: #52525b; --ink-faint: #a1a1aa;
+    --line-c: #e4e4e7;
+    --accent: #4f46e5; --accent-ink: #ffffff; --accent-soft: #eef0fe;
+    --add-bg: rgba(22, 163, 74, 0.09); --add-edge: #16a34a;
+    --del-bg: rgba(220, 38, 38, 0.08); --del-edge: #dc2626;
+    --callsite-bg: rgba(79, 70, 229, 0.10);
+    --tok-kw: #9333ea; --tok-str: #15803d; --tok-com: #a1a1aa;
+    --tok-num: #b45309; --tok-fn: #4f46e5; --tok-type: #0e7490; --tok-lit: #b45309;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --tok-kw: #ff7b72; --tok-str: #a5d6ff; --tok-com: #8b949e; --tok-num: #79c0ff;
-      --tok-fn: #d2a8ff; --tok-type: #ffa657; --tok-lit: #79c0ff;
-      --accent: #58a6ff; --callsite-bg: rgba(56, 139, 253, 0.25);
+      --bg: #0c0d10; --panel: #131418; --panel-2: #1a1c22;
+      --ink: #e7e8ea; --ink-soft: #9ea1a8; --ink-faint: #5c5f66;
+      --line-c: #24262d;
+      --accent: #818cf8; --accent-ink: #0c0d10; --accent-soft: #1e2040;
+      --add-bg: rgba(74, 222, 128, 0.08); --add-edge: #4ade80;
+      --del-bg: rgba(248, 113, 113, 0.08); --del-edge: #f87171;
+      --callsite-bg: rgba(129, 140, 248, 0.14);
+      --tok-kw: #c084fc; --tok-str: #86efac; --tok-com: #5c5f66;
+      --tok-num: #fbbf24; --tok-fn: #a5b4fc; --tok-type: #67e8f9; --tok-lit: #fbbf24;
     }
   }
   .tok-kw { color: var(--tok-kw); } .tok-str { color: var(--tok-str); }
   .tok-com { color: var(--tok-com); font-style: italic; } .tok-num { color: var(--tok-num); }
   .tok-fn { color: var(--tok-fn); } .tok-type { color: var(--tok-type); }
   .tok-lit { color: var(--tok-lit); }
-  body { margin: 0 auto; padding: 1.5rem 1rem 4rem; }
-  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em; }
-  header h1 { margin-bottom: 0.2rem; }
-  header .meta { opacity: 0.7; font-size: 0.9rem; }
+  body { margin: 0 auto; padding: 1.5rem 1rem 4rem; background: var(--bg); color: var(--ink);
+         font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  code { font-family: var(--mono); font-size: 0.9em; }
+  header h1 { margin-bottom: 0.2rem; letter-spacing: -0.015em; }
+  header .meta { color: var(--ink-soft); font-size: 0.9rem; }
   header a { color: inherit; }
   .controls { display: flex; gap: 0.5rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
-  .controls button { padding: 0.3rem 0.8rem; cursor: pointer; }
-  .controls button[aria-pressed="true"] { outline: 2px solid currentColor; }
-  section.group h2 { border-bottom: 1px solid rgba(128,128,128,0.4); padding-bottom: 0.3rem; }
-  .count { opacity: 0.6; font-size: 0.8em; }
-  details.fn { border: 1px solid rgba(128,128,128,0.35); border-radius: 6px; margin: 0.5rem 0; }
+  .controls button { padding: 0.3rem 0.8rem; cursor: pointer; border: 1px solid var(--line-c);
+                     border-radius: 6px; background: var(--panel); color: var(--ink-soft); font: inherit; }
+  .controls button:hover { color: var(--accent); border-color: var(--accent); }
+  .controls button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  section.group h2 { border-bottom: 1px solid var(--line-c); padding-bottom: 0.3rem; }
+  .count { color: var(--ink-faint); font-size: 0.8em; }
+  details.fn { border: 1px solid var(--line-c); border-radius: 8px; margin: 0.5rem 0; background: var(--panel); }
   details.fn summary { padding: 0.5rem 0.8rem; cursor: pointer; display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; }
   details.fn .fn-name { font-weight: 700; }
-  details.fn .fn-file { opacity: 0.7; }
+  details.fn .fn-file { color: var(--ink-faint); }
   .fn-body { padding: 0 0.8rem 0.8rem; }
-  .badge { font-size: 0.7rem; text-transform: uppercase; padding: 0.1rem 0.4rem; border-radius: 4px; background: rgba(128,128,128,0.2); }
-  .badge.changed { background: rgba(230,160,0,0.25); }
-  .badge.added { background: var(--add-bg); }
-  .badge.removed { background: var(--del-bg); }
-  .side { margin: 0.4rem 0; padding: 0.4rem 0.6rem; border-left: 3px solid rgba(128,128,128,0.4); }
-  .side-before { border-left-color: #c0392b; }
-  .side-after { border-left-color: #27ae60; }
-  .side::before { display: block; font-size: 0.7rem; text-transform: uppercase; opacity: 0.6; }
+  .badge { font-size: 0.68rem; font-weight: 500; padding: 0.14rem 0.55rem; border-radius: 999px;
+           background: var(--panel-2); color: var(--ink-soft); border: 1px solid var(--line-c);
+           font-variant-numeric: tabular-nums; }
+  .badge.changed { background: rgba(230, 160, 0, 0.14); color: var(--tok-num); border-color: transparent; }
+  .badge.added { background: var(--add-bg); color: var(--add-edge); border-color: transparent; }
+  .badge.removed { background: var(--del-bg); color: var(--del-edge); border-color: transparent; }
+  .side { margin: 0.4rem 0; padding: 0.4rem 0.6rem; border-left: 3px solid var(--line-c); }
+  .side-before { border-left-color: var(--del-edge); }
+  .side-after { border-left-color: var(--add-edge); }
+  .side::before { display: block; font-size: 0.7rem; text-transform: uppercase; color: var(--ink-faint); }
   .side-before::before { content: "before"; }
   .side-after::before { content: "after"; }
   .side-both::before { content: "before & after — identical"; }
   .call-sites { margin: 0.3rem 0 0; padding-left: 1.2rem; }
-  .call-sites-label { font-size: 0.7rem; text-transform: uppercase; opacity: 0.6; margin-top: 0.4rem; }
-  .loc { opacity: 0.6; font-size: 0.8em; }
-  .missing { opacity: 0.6; font-style: italic; }
-  pre.source { overflow-x: auto; background: rgba(128,128,128,0.08); border: 1px solid rgba(128,128,128,0.25); border-radius: 6px; padding: 0.6rem 0; margin: 0.5rem 0 0.2rem; line-height: 1.45; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.8rem; }
-  .source .line { display: block; padding: 0 0.6rem; }
-  .source .lineno { display: inline-block; opacity: 0.45; margin-right: 0.9rem; user-select: none; white-space: pre; }
-  .source .line.hl { background: rgba(230,160,0,0.14); }
+  .call-sites-label { font-size: 0.7rem; text-transform: uppercase; color: var(--ink-faint); margin-top: 0.4rem; }
+  .loc { color: var(--ink-faint); font-size: 0.8em; }
+  .missing { color: var(--ink-faint); font-style: italic; }
+  pre.source { overflow-x: auto; background: var(--panel); border: 1px solid var(--line-c); border-radius: 8px; padding: 0.35rem 0; margin: 0.5rem 0 0.2rem; line-height: 1.65; font-family: var(--mono); font-size: 0.78rem; }
+  .source .line { display: block; padding: 0 0.9rem; }
+  .source .lineno { display: inline-block; color: var(--ink-faint); margin-right: 1.1rem; user-select: none; white-space: pre; }
+  .source .line.hl { background: rgba(230,160,0,0.12); }
   .source .line.diff-add { background: var(--add-bg); }
   .source .line.diff-del { background: var(--del-bg); }
-  .source .line.hunk-header { color: var(--tok-com); background: rgba(9,105,218,0.08); padding: 0.15rem 0.6rem; }
-  .source .line.elide { opacity: 0.55; font-style: italic; }
-  .callsite { background: var(--callsite-bg); border-radius: 3px; padding: 0.05rem 0; }
-  .csite { background: var(--callsite-bg); border-radius: 3px; cursor: pointer; text-decoration: underline dotted; }
+  .source .line.diff-del .lineno { color: var(--del-edge); }
+  .source .line.hunk-header { color: var(--ink-faint); background: var(--panel-2); padding: 0.15rem 0.9rem; }
+  .source .line.elide { color: var(--ink-faint); font-style: italic; }
+  .callsite { background: var(--callsite-bg); border-radius: 4px; padding: 0.05rem 0; }
+  .csite { color: var(--accent); background: var(--callsite-bg); border-radius: 4px;
+           padding: 0.08em 0.25em; cursor: pointer; transition: background 0.12s; }
+  .csite:hover { background: var(--accent); }
+  .csite:hover, .csite:hover * { color: var(--accent-ink); }
   .csite.active { outline: 2px solid var(--accent); }
-  .gap { display: flex; align-items: center; gap: 0.8rem; background: rgba(9,105,218,0.07); border-top: 1px solid rgba(9,105,218,0.2); border-bottom: 1px solid rgba(9,105,218,0.2); padding: 0.1rem 0.6rem; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.75rem; }
+  .gap { display: flex; align-items: center; gap: 0.8rem; background: var(--panel-2);
+         border-top: 1px solid var(--line-c); border-bottom: 1px solid var(--line-c);
+         padding: 0.22rem 0.9rem; font-family: ui-sans-serif, system-ui, sans-serif;
+         font-size: 0.68rem; color: var(--ink-faint); }
   .gap-btns { display: inline-flex; gap: 2px; }
-  .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.8rem; padding: 0 0.3rem; }
-  .gap-btn:hover { background: var(--accent); color: white; border-radius: 3px; }
-  .gap-count { opacity: 0.65; }
-  .gap-crumb { opacity: 0.85; color: var(--accent); font-family: ui-monospace, Menlo, monospace; }
-  .target-card { border: 2px solid rgba(128,128,128,0.6); border-radius: 8px; padding: 0.8rem 1rem; margin-top: 1.5rem; }
+  .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.7rem; padding: 0.05rem 0.3rem; border-radius: 4px; }
+  .gap-btn:hover { background: var(--accent-soft); }
+  .gap-count { color: var(--ink-faint); }
+  .gap-crumb { color: var(--ink-soft); font-family: var(--mono); margin-left: auto; }
+  .target-card { border: 1px solid var(--line-c); border-radius: 12px; padding: 0.8rem 1rem; margin-top: 1.5rem; background: var(--panel); }
   .target-card h2 { margin: 0 0 0.4rem; }
   body[data-view="before"] .side-after, body[data-view="after"] .side-before { display: none; }
 `;

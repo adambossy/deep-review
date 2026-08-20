@@ -151,28 +151,29 @@ export const EXPLORER_CSS = `
   .panel {
     flex: none; width: calc((100cqw - 2 * var(--rail) - var(--gap)) / 2);
     height: 100%; overflow: auto; box-sizing: border-box;
-    border: 1px solid rgba(128,128,128,0.3); border-radius: 8px; padding: 0.6rem 0.8rem;
+    border: 1px solid var(--line-c); border-radius: 8px; padding: 0.7rem 0.9rem;
+    background: var(--panel);
   }
   .panel > h3 { margin: 0 0 0.3rem; }
   .caller-rows { display: flex; flex-direction: column; gap: 2px; margin: 0.2rem 0 0.5rem; }
   .caller-row {
     text-align: left; padding: 0.25rem 0.5rem; cursor: pointer;
-    border: 1px solid rgba(128,128,128,0.3); border-radius: 5px;
+    border: 1px solid var(--line-c); border-radius: 6px;
     background: none; color: inherit; font: inherit;
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
-  .caller-row:hover { background: var(--callsite-bg); }
+  .caller-row:hover { background: var(--accent-soft); border-color: var(--accent); }
   .rail {
     position: absolute; top: 0; bottom: 0; width: var(--rail); z-index: 2;
     display: none; align-items: center; justify-content: center;
-    border: 1px solid rgba(128,128,128,0.35); border-radius: 8px;
-    background: Canvas; color: var(--accent); cursor: pointer;
+    border: 1px solid var(--line-c); border-radius: 8px;
+    background: var(--panel); color: var(--accent); cursor: pointer;
     writing-mode: vertical-rl; text-orientation: mixed;
     font: 600 0.75rem ui-sans-serif, system-ui, sans-serif;
     letter-spacing: 0.05em; padding: 0.6rem 0;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .rail:hover { background: var(--callsite-bg); }
+  .rail:hover { background: var(--accent-soft); border-color: var(--accent); }
   .rail-left { left: 0; }
   .rail-right { right: 0; }
   .viewport.can-back .rail-left { display: flex; }
@@ -181,7 +182,7 @@ export const EXPLORER_CSS = `
      the same accent blue; the clicked one dims (but stays visible) as the
      panes slide. */
   .sym-link { background: var(--accent); border-radius: 3px; padding: 0 2px; transition: opacity 0.7s ease; }
-  .sym-link, .sym-link * { color: #fff !important; }
+  .sym-link, .sym-link * { color: var(--accent-ink) !important; }
   .sym-link.sym-dim { opacity: 0.45; }
 `;
 
