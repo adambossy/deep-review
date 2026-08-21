@@ -510,6 +510,9 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
       const names = Object.fromEntries(
         (graph?.nodes ?? []).map((n) => [n.id, n.name]),
       );
+      // The slice panel sits at the head of the track, so the back rail can
+      // point at it; give it the slice's own title rather than "back".
+      names["__slice__"] = slice.title;
       // Entity-escaped rather than raw: the browser decodes the attribute
       // before JSON.parse sees it, so a name containing a quote or ampersand
       // survives intact.
