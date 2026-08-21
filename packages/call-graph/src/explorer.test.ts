@@ -39,8 +39,22 @@ const result: CallPathResult = {
       id: "mid.ts#mid",
       name: "mid",
       file: "mid.ts",
+      // Renamed from oldMid: the hunk removes the old declaration line and
+      // adds the new one, and the panel should interleave the removed line.
+      before: snapshot("mid.ts", ["function oldMid(n) {", "  return leaf(n) + 1;", "}"]),
       after: snapshot("mid.ts", ["function mid(n) {", "  return leaf(n) + 1;", "}"]),
+      hunks: [
+        {
+          header: "@@ -1,3 +1,3 @@",
+          oldStart: 1,
+          oldLines: 3,
+          newStart: 1,
+          newLines: 3,
+          lines: ["-function oldMid(n) {", "+function mid(n) {", "  return leaf(n) + 1;", " }"],
+        },
+      ],
       changedInPr: true,
+      renamedFrom: "oldMid",
     }),
     node({
       id: "leaf.ts#leaf",
@@ -160,6 +174,18 @@ describe("renderCallPathExplorerHtml", () => {
     // Function spans 20–21: exactly two tinted rows in the source block.
     expect(source.match(/class="line diff-add"/g)).toHaveLength(2);
     expect(source).toContain('diff-add"><span class="lineno">20</span>');
+  });
+
+  it("interleaves removed lines as red rows above their replacement", () => {
+    const midPanel = html.slice(
+      html.lastIndexOf('data-node="mid.ts#mid"'),
+      html.lastIndexOf('data-node="leaf.ts#leaf"'),
+    );
+    const source = midPanel.slice(midPanel.lastIndexOf("<pre"));
+    const deletedRow = /<span class="line diff-del">[^]*?oldMid/.exec(source);
+    expect(deletedRow).not.toBeNull();
+    // The removed row sits above the added declaration line.
+    expect(deletedRow!.index).toBeLessThan(source.indexOf('lineno">1</span>'));
   });
 
   it("includes the sliding rails and navigation script", () => {

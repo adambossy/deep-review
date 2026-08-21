@@ -75,6 +75,8 @@ export interface LineDecoration {
   /** Extra classes on the row, e.g. ["hl"] or ["diff-add"]. */
   cls?: string[];
   marks?: Mark[];
+  /** PR-removed line texts rendered (red, "−" gutter) above this line. */
+  deletedBefore?: string[];
 }
 
 export type Decorations = Map<number, LineDecoration>;
@@ -130,12 +132,15 @@ export function renderCodeBlock(segments: SourceSegment[], opts: BlockOptions): 
         `<span class="line elide">${" ".repeat(width)}⋯ ${segment.startLine - previousEnd - 1} lines omitted ⋯</span>`,
       );
     }
-    const localTokens = entry
-      ? null
-      : tokenizeLines(segment.lines, opts.lang ?? "ts");
+    const lang = opts.lang ?? entry?.lang ?? "ts";
+    const localTokens = entry ? null : tokenizeLines(segment.lines, lang);
     segment.lines.forEach((text, i) => {
       const n = segment.startLine + i;
       const deco = decorations?.get(n);
+      for (const deleted of deco?.deletedBefore ?? []) {
+        const html = renderLine(deleted, tokenizeLines([deleted], lang)[0]!, []);
+        rows.push(lineRow("−", width, html, ["diff-del"]));
+      }
       const content =
         entry && !deco?.marks
           ? (entry.html[n - 1] ?? esc(text))
@@ -617,7 +622,7 @@ ${GAP_JS}
 // Columns layout (callers | target | selected callee)
 
 /** New-file line numbers added by these hunks. */
-function addedLines(hunks: DiffHunk[]): Set<number> {
+export function addedLines(hunks: DiffHunk[]): Set<number> {
   const added = new Set<number>();
   for (const hunk of hunks) {
     let newN = hunk.newStart;
@@ -628,6 +633,50 @@ function addedLines(hunks: DiffHunk[]): Set<number> {
     }
   }
   return added;
+}
+
+/**
+ * Removed line texts keyed by the new-file line they now sit above, so a
+ * source block on the new side can interleave them as red deletion rows.
+ */
+export function deletedLinesByPosition(hunks: DiffHunk[]): Map<number, string[]> {
+  const deleted = new Map<number, string[]>();
+  for (const hunk of hunks) {
+    let newN = hunk.newStart;
+    for (const line of hunk.lines) {
+      if (line.startsWith("\\")) continue;
+      if (line.startsWith("-")) {
+        const texts = deleted.get(newN) ?? [];
+        texts.push(line.slice(1));
+        deleted.set(newN, texts);
+      } else {
+        newN++;
+      }
+    }
+  }
+  return deleted;
+}
+
+/**
+ * Tint PR-added lines and interleave PR-removed lines within a function's
+ * span, so its new-side source reads as a unified diff.
+ */
+export function diffDecorations(
+  decorations: Decorations,
+  hunks: DiffHunk[],
+  startLine: number,
+  endLine: number,
+): void {
+  for (const line of addedLines(hunks)) {
+    if (line >= startLine && line <= endLine) {
+      decorations.set(line, { ...decorations.get(line), cls: ["diff-add"] });
+    }
+  }
+  for (const [line, texts] of deletedLinesByPosition(hunks)) {
+    if (line >= startLine && line <= endLine + 1) {
+      decorations.set(line, { ...decorations.get(line), deletedBefore: texts });
+    }
+  }
 }
 
 function calleePanel(fn: RelatedFunction, i: number, index: FileIndex): string {
@@ -654,12 +703,11 @@ export function renderCallGraphColumnsHtml(result: CallGraphResult): string {
   if (!snapshot) throw new Error("target function has no source on either side");
   const entry = index.get(`${side}:${snapshot.file}`);
 
-  // Decorate the target's source: PR-added lines tinted, callee calls clickable.
+  // Decorate the target's source: PR-added lines tinted, PR-removed lines
+  // interleaved in red, callee calls clickable.
   const decorations: Decorations = new Map();
   if (side === "after") {
-    for (const line of addedLines(target.hunks)) {
-      decorations.set(line, { cls: ["diff-add"] });
-    }
+    diffDecorations(decorations, target.hunks, snapshot.startLine, snapshot.endLine);
   }
   result.callees.forEach((callee, i) => {
     const sites = (side === "after" ? callee.after : callee.before)?.callSites ?? [];

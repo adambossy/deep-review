@@ -2,6 +2,7 @@ import { escapeHtml as esc, languageOf, type Mark } from "./highlight.js";
 import {
   buildFileIndex,
   dataScripts,
+  diffDecorations,
   GAP_JS,
   pageHead,
   pageHeader,
@@ -11,21 +12,7 @@ import {
   type Decorations,
   type FileIndex,
 } from "./html.js";
-import type { CallPathResult, CallSite, DiffHunk, PathNode } from "./types.js";
-
-/** New-file line numbers added by these hunks. */
-function addedLines(hunks: DiffHunk[]): Set<number> {
-  const added = new Set<number>();
-  for (const hunk of hunks) {
-    let newN = hunk.newStart;
-    for (const line of hunk.lines) {
-      if (line.startsWith("-") || line.startsWith("\\")) continue;
-      if (line.startsWith("+")) added.add(newN);
-      newN++;
-    }
-  }
-  return added;
-}
+import type { CallPathResult, CallSite, PathNode } from "./types.js";
 
 function sitesFor(side: "before" | "after", edge: { before: CallSite[]; after: CallSite[] }): CallSite[] {
   return side === "after" ? edge.after : edge.before;
@@ -53,16 +40,13 @@ export function renderPanel(node: PathNode, result: CallPathResult, index: FileI
       ]
     : snapshot.source;
 
-  // Decorations: PR-added lines tinted; each outgoing call tappable. Tint
-  // only within the function itself — surrounding context lines may also be
-  // "added" (e.g. in a new file) but should read as plain context.
+  // Decorations: PR-added lines tinted, PR-removed lines interleaved in red;
+  // each outgoing call tappable. Decorate only within the function itself —
+  // surrounding context lines may also be "added" (e.g. in a new file) but
+  // should read as plain context.
   const decorations: Decorations = new Map();
   if (side === "after") {
-    for (const line of addedLines(node.hunks)) {
-      if (line >= snapshot.startLine && line <= snapshot.endLine) {
-        decorations.set(line, { cls: ["diff-add"] });
-      }
-    }
+    diffDecorations(decorations, node.hunks, snapshot.startLine, snapshot.endLine);
   }
   for (const edge of result.edges) {
     if (edge.from !== node.id) continue;
