@@ -212,9 +212,17 @@ function initExplorer(root, NAMES) {
   function updateRails() {
     var count = track.children.length;
     track.style.setProperty("--pos", String(pos));
-    viewport.classList.toggle("can-back", pos > 0);
+    /* The pinned slice panel always sits at index 0, and every walk up
+       collapses back to right beside it — so "behind" is the slice itself
+       after the very first caller pick, and stays that way through every
+       later sibling swap. That's not a real waypoint (the sidebar already
+       reaches the slice); only show the back rail once something real —
+       an intermediate caller or callee reached by walking further — sits
+       behind the current pair. */
+    var behind = pos > 0 && nodeAt(pos - 1) !== "__slice__";
+    viewport.classList.toggle("can-back", behind);
     viewport.classList.toggle("can-fwd", count > pos + 2);
-    if (pos > 0 && railLeft) railLeft.textContent = "\\u25c0 " + (NAMES[nodeAt(pos - 1)] || "back");
+    if (behind && railLeft) railLeft.textContent = "\\u25c0 " + (NAMES[nodeAt(pos - 1)] || "back");
     if (count > pos + 2 && railRight) railRight.textContent = (NAMES[nodeAt(pos + 2)] || "forward") + " \\u25b6";
   }
   function setPos(p, animate) {
