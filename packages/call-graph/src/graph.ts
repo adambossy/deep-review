@@ -1,5 +1,6 @@
 import type { DeclRef, LanguageBackend, RelationEntry } from "./backend.js";
 import { hunksForFileRange } from "@deep-review/pr";
+import { detectRenamedDeclarations } from "./rename.js";
 import type {
   CallSite,
   DiffHunk,
@@ -157,24 +158,67 @@ function mergedHunks(
   return hunks;
 }
 
+/**
+ * Renamed before-side keys, remapped to their after-side identity so the
+ * two halves of a rename merge into one node instead of an unrelated
+ * removed/added pair. Returns oldKey → { key: newKey, oldName }.
+ */
+function renameRemap(
+  files: FileDiff[],
+  before: SideGraph | null,
+  after: SideGraph | null,
+): Map<string, { key: string; oldName: string }> {
+  const remap = new Map<string, { key: string; oldName: string }>();
+  if (!before || !after) return remap;
+  for (const pair of detectRenamedDeclarations(files)) {
+    const oldKey = nodeKey(pair.oldName, pair.oldFile);
+    const newKey = nodeKey(pair.newName, pair.newFile);
+    if (
+      before.nodes.has(oldKey) &&
+      !before.nodes.has(newKey) &&
+      after.nodes.has(newKey) &&
+      !after.nodes.has(oldKey)
+    ) {
+      remap.set(oldKey, { key: newKey, oldName: pair.oldName });
+    }
+  }
+  return remap;
+}
+
 /** Merge per-revision walks into one graph keyed by `<file>#<name>`. */
 export function mergeGraphs(
   files: FileDiff[],
   before: SideGraph | null,
   after: SideGraph | null,
 ): { rootId: string; nodes: PathNode[]; edges: PathEdge[] } {
-  const rootId = after?.rootKey ?? before?.rootKey;
+  const remap = renameRemap(files, before, after);
+  const mapKey = (key: string): string => remap.get(key)?.key ?? key;
+  const renamedFrom = new Map(
+    [...remap.values()].map(({ key, oldName }) => [key, oldName]),
+  );
+
+  const beforeNodes = new Map(
+    [...(before?.nodes ?? [])].map(([key, node]) => [mapKey(key), node]),
+  );
+  const beforeEdges: SideGraph["edges"] = new Map(
+    [...(before?.edges.values() ?? [])].map((edge) => {
+      const from = mapKey(edge.from);
+      const to = mapKey(edge.to);
+      return [`${from} ${to}`, { ...edge, from, to }];
+    }),
+  );
+
+  const rootId =
+    after?.rootKey ?? (before?.rootKey ? mapKey(before.rootKey) : null);
   if (!rootId) throw new Error("call graph walk found no root function");
 
-  const nodeIds = new Set([
-    ...(before?.nodes.keys() ?? []),
-    ...(after?.nodes.keys() ?? []),
-  ]);
+  const nodeIds = new Set([...beforeNodes.keys(), ...(after?.nodes.keys() ?? [])]);
   const nodes: PathNode[] = [...nodeIds].map((id) => {
-    const b = before?.nodes.get(id) ?? null;
+    const b = beforeNodes.get(id) ?? null;
     const a = after?.nodes.get(id) ?? null;
     const any = (a ?? b)!;
     const hunks = mergedHunks(files, b?.snapshot ?? null, a?.snapshot ?? null);
+    const oldName = renamedFrom.get(id);
     return {
       id,
       name: any.name,
@@ -184,18 +228,16 @@ export function mergeGraphs(
       after: a?.snapshot ?? null,
       hunks,
       changedInPr: hunks.length > 0 || !(b && a),
+      ...(oldName !== undefined ? { renamedFrom: oldName } : {}),
       expanded: Boolean(b?.expanded || a?.expanded),
       nameLine: any.nameLine,
       nameColumn: any.nameColumn,
     };
   });
 
-  const edgeIds = new Set([
-    ...(before?.edges.keys() ?? []),
-    ...(after?.edges.keys() ?? []),
-  ]);
+  const edgeIds = new Set([...beforeEdges.keys(), ...(after?.edges.keys() ?? [])]);
   const edges: PathEdge[] = [...edgeIds].map((id) => {
-    const b = before?.edges.get(id) ?? null;
+    const b = beforeEdges.get(id) ?? null;
     const a = after?.edges.get(id) ?? null;
     const any = (a ?? b)!;
     return {

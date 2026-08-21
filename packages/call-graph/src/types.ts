@@ -66,6 +66,8 @@ export interface RelatedFunction {
   /** PR diff hunks that overlap this function's body on either side. */
   hunks: DiffHunk[];
   changedInPr: boolean;
+  /** When the PR renamed the function, its name before the PR. */
+  renamedFrom?: string;
 }
 
 export interface TargetFunction {
@@ -74,6 +76,8 @@ export interface TargetFunction {
   after: FunctionSnapshot | null;
   hunks: DiffHunk[];
   changedInPr: boolean;
+  /** When the PR renamed the function, its name before the PR. */
+  renamedFrom?: string;
 }
 
 export interface CallGraphResult {
@@ -99,6 +103,8 @@ export interface PathNode {
   after: FunctionSnapshot | null;
   hunks: DiffHunk[];
   changedInPr: boolean;
+  /** When the PR renamed the function, its name before the PR. */
+  renamedFrom?: string;
   /** False for boundary functions whose callers/callees were not walked. */
   expanded: boolean;
   /**

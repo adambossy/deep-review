@@ -12,6 +12,7 @@ import {
   prepareCheckouts,
 } from "@deep-review/pr";
 import { mergeGraphs, walkCallGraph, type SideGraph } from "./graph.js";
+import { detectRenamedDeclarations, renamedCounterparts } from "./rename.js";
 import { LspBackend, pyrightConfig } from "./lspBackend.js";
 import { TsBackend } from "./tsBackend.js";
 import type {
@@ -93,6 +94,32 @@ async function findAcrossBackends(
   return null;
 }
 
+interface FoundFunction extends FoundBackend {
+  /** The name the function has on this side (differs when the PR renamed it). */
+  name: string;
+}
+
+/**
+ * Locate `name` on one side of the PR, falling back to the name it had (or
+ * gained) across a rename visible in the diff — so the "before" side of a
+ * renamed function is still found and walked.
+ */
+async function findWithRenames(
+  backends: LanguageBackend[],
+  name: string,
+  preferred: ReadonlySet<string>,
+  files: FileDiff[],
+  side: "old" | "new",
+): Promise<FoundFunction | null> {
+  const direct = await findAcrossBackends(backends, name, preferred);
+  if (direct) return { ...direct, name };
+  for (const counterpart of renamedCounterparts(files, name, side)) {
+    const found = await findAcrossBackends(backends, counterpart, preferred);
+    if (found) return { ...found, name: counterpart };
+  }
+  return null;
+}
+
 function hunksForSnapshot(
   files: FileDiff[],
   side: "old" | "new",
@@ -148,6 +175,19 @@ function mergeSides(
   for (const entry of before) upsert("before", entry);
   for (const entry of after) upsert("after", entry);
 
+  // Fold each rename's before-only half into its after-only half.
+  for (const pair of detectRenamedDeclarations(files)) {
+    const oldEntry = byKey.get(`${pair.oldFile} ${pair.oldName}`);
+    const newEntry = byKey.get(`${pair.newFile} ${pair.newName}`);
+    if (!oldEntry?.before || oldEntry.after || !newEntry?.after || newEntry.before) {
+      continue;
+    }
+    newEntry.before = oldEntry.before;
+    newEntry.presence = "both";
+    newEntry.renamedFrom = pair.oldName;
+    byKey.delete(`${pair.oldFile} ${pair.oldName}`);
+  }
+
   for (const fn of byKey.values()) {
     fn.hunks = mergeHunks(
       hunksForSnapshot(files, "old", fn.before),
@@ -189,17 +229,24 @@ export async function analyzePrCallGraph(
   try {
     const sideFor = async (
       dir: string,
+      side: "old" | "new",
     ): Promise<{ backend: LanguageBackend; relations: FunctionRelations } | null> => {
       const backends = createBackends(dir, preferred);
       allBackends.push(...backends);
-      const found = await findAcrossBackends(backends, options.functionName, preferred);
+      const found = await findWithRenames(
+        backends,
+        options.functionName,
+        preferred,
+        files,
+        side,
+      );
       if (!found) return null;
       const relations = await found.backend.relationsAt(found.decl);
       return relations ? { backend: found.backend, relations } : null;
     };
 
-    const baseSide = await sideFor(baseDir);
-    const headSide = await sideFor(headDir);
+    const baseSide = await sideFor(baseDir, "old");
+    const headSide = await sideFor(headDir, "new");
     const before = baseSide?.relations ?? null;
     const after = headSide?.relations ?? null;
     if (!before && !after) {
@@ -232,6 +279,9 @@ export async function analyzePrCallGraph(
       head: { ref: `pull/${info.number}/head`, sha: info.headSha },
       target: {
         name: options.functionName,
+        ...(before && after && before.targetName !== after.targetName
+          ? { renamedFrom: before.targetName }
+          : {}),
         before: before?.target ?? null,
         after: after?.target ?? null,
         hunks: mergeHunks(
@@ -279,7 +329,13 @@ export async function analyzePrCallPath(
     ): Promise<{ backend: LanguageBackend; graph: SideGraph } | null> => {
       const backends = createBackends(dir, preferred);
       allBackends.push(...backends);
-      const found = await findAcrossBackends(backends, options.functionName, preferred);
+      const found = await findWithRenames(
+        backends,
+        options.functionName,
+        preferred,
+        files,
+        side,
+      );
       if (!found) return null;
       const graph = await walkCallGraph(found.backend, found.decl, files, side, limits);
       return { backend: found.backend, graph };

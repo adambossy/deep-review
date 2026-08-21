@@ -302,8 +302,11 @@ function renderSides(
 // Related functions and groups
 
 export function presenceBadge(
-  fn: Pick<RelatedFunction, "presence" | "changedInPr">,
+  fn: Pick<RelatedFunction, "presence" | "changedInPr" | "renamedFrom">,
 ): string {
+  if (fn.renamedFrom) {
+    return `<span class="badge renamed">renamed from ${esc(fn.renamedFrom)}</span>`;
+  }
   if (fn.presence === "both") {
     return fn.changedInPr
       ? '<span class="badge changed">changed</span>'
@@ -405,6 +408,7 @@ export const CSS = `
            background: var(--panel-2); color: var(--ink-soft); border: 1px solid var(--line-c);
            font-variant-numeric: tabular-nums; }
   .badge.changed { background: rgba(230, 160, 0, 0.14); color: var(--tok-num); border-color: transparent; }
+  .badge.renamed { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
   .badge.added { background: var(--add-bg); color: var(--add-edge); border-color: transparent; }
   .badge.removed { background: var(--del-bg); color: var(--del-edge); border-color: transparent; }
   .side { margin: 0.4rem 0; padding: 0.4rem 0.6rem; border-left: 3px solid var(--line-c); }
