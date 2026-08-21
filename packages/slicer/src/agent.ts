@@ -1,4 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
+import { openai } from "@ai-sdk/openai";
+import { createXai } from "@ai-sdk/xai";
 import { isStepCount, Output, ToolLoopAgent } from "ai";
 import type { DiffIndex } from "./annotate.js";
 import { buildPrompt, buildRepairPrompt } from "./prompt.js";
@@ -10,6 +12,43 @@ import { validateSlices } from "./validate.js";
 export const DEFAULT_MODEL = "claude-opus-5";
 const DEFAULT_MAX_STEPS = 40;
 const DEFAULT_REPAIRS = 2;
+
+export type ReasoningEffort = "medium" | "high" | "xhigh";
+
+/**
+ * Picks the AI SDK provider by model id prefix and, where the provider
+ * supports it, sets its reasoning-effort knob. Each provider names this
+ * option differently (`effort` for Anthropic, `reasoningEffort` for OpenAI
+ * and xAI), so the mapping lives here rather than at call sites.
+ */
+function resolveModel(modelId: string, effort?: ReasoningEffort) {
+  if (modelId.startsWith("gpt-")) {
+    return {
+      model: openai.responses(modelId),
+      providerOptions: {
+        openai: {
+          // The slicer's schema marks fields like `target` as optional, which
+          // the strict structured-output mode OpenAI otherwise defaults to
+          // rejects (it requires every property to be listed in `required`).
+          strictJsonSchema: false,
+          ...(effort ? { reasoningEffort: effort } : {}),
+        },
+      },
+    };
+  }
+  if (modelId.startsWith("grok-")) {
+    const apiKey = process.env.XAI_API_KEY ?? process.env.GROK_API_KEY;
+    const xai = createXai(apiKey ? { apiKey } : {});
+    return {
+      model: xai(modelId),
+      providerOptions: effort ? { xai: { reasoningEffort: effort } } : undefined,
+    };
+  }
+  return {
+    model: anthropic(modelId),
+    providerOptions: effort ? { anthropic: { effort } } : undefined,
+  };
+}
 
 /**
  * Rough prompt ceiling, in tokens, leaving room for tool results and the
@@ -57,6 +96,8 @@ Set \`target\` when one function is clearly what a slice is about — it becomes
 
 export interface SliceAgentOptions {
   model?: string;
+  /** Reasoning effort, where the resolved provider supports it. */
+  effort?: ReasoningEffort;
   maxSteps?: number;
   /** How many times to hand validation errors back for repair. */
   maxRepairs?: number;
@@ -71,12 +112,14 @@ export async function runSliceAgent(
   context: PrContext,
   index: DiffIndex,
   options: SliceAgentOptions = {},
-): Promise<{ overview: string; slices: Slice[]; model: string }> {
+): Promise<{ overview: string; slices: Slice[]; model: string; llmMs: number }> {
   const modelId = options.model ?? process.env.DEEP_REVIEW_MODEL ?? DEFAULT_MODEL;
   const report = options.onProgress ?? (() => {});
+  const { model, providerOptions } = resolveModel(modelId, options.effort);
+  let llmMs = 0;
 
   const agent = new ToolLoopAgent({
-    model: anthropic(modelId),
+    model,
     instructions: INSTRUCTIONS,
     tools: createReadTools({
       headDir: context.headDir,
@@ -84,7 +127,17 @@ export async function runSliceAgent(
     }),
     stopWhen: isStepCount(options.maxSteps ?? DEFAULT_MAX_STEPS),
     output: Output.object({ schema: agentOutputSchema }),
+    ...(providerOptions ? { providerOptions } : {}),
   });
+
+  const timedGenerate: typeof agent.generate = async (...args) => {
+    const start = performance.now();
+    try {
+      return await agent.generate(...args);
+    } finally {
+      llmMs += performance.now() - start;
+    }
+  };
 
   const prompt = buildPrompt(context, index);
   const estimatedTokens = Math.ceil(prompt.length / 4);
@@ -98,7 +151,7 @@ export async function runSliceAgent(
   }
   report(`Prompt is ~${estimatedTokens.toLocaleString()} tokens.`);
 
-  let result = await agent.generate({ prompt });
+  let result = await timedGenerate({ prompt });
   let output = result.output;
   report(`Agent proposed ${output.slices.length} slices.`);
 
@@ -106,7 +159,7 @@ export async function runSliceAgent(
   for (let attempt = 0; attempt <= maxRepairs; attempt++) {
     const validation = validateSlices(output, index);
     if (validation.ok) {
-      return { overview: output.overview, slices: validation.slices, model: modelId };
+      return { overview: output.overview, slices: validation.slices, model: modelId, llmMs };
     }
     if (attempt === maxRepairs) {
       throw new Error(
@@ -119,7 +172,7 @@ export async function runSliceAgent(
     report(
       `Slices did not partition the diff (${validation.errors.length} problems); asking for a repair.`,
     );
-    result = await agent.generate({
+    result = await timedGenerate({
       prompt: `${prompt}\n\n---\n\n${buildRepairPrompt(output, validation.errors)}`,
     });
     output = result.output;

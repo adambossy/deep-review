@@ -19,6 +19,8 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.39",
+    "@ai-sdk/openai": "^4.0.45",
+    "@ai-sdk/xai": "^4.0.42",
     "@deep-review/pr": "workspace:*",
     "ai": "^7.0.69",
     "zod": "^3.25.76"

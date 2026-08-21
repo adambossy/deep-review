@@ -1,5 +1,6 @@
 export {
   slicePr,
+  prepare,
   buildSlicePrompt,
   loadRenderEntry,
   writeSliceReport,
@@ -8,7 +9,12 @@ export {
 } from "./slice.js";
 export { renderSliceReportsHtml, type RenderEntry } from "./html.js";
 export { buildPrompt, buildRepairPrompt } from "./prompt.js";
-export { runSliceAgent, DEFAULT_MODEL, type SliceAgentOptions } from "./agent.js";
+export {
+  runSliceAgent,
+  DEFAULT_MODEL,
+  type SliceAgentOptions,
+  type ReasoningEffort,
+} from "./agent.js";
 export {
   indexDiff,
   renderAnnotatedDiff,
