@@ -292,6 +292,18 @@ function initExplorer(root, NAMES, onNavigate) {
       });
     });
   }
+  /* Every action that lands the viewport on a particular node — walking,
+     or just paging the rail to reveal one already on the track — reports
+     that node's id here. The history list decides for itself whether
+     that's new ground or a spot it's already visited. */
+  function report(id) {
+    if (!onNavigate) return;
+    onNavigate({
+      id: id,
+      ids: Array.prototype.map.call(track.children, function (c) { return c.dataset.node; }),
+      pos: pos,
+    });
+  }
   root.addEventListener("click", function (e) {
     var link = e.target.closest(".csite, .caller-row");
     if (link && link.dataset.target) {
@@ -303,18 +315,19 @@ function initExplorer(root, NAMES, onNavigate) {
         : walkDown(link.dataset.target, i);
       if (dest) {
         linkSymbols(link, dest);
-        if (onNavigate) {
-          onNavigate({
-            id: link.dataset.target,
-            ids: Array.prototype.map.call(track.children, function (c) { return c.dataset.node; }),
-            pos: pos,
-          });
-        }
+        report(link.dataset.target);
       }
       return;
     }
-    if (e.target.closest(".rail-left")) setPos(Math.max(0, pos - 1), true);
-    else if (e.target.closest(".rail-right")) setPos(Math.min(track.children.length - 2, pos + 1), true);
+    if (e.target.closest(".rail-left")) {
+      var backTo = Math.max(0, pos - 1);
+      setPos(backTo, true);
+      report(nodeAt(backTo));
+    } else if (e.target.closest(".rail-right")) {
+      var fwdTo = Math.min(track.children.length - 2, pos + 1);
+      setPos(fwdTo, true);
+      report(nodeAt(fwdTo + 1));
+    }
   });
   /* External restore point for a history entry: rebuild the track from a
      saved list of node ids and re-settle the viewport at the saved slot. */

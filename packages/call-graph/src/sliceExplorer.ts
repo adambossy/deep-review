@@ -532,6 +532,11 @@ const HISTORY_JS = `
     d.textContent = s;
     return d.innerHTML;
   }
+  function sameIds(a, b) {
+    if (a.length !== b.length) return false;
+    for (var m = 0; m < a.length; m++) if (a[m] !== b[m]) return false;
+    return true;
+  }
   function render(sliceIndex) {
     var panel = document.querySelector('.history-panel[data-slice="' + sliceIndex + '"]');
     if (!panel) return;
@@ -546,10 +551,24 @@ const HISTORY_JS = `
   views.forEach(function (view) {
     var sliceIndex = Number(view.dataset.slice);
     var names = JSON.parse(view.dataset.names);
-    trails[sliceIndex] = [{ ids: ["__slice__"], pos: 0, label: TITLES[sliceIndex] }];
+    trails[sliceIndex] = [{ id: "__slice__", ids: ["__slice__"], pos: 0, label: TITLES[sliceIndex] }];
     render(sliceIndex);
     initExplorer(view, names, function (step) {
-      trails[sliceIndex].push({ ids: step.ids, pos: step.pos, label: names[step.id] || step.id });
+      var trail = trails[sliceIndex];
+      // Landing on a state the trail already recorded — same track
+      // composition AND the same slot in view, whether reached by tapping
+      // a reference back to it or just paging the rail — is not a new
+      // step. Only the id matching isn't enough: a fresh path can land on
+      // a node the trail visited earlier in a completely different
+      // arrangement, and that deserves its own entry, not a merge into the
+      // old one.
+      var foundIdx = -1;
+      for (var k = trail.length - 1; k >= 0; k--) {
+        if (trail[k].pos === step.pos && sameIds(trail[k].ids, step.ids)) { foundIdx = k; break; }
+      }
+      trails[sliceIndex] = foundIdx >= 0
+        ? trail.slice(0, foundIdx + 1)
+        : trail.concat([{ id: step.id, ids: step.ids, pos: step.pos, label: names[step.id] || step.id }]);
       render(sliceIndex);
     });
   });
