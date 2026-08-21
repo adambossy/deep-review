@@ -20,6 +20,14 @@ export interface FunctionRelations {
   callees: RelationEntry[];
 }
 
+/** The test block (`describe`/`it` chain or test function) around a line. */
+export interface TestBlock {
+  /** `describe › it` titles, or the enclosing function's name. */
+  breadcrumb: string | null;
+  startLine: number;
+  endLine: number;
+}
+
 /**
  * A language service the analysis can drive: the in-process TypeScript
  * service, or any LSP server that supports call hierarchy.
@@ -34,6 +42,12 @@ export interface LanguageBackend {
   snapshotAt(decl: DeclRef): Promise<FunctionSnapshot | null>;
   /** Full line content + declared symbols of a repo-relative file. */
   fileInfo(relativePath: string): Promise<{ lines: string[]; symbols: SymbolRange[] } | null>;
+  /**
+   * The test block enclosing a 1-based line of a repo-relative test file.
+   * Backends without an AST view of test harnesses may omit this; the
+   * analysis then falls back to the caller function's own extent and name.
+   */
+  testBlockAt?(relativePath: string, line: number): Promise<TestBlock | null>;
   dispose(): void;
 }
 

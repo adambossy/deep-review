@@ -107,7 +107,33 @@ const result: CallPathResult = {
       ),
       symbols: [{ name: "leaf", kind: "function", startLine: 20, endLine: 21 }],
     },
+    {
+      side: "after",
+      path: "mid.test.ts",
+      lines: [
+        'import { mid } from "./mid.js";',
+        'describe("mid", () => {',
+        '  it("adds one", () => {',
+        "    expect(mid(1)).toBe(2);",
+        "  });",
+        "});",
+      ],
+      symbols: [],
+    },
   ],
+  tests: {
+    "mid.ts#mid": [
+      {
+        file: "mid.test.ts",
+        breadcrumb: "mid › adds one",
+        startLine: 3,
+        endLine: 5,
+        callSites: [
+          { line: 4, snippet: "expect(mid(1)).toBe(2);", startColumn: 11, endColumn: 14 },
+        ],
+      },
+    ],
+  },
 };
 
 describe("renderCallPathExplorerHtml", () => {
@@ -189,5 +215,34 @@ describe("renderCallPathExplorerHtml", () => {
   it("marks the name on unchanged boundary panels, even below a JSDoc block", () => {
     const topPanel = html.slice(html.lastIndexOf('data-node="top.ts#top"'));
     expect(topPanel).toContain('self-sym">top</span>');
+  });
+
+  it("renders a tested-by row pointing at the test panel", () => {
+    const midPanel = html.slice(html.indexOf('data-node="mid.ts#mid"'));
+    expect(midPanel).toContain('test-row" data-target="test:mid.ts#mid@mid.test.ts@3"');
+    expect(midPanel).toContain("tested by");
+    expect(midPanel).toContain("mid › adds one");
+  });
+
+  it("renders the test panel with the call marked as csite and self-sym", () => {
+    const testPanel = html.slice(html.indexOf('data-node="test:mid.ts#mid@mid.test.ts@3"'));
+    // The call to mid inside the test walks back down to mid's panel and is
+    // the destination the navigation tap highlights.
+    expect(testPanel).toContain('csite self-sym" data-target="mid.ts#mid"');
+    expect(testPanel).toContain('<span class="badge test">test</span>');
+    expect(testPanel).toContain("mid.test.ts:3–5");
+  });
+
+  it("names the test panel for the rails", () => {
+    const names = html.slice(html.indexOf('id="node-names"'));
+    expect(names).toContain('"test:mid.ts#mid@mid.test.ts@3":"mid › adds one"');
+  });
+
+  it("keeps functions without tests free of tested-by rows", () => {
+    const leafPanel = html.slice(
+      html.lastIndexOf('data-node="leaf.ts#leaf"'),
+      html.lastIndexOf('data-node="top.ts#top"'),
+    );
+    expect(leafPanel).not.toContain("tested by");
   });
 });

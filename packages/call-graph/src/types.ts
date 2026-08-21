@@ -117,6 +117,19 @@ export interface PathEdge {
   after: CallSite[];
 }
 
+/** One test block that calls a graph node directly, found on the head side. */
+export interface TestReference {
+  /** Test file, repo-relative in the head revision. */
+  file: string;
+  /** `describe › it` titles, or the enclosing test function's name. */
+  breadcrumb: string | null;
+  /** Extent of the enclosing test block, 1-based. */
+  startLine: number;
+  endLine: number;
+  /** Calls to the node inside this block, in test-file coordinates. */
+  callSites: CallSite[];
+}
+
 /** Result of recursively walking the call graph out from one function. */
 export interface CallPathResult {
   prUrl: string;
@@ -128,4 +141,6 @@ export interface CallPathResult {
   nodes: PathNode[];
   edges: PathEdge[];
   files: EmbeddedFile[];
+  /** Tests that call each node directly, keyed by node id. Head side only. */
+  tests?: Record<string, TestReference[]>;
 }

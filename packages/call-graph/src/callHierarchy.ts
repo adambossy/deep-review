@@ -4,6 +4,7 @@ import {
   extractSource,
   type DeclRef,
   type FunctionRelations,
+  type TestBlock,
 } from "./backend.js";
 import type { CallSite, FunctionSnapshot, SymbolRange } from "./types.js";
 
@@ -259,6 +260,70 @@ function collectSymbols(sourceFile: ts.SourceFile): SymbolRange[] {
   };
   visit(sourceFile);
   return symbols;
+}
+
+/** Harness calls whose string-literal first argument names a test block. */
+const TEST_BLOCK_CALLEES = new Set(["describe", "it", "test", "suite", "context"]);
+
+/** The harness identifier under `it.skip`, `describe.each(...)("…")`, etc. */
+function harnessName(expr: ts.Expression): string | null {
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (ts.isPropertyAccessExpression(expr)) return harnessName(expr.expression);
+  if (ts.isCallExpression(expr)) return harnessName(expr.expression);
+  return null;
+}
+
+/**
+ * The test block enclosing a 1-based line: the chain of enclosing
+ * `describe`/`it`/`test` calls, titles joined outermost → innermost, with the
+ * innermost call's extent. A line outside any harness call falls back to its
+ * innermost named declaration.
+ */
+export function testBlockAt(
+  ps: ProjectService,
+  relativeFile: string,
+  line: number,
+): TestBlock | null {
+  const sourceFile = ps.program.getSourceFile(path.join(ps.rootDir, relativeFile));
+  if (!sourceFile) return null;
+  const lineStarts = sourceFile.getLineStarts();
+  if (line < 1 || line > lineStarts.length) return null;
+  const pos = lineStarts[line - 1]!;
+
+  const titles: string[] = [];
+  let innermost: ts.CallExpression | null = null;
+  const visit = (node: ts.Node): void => {
+    if (pos < node.getFullStart() || pos >= node.getEnd()) return;
+    if (ts.isCallExpression(node)) {
+      const callee = harnessName(node.expression);
+      if (callee && TEST_BLOCK_CALLEES.has(callee)) {
+        const arg = node.arguments[0];
+        titles.push(arg && ts.isStringLiteralLike(arg) ? arg.text : callee);
+        innermost = node;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  if (!innermost) {
+    const enclosing = collectSymbols(sourceFile)
+      .filter((s) => s.startLine <= line && s.endLine >= line)
+      .sort((a, b) => a.endLine - a.startLine - (b.endLine - b.startLine))[0];
+    return enclosing
+      ? {
+          breadcrumb: enclosing.name,
+          startLine: enclosing.startLine,
+          endLine: enclosing.endLine,
+        }
+      : null;
+  }
+  const call: ts.CallExpression = innermost;
+  return {
+    breadcrumb: titles.join(" › "),
+    startLine: sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line + 1,
+    endLine: sourceFile.getLineAndCharacterOfPosition(call.getEnd()).line + 1,
+  };
 }
 
 /** Full line content + declared symbols of one repo-relative file. */

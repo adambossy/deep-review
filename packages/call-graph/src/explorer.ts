@@ -11,7 +11,13 @@ import {
   type Decorations,
   type FileIndex,
 } from "./html.js";
-import type { CallPathResult, CallSite, DiffHunk, PathNode } from "./types.js";
+import type {
+  CallPathResult,
+  CallSite,
+  DiffHunk,
+  PathNode,
+  TestReference,
+} from "./types.js";
 
 /** New-file line numbers added by these hunks. */
 function addedLines(hunks: DiffHunk[]): Set<number> {
@@ -33,6 +39,84 @@ function sitesFor(side: "before" | "after", edge: { before: CallSite[]; after: C
 
 /** Lines of surrounding file context shown around a function, like `diff -U10`. */
 const PANEL_CONTEXT = 10;
+
+/** Stable panel id for one test block opened from one node's tested-by row. */
+function testPanelId(nodeId: string, ref: TestReference): string {
+  return `test:${nodeId}@${ref.file}@${ref.startLine}`;
+}
+
+function testLabel(ref: TestReference): string {
+  return ref.breadcrumb ?? ref.file.slice(ref.file.lastIndexOf("/") + 1);
+}
+
+/**
+ * A test block's panel: the block padded with file context, each call to the
+ * function under test marked. The call marks double as the destination of
+ * the navigation tap (self-sym) and as the way back down (csite pointing at
+ * the function's node).
+ */
+export function renderTestPanel(
+  node: PathNode,
+  ref: TestReference,
+  index: FileIndex,
+): string {
+  const entry = index.get(`after:${ref.file}`);
+  const segments = entry
+    ? [
+        {
+          startLine: Math.max(1, ref.startLine - PANEL_CONTEXT),
+          lines: entry.lines.slice(
+            Math.max(1, ref.startLine - PANEL_CONTEXT) - 1,
+            Math.min(entry.lines.length, ref.endLine + PANEL_CONTEXT),
+          ),
+        },
+      ]
+    : // Snippets have their leading whitespace trimmed, so column-accurate
+      // marks can't be laid over them — plain lines only.
+      ref.callSites.map((site) => ({ startLine: site.line, lines: [site.snippet] }));
+  const decorations: Decorations = new Map();
+  if (entry) {
+    for (const site of ref.callSites) {
+      if (site.startColumn === undefined || site.endColumn === undefined) continue;
+      const existing = decorations.get(site.line) ?? {};
+      decorations.set(site.line, {
+        ...existing,
+        marks: [
+          ...(existing.marks ?? []),
+          {
+            start: site.startColumn,
+            end: site.endColumn,
+            cls: "csite self-sym",
+            attrs: `data-target="${esc(node.id)}" role="button" tabindex="0"`,
+          },
+        ],
+      });
+    }
+  }
+  return `<article class="panel test-panel" data-node="${esc(testPanelId(node.id, ref))}">
+    <h3><code class="fn-name">${esc(testLabel(ref))}</code> <span class="badge test">test</span></h3>
+    <div class="side-loc"><code>${esc(ref.file)}:${ref.startLine}–${ref.endLine}</code> <span class="badge">after</span></div>
+    ${renderCodeBlock(segments, { entry, gaps: true, lang: languageOf(ref.file), decorations })}
+  </article>`;
+}
+
+/** Every test panel a result needs, with the label the rails should show. */
+export function testPanels(
+  result: CallPathResult,
+  index: FileIndex,
+): Array<{ id: string; label: string; html: string }> {
+  const panels: Array<{ id: string; label: string; html: string }> = [];
+  for (const node of result.nodes) {
+    for (const ref of result.tests?.[node.id] ?? []) {
+      panels.push({
+        id: testPanelId(node.id, ref),
+        label: testLabel(ref),
+        html: renderTestPanel(node, ref, index),
+      });
+    }
+  }
+  return panels;
+}
 
 export function renderPanel(node: PathNode, result: CallPathResult, index: FileIndex): string {
   const side: "before" | "after" = node.after ? "after" : "before";
@@ -124,12 +208,23 @@ export function renderPanel(node: PathNode, result: CallPathResult, index: FileI
     })
     .join("");
 
+  // Tests that call this function directly become tappable "tested by" rows.
+  const testRows = (result.tests?.[node.id] ?? [])
+    .map(
+      (ref) =>
+        `<button class="test-row" data-target="${esc(testPanelId(node.id, ref))}"><span class="badge test">test</span> <code class="fn-name">${esc(
+          testLabel(ref),
+        )}</code> <span class="loc">${esc(ref.file)}:${ref.startLine}</span></button>`,
+    )
+    .join("");
+
   return `<article class="panel" data-node="${esc(node.id)}">
     <h3><code class="fn-name">${esc(node.name)}</code> ${presenceBadge(node)}</h3>
     <div class="side-loc"><code>${esc(snapshot.file)}:${snapshot.startLine}–${snapshot.endLine}</code> <span class="badge">${side}</span>${
       node.expanded ? "" : ' <span class="badge">boundary</span>'
     }</div>
     ${callerRows ? `<div class="call-sites-label">called by — tap to walk up</div><div class="caller-rows">${callerRows}</div>` : ""}
+    ${testRows ? `<div class="call-sites-label">tested by — tap to open</div><div class="caller-rows">${testRows}</div>` : ""}
     ${node.hunks.length ? `<details class="fn"><summary>diff (${node.hunks.length} hunk${node.hunks.length > 1 ? "s" : ""})</summary><div class="fn-body">${renderHunksBlock(node.hunks, entry, languageOf(node.file))}</div></details>` : ""}
     ${renderCodeBlock(segments, { entry, gaps: true, lang: languageOf(snapshot.file), decorations })}
   </article>`;
@@ -156,13 +251,14 @@ export const EXPLORER_CSS = `
   }
   .panel > h3 { margin: 0 0 0.3rem; }
   .caller-rows { display: flex; flex-direction: column; gap: 2px; margin: 0.2rem 0 0.5rem; }
-  .caller-row {
+  .caller-row, .test-row {
     text-align: left; padding: 0.25rem 0.5rem; cursor: pointer;
     border: 1px solid var(--line-c); border-radius: 6px;
     background: none; color: inherit; font: inherit;
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
-  .caller-row:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .caller-row:hover, .test-row:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .badge.test { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
   .rail {
     position: absolute; top: 0; bottom: 0; width: var(--rail); z-index: 2;
     display: none; align-items: center; justify-content: center;
@@ -257,7 +353,7 @@ function initExplorer(root, NAMES) {
     var old = root.querySelectorAll(".sym-link");
     for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
     var clicked;
-    if (link.classList.contains("caller-row")) {
+    if (link.classList.contains("caller-row") || link.classList.contains("test-row")) {
       clicked = [link.querySelector(".fn-name") || link];
     } else {
       var line = link.closest(".line") || link.parentNode;
@@ -273,12 +369,13 @@ function initExplorer(root, NAMES) {
     });
   }
   root.addEventListener("click", function (e) {
-    var link = e.target.closest(".csite, .caller-row");
+    var link = e.target.closest(".csite, .caller-row, .test-row");
     if (link && link.dataset.target) {
       var panel = link.closest(".panel");
       var i = Array.prototype.indexOf.call(track.children, panel);
       if (i < 0) return;
-      var dest = link.classList.contains("caller-row")
+      /* Tests are callers, so a tested-by row walks up like a called-by row. */
+      var dest = link.classList.contains("caller-row") || link.classList.contains("test-row")
         ? walkUp(link.dataset.target, i)
         : walkDown(link.dataset.target, i);
       if (dest) linkSymbols(link, dest);
@@ -296,9 +393,16 @@ export function renderCallPathExplorerHtml(result: CallPathResult): string {
   const root = result.nodes.find((n) => n.id === result.rootId);
   if (!root) throw new Error("root node missing from call graph");
 
-  const panels = result.nodes.map((n) => renderPanel(n, result, index)).join("\n");
+  const tests = testPanels(result, index);
+  const panels = [
+    ...result.nodes.map((n) => renderPanel(n, result, index)),
+    ...tests.map((p) => p.html),
+  ].join("\n");
   const rootPanel = renderPanel(root, result, index);
-  const names = Object.fromEntries(result.nodes.map((n) => [n.id, n.name]));
+  const names = Object.fromEntries([
+    ...result.nodes.map((n) => [n.id, n.name]),
+    ...tests.map((p) => [p.id, p.label]),
+  ]);
 
   return `<!doctype html>
 <html lang="en">

@@ -2,6 +2,7 @@ import {
   EXPLORER_CSS,
   EXPLORER_NAV_JS,
   renderPanel,
+  testPanels,
 } from "./explorer.js";
 import {
   escapeHtml as esc,
@@ -504,12 +505,17 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   const views = input.slices
     .map((slice, i) => {
       const graph = slice.graph;
+      const tests = graph ? testPanels(graph, index) : [];
       const panels = graph
-        ? graph.nodes.map((n) => renderPanel(n, graph, index)).join("\n")
+        ? [
+            ...graph.nodes.map((n) => renderPanel(n, graph, index)),
+            ...tests.map((p) => p.html),
+          ].join("\n")
         : "";
-      const names = Object.fromEntries(
-        (graph?.nodes ?? []).map((n) => [n.id, n.name]),
-      );
+      const names = Object.fromEntries([
+        ...(graph?.nodes ?? []).map((n) => [n.id, n.name]),
+        ...tests.map((p) => [p.id, p.label]),
+      ]);
       // Entity-escaped rather than raw: the browser decodes the attribute
       // before JSON.parse sees it, so a name containing a quote or ampersand
       // survives intact.

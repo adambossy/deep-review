@@ -2,6 +2,7 @@ import type {
   DeclRef,
   FunctionRelations,
   LanguageBackend,
+  TestBlock,
 } from "./backend.js";
 import {
   createProjectService,
@@ -10,6 +11,7 @@ import {
   getRelationsAt,
   lineColumnAt,
   snapshotAt,
+  testBlockAt,
   type ProjectService,
 } from "./callHierarchy.js";
 import type { FunctionSnapshot, SymbolRange } from "./types.js";
@@ -58,6 +60,10 @@ export class TsBackend implements LanguageBackend {
     relativePath: string,
   ): Promise<{ lines: string[]; symbols: SymbolRange[] } | null> {
     return fileSnapshot(this.service(), relativePath);
+  }
+
+  async testBlockAt(relativePath: string, line: number): Promise<TestBlock | null> {
+    return testBlockAt(this.service(), relativePath, line);
   }
 
   dispose(): void {

@@ -1,5 +1,6 @@
 import type { DeclRef, LanguageBackend, RelationEntry } from "./backend.js";
 import { hunksForFileRange } from "@deep-review/pr";
+import { isTestFile } from "./testFiles.js";
 import type {
   CallSite,
   DiffHunk,
@@ -23,6 +24,13 @@ export interface SideGraph {
   rootKey: string | null;
   nodes: Map<string, SideGraphNode>;
   edges: Map<string, { from: string; to: string; callSites: CallSite[] }>;
+  /**
+   * Callers that live in test files, keyed by the callee's node key. Kept
+   * out of the graph — they read as "tested by", not as part of the changed
+   * code path — and only collected for expanded nodes, whose incoming calls
+   * the walk fetches anyway.
+   */
+  testCallers: Map<string, RelationEntry[]>;
 }
 
 export interface WalkLimits {
@@ -61,6 +69,7 @@ export async function walkCallGraph(
   const maxNodes = limits.maxNodes ?? 80;
   const nodes: SideGraph["nodes"] = new Map();
   const edges: SideGraph["edges"] = new Map();
+  const testCallers: SideGraph["testCallers"] = new Map();
 
   const queue: Array<{ decl: DeclRef; depth: number }> = [{ decl: root, depth: 0 }];
   let rootKey: string | null = null;
@@ -114,6 +123,12 @@ export async function walkCallGraph(
     };
 
     for (const caller of relations.callers) {
+      if (isTestFile(caller.snapshot.file)) {
+        const list = testCallers.get(myKey) ?? [];
+        list.push(caller);
+        testCallers.set(myKey, list);
+        continue;
+      }
       await visitNeighbor(caller, {
         from: nodeKey(caller.name, caller.snapshot.file),
         to: myKey,
@@ -127,7 +142,7 @@ export async function walkCallGraph(
     }
   }
 
-  return { rootKey, nodes, edges };
+  return { rootKey, nodes, edges, testCallers };
 }
 
 function mergedHunks(

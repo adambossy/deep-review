@@ -2,6 +2,7 @@ import type {
   DeclRef,
   FunctionRelations,
   LanguageBackend,
+  RelationEntry,
 } from "./backend.js";
 import {
   changedPaths,
@@ -22,6 +23,7 @@ import type {
   FileDiff,
   FunctionSnapshot,
   RelatedFunction,
+  TestReference,
 } from "./types.js";
 
 export interface AnalyzeOptions {
@@ -159,6 +161,47 @@ function mergeSides(
   return [...byKey.values()].sort(
     (a, b) => a.file.localeCompare(b.file) || a.name.localeCompare(b.name),
   );
+}
+
+/** Tests listed per node before the rest are dropped. */
+const MAX_TESTS_PER_NODE = 8;
+
+/**
+ * Turn raw test-file callers into per-node test references: each caller's
+ * call sites grouped by their enclosing test block, deduped across callers,
+ * ordered by file and position.
+ */
+async function buildTestIndex(
+  backend: LanguageBackend,
+  testCallers: ReadonlyMap<string, RelationEntry[]>,
+): Promise<Record<string, TestReference[]>> {
+  const tests: Record<string, TestReference[]> = {};
+  for (const [nodeId, entries] of testCallers) {
+    const blocks = new Map<string, TestReference>();
+    for (const entry of entries) {
+      for (const site of entry.snapshot.callSites) {
+        const block = (await backend
+          .testBlockAt?.(entry.snapshot.file, site.line)
+          .catch(() => null)) ?? {
+          breadcrumb: entry.name,
+          startLine: entry.snapshot.startLine,
+          endLine: entry.snapshot.endLine,
+        };
+        const key = `${entry.snapshot.file}@${block.startLine}`;
+        let ref = blocks.get(key);
+        if (!ref) {
+          ref = { file: entry.snapshot.file, ...block, callSites: [] };
+          blocks.set(key, ref);
+        }
+        if (!ref.callSites.some((s) => s.line === site.line)) ref.callSites.push(site);
+      }
+    }
+    const refs = [...blocks.values()].sort(
+      (a, b) => a.file.localeCompare(b.file) || a.startLine - b.startLine,
+    );
+    if (refs.length) tests[nodeId] = refs.slice(0, MAX_TESTS_PER_NODE);
+  }
+  return tests;
 }
 
 async function embedFiles(
@@ -299,7 +342,13 @@ export async function analyzePrCallPath(
       headSide?.graph ?? null,
     );
 
-    // Embed every node's file so panels can expand context anywhere.
+    // Tests that call each node directly, as the head revision has them.
+    const tests = headSide
+      ? await buildTestIndex(headSide.backend, headSide.graph.testCallers)
+      : {};
+
+    // Embed every node's file so panels can expand context anywhere, and
+    // every referenced test file so test panels can render at all.
     const embedded: EmbeddedFile[] = [];
     for (const [side, data] of [
       ["before", baseSide],
@@ -314,6 +363,15 @@ export async function analyzePrCallPath(
         )),
       );
     }
+    if (headSide) {
+      embedded.push(
+        ...(await embedFiles(
+          headSide.backend,
+          "after",
+          Object.values(tests).flatMap((refs) => refs.map((r) => r.file)),
+        )),
+      );
+    }
 
     return {
       prUrl: options.prUrl,
@@ -325,6 +383,7 @@ export async function analyzePrCallPath(
       nodes,
       edges,
       files: embedded,
+      tests,
     };
   } finally {
     for (const backend of allBackends) backend.dispose();

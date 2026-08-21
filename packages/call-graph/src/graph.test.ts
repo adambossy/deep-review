@@ -23,6 +23,21 @@ writeFileSync(
   path.join(dir, "top.ts"),
   'import { mid } from "./mid.js";\nexport function top() {\n  return mid(1);\n}\n',
 );
+// A test that calls target directly: diverted to testCallers, not the graph.
+writeFileSync(
+  path.join(dir, "target.test.ts"),
+  [
+    'import { target } from "./target.js";',
+    "declare function describe(name: string, fn: () => void): void;",
+    "declare function it(name: string, fn: () => void): void;",
+    'describe("target", () => {',
+    '  it("doubles after incrementing", () => {',
+    '    if (target(2) !== 6) throw new Error("nope");',
+    "  });",
+    "});",
+    "",
+  ].join("\n"),
+);
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const changedFile = (p: string): FileDiff => ({
@@ -79,11 +94,37 @@ describe("walkCallGraph", async () => {
     expect(edge.callSites[0]!.startColumn).toBeTypeOf("number");
   });
 
+  it("diverts callers in test files to testCallers, keeping them off the graph", () => {
+    expect(graph.nodes.has("target.test.ts#it")).toBe(false);
+    expect([...graph.nodes.keys()].some((k) => k.startsWith("target.test.ts"))).toBe(false);
+    const callers = graph.testCallers.get("target.ts#target")!;
+    expect(callers).toHaveLength(1);
+    expect(callers[0]!.snapshot.file).toBe("target.test.ts");
+    expect(callers[0]!.snapshot.callSites[0]!.snippet).toContain("target(2)");
+  });
+
   it("respects maxDepth", async () => {
     const shallow = await walkCallGraph(backend, rootDecl!, diff, "new", { maxDepth: 0 });
     // mid is changed but too deep to expand; it becomes a leaf.
     expect(shallow.nodes.get("mid.ts#mid")!.expanded).toBe(false);
     expect(shallow.nodes.has("top.ts#top")).toBe(false);
+  });
+});
+
+describe("testBlockAt", () => {
+  it("names the enclosing describe › it chain with the it block's extent", async () => {
+    const block = await backend.testBlockAt("target.test.ts", 6);
+    expect(block).toEqual({
+      breadcrumb: "target › doubles after incrementing",
+      startLine: 5,
+      endLine: 7,
+    });
+  });
+
+  it("falls back to the innermost named declaration outside harness calls", async () => {
+    // Line 2 sits in `declare function describe`, not inside any test block.
+    const block = await backend.testBlockAt("target.test.ts", 2);
+    expect(block?.breadcrumb).toBe("describe");
   });
 });
 
