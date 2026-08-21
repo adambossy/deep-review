@@ -260,8 +260,8 @@ function initExplorer(root, NAMES) {
     if (link.classList.contains("caller-row")) {
       clicked = [link.querySelector(".fn-name") || link];
     } else {
-      var line = link.closest(".line") || link.parentNode;
-      clicked = line.querySelectorAll('.csite[data-target="' + esc1(link.dataset.target) + '"]');
+      var scope = link.closest(".panel") || root;
+      clicked = scope.querySelectorAll('.csite[data-target="' + esc1(link.dataset.target) + '"]');
     }
     for (var j = 0; j < clicked.length; j++) clicked[j].classList.add("sym-link");
     var dest = destPanel ? destPanel.querySelectorAll(".self-sym") : [];
