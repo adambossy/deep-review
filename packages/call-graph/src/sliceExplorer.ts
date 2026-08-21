@@ -415,7 +415,7 @@ const DECK_JS = `
   /* How much overscroll past an edge commits to the next slice. One firm
      trackpad flick clears this; a coasting scroll that merely lands on the
      boundary does not. */
-  var THRESHOLD = 450;
+  var THRESHOLD = 550;
 
   function scrollables(i) {
     return Array.prototype.slice.call(views[i].querySelectorAll(".panel"));
