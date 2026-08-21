@@ -223,25 +223,38 @@ function initExplorer(root, NAMES) {
     updateRails();
     if (!animate) { void track.offsetWidth; track.classList.remove("no-anim"); }
   }
-  /* One direction of travel: every walk — into a callee or up to a caller —
-     appends to the right, so the track is the navigation history and the
-     left rail always retraces the exact path back to where the reader
-     started. A node already on the track is revealed in place instead of
-     re-opened, keeping the panels ahead of it as forward history. */
-  function open(id, fromIndex) {
-    for (var j = 0; j < track.children.length; j++) {
-      if (nodeAt(j) !== id) continue;
-      /* Behind the reader: show it in the left slot, keeping the panel they
-         tapped in visible. Ahead: show it in the right slot. */
-      var p = j <= fromIndex ? j : j - 1;
-      setPos(Math.max(0, Math.min(p, track.children.length - 2)), true);
-      return track.children[j];
-    }
+  /* Callee direction: append to the right of the tapped panel and slide left. */
+  function walkDown(id, fromIndex) {
     var panel = panelFor(id);
     if (!panel) return null;
     while (track.children.length > fromIndex + 1) track.removeChild(track.lastChild);
     track.appendChild(panel);
     setPos(Math.max(0, track.children.length - 2), true);
+    return panel;
+  }
+  /* Caller direction: reveal the caller on the LEFT and slide right, so the
+     track always reads caller → callee. The slice panel is pinned at the
+     head of the track — the caller slots in after it, so the way back to
+     the slice is never lost. Only the panels between the pin and the tapped
+     one go: they were a different caller chain, and each stays one tap away
+     in its callee's "called by" rows. */
+  function walkUp(id, fromIndex) {
+    if (fromIndex > 0 && nodeAt(fromIndex - 1) === id) {
+      setPos(fromIndex - 1, true);
+      return track.children[fromIndex - 1];
+    }
+    var panel = panelFor(id);
+    if (!panel) return null;
+    var pin = nodeAt(0) === "__slice__" ? 1 : 0;
+    var oldSlot = fromIndex - pos;
+    while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
+    track.insertBefore(panel, track.children[pin] || null);
+    if (oldSlot <= 0) {
+      setPos(pin + 1, false);
+      setPos(pin, true);
+    } else {
+      setPos(pin, false);
+    }
     return panel;
   }
   /* Tie the clicked symbol to the panel it opened: both turn accent blue;
@@ -271,7 +284,9 @@ function initExplorer(root, NAMES) {
       var panel = link.closest(".panel");
       var i = Array.prototype.indexOf.call(track.children, panel);
       if (i < 0) return;
-      var dest = open(link.dataset.target, i);
+      var dest = link.classList.contains("caller-row")
+        ? walkUp(link.dataset.target, i)
+        : walkDown(link.dataset.target, i);
       if (dest) linkSymbols(link, dest);
       return;
     }
@@ -298,7 +313,7 @@ ${pageHead(result, EXPLORER_CSS)}
 </head>
 <body class="explorer">
 ${pageHeader(result)}
-<p class="missing">tap a highlighted call to walk down the stack; tap a "called by" row to walk up — the left rail retraces your path</p>
+<p class="missing">tap a highlighted call to walk down the stack; tap a "called by" row to walk up</p>
 
 <div class="viewport" data-root="${esc(result.rootId)}">
   <button class="rail rail-left"></button>
