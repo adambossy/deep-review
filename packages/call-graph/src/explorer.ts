@@ -192,7 +192,7 @@ export const EXPLORER_CSS = `
  * slice explorer, which stacks these vertically.
  */
 export const EXPLORER_NAV_JS = `
-function initExplorer(root, NAMES) {
+function initExplorer(root, NAMES, onNavigate) {
   var defs = root.querySelector(".panel-defs");
   var viewport = root.querySelector(".viewport");
   var track = root.querySelector(".track");
@@ -200,8 +200,14 @@ function initExplorer(root, NAMES) {
   var railRight = root.querySelector(".rail-right");
   if (!viewport || !track) return;
   var pos = 0;
+  /* The slice panel (when this track has one) is server-rendered directly
+     into the track, not duplicated into the defs — its diff content can be
+     large, and there's only ever one. Keep a live reference so a history
+     restore can move it back in without needing a def to clone. */
+  var pinnedNode = track.children[0] && track.children[0].dataset.node === "__slice__" ? track.children[0] : null;
   function esc1(id) { return window.CSS && CSS.escape ? CSS.escape(id) : id; }
   function panelFor(id) {
+    if (pinnedNode && id === "__slice__") return pinnedNode;
     var def = defs && defs.querySelector('[data-node="' + esc1(id) + '"]');
     return def ? def.cloneNode(true) : null;
   }
@@ -295,12 +301,31 @@ function initExplorer(root, NAMES) {
       var dest = link.classList.contains("caller-row")
         ? walkUp(link.dataset.target, i)
         : walkDown(link.dataset.target, i);
-      if (dest) linkSymbols(link, dest);
+      if (dest) {
+        linkSymbols(link, dest);
+        if (onNavigate) {
+          onNavigate({
+            id: link.dataset.target,
+            ids: Array.prototype.map.call(track.children, function (c) { return c.dataset.node; }),
+            pos: pos,
+          });
+        }
+      }
       return;
     }
     if (e.target.closest(".rail-left")) setPos(Math.max(0, pos - 1), true);
     else if (e.target.closest(".rail-right")) setPos(Math.min(track.children.length - 2, pos + 1), true);
   });
+  /* External restore point for a history entry: rebuild the track from a
+     saved list of node ids and re-settle the viewport at the saved slot. */
+  root.__restore = function (ids, newPos) {
+    track.innerHTML = "";
+    for (var r = 0; r < ids.length; r++) {
+      var restored = panelFor(ids[r]);
+      if (restored) track.appendChild(restored);
+    }
+    setPos(Math.max(0, Math.min(newPos, track.children.length - 2)), true);
+  };
   updateRails();
 }
 `;
