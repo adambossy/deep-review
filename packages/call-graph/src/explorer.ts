@@ -200,6 +200,13 @@ function initExplorer(root, NAMES, onNavigate) {
   var railRight = root.querySelector(".rail-right");
   if (!viewport || !track) return;
   var pos = 0;
+  /* True right after a walk up *replaces* whoever sits at the pin — a fresh,
+     un-drilled caller with no accumulated depth behind it. A walk down
+     always represents real progress and clears it, even one that lands
+     right next to the slice: two callee hops deep deserves a way back just
+     as much as ten. Left untouched by the reveal-in-place shortcut below,
+     since that's a pure "look left", not a new pick. */
+  var freshCaller = false;
   /* The slice panel (when this track has one) is server-rendered directly
      into the track, not duplicated into the defs — its diff content can be
      large, and there's only ever one. Keep a live reference so a history
@@ -218,14 +225,14 @@ function initExplorer(root, NAMES, onNavigate) {
   function updateRails() {
     var count = track.children.length;
     track.style.setProperty("--pos", String(pos));
-    /* The pinned slice panel always sits at index 0, and every walk up
-       collapses back to right beside it — so "behind" is the slice itself
-       after the very first caller pick, and stays that way through every
-       later sibling swap. That's not a real waypoint (the sidebar already
-       reaches the slice); only show the back rail once something real —
-       an intermediate caller or callee reached by walking further — sits
-       behind the current pair. */
-    var behind = pos > 0 && nodeAt(pos - 1) !== "__slice__";
+    /* The pinned slice panel always sits at index 0, and every lateral
+       caller swap collapses back to right beside it — so "behind" is the
+       slice itself right after a caller pick, and that's not a real
+       waypoint (the sidebar already reaches the slice). But once a walk
+       down has happened since, the slice sitting behind reflects genuine
+       accumulated depth, not a swap — show the rail regardless of what's
+       immediately behind it. */
+    var behind = pos > 0 && (nodeAt(pos - 1) !== "__slice__" || !freshCaller);
     viewport.classList.toggle("can-back", behind);
     viewport.classList.toggle("can-fwd", count > pos + 2);
     if (behind && railLeft) railLeft.textContent = "\\u25c0 " + (NAMES[nodeAt(pos - 1)] || "back");
@@ -243,6 +250,7 @@ function initExplorer(root, NAMES, onNavigate) {
     if (!panel) return null;
     while (track.children.length > fromIndex + 1) track.removeChild(track.lastChild);
     track.appendChild(panel);
+    freshCaller = false;
     setPos(Math.max(0, track.children.length - 2), true);
     return panel;
   }
@@ -263,6 +271,7 @@ function initExplorer(root, NAMES, onNavigate) {
     var oldSlot = fromIndex - pos;
     while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
     track.insertBefore(panel, track.children[pin] || null);
+    freshCaller = true;
     if (oldSlot <= 0) {
       setPos(pin + 1, false);
       setPos(pin, true);
