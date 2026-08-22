@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import process from "node:process";
 import { writeFileSync } from "node:fs";
 import { renderSliceReportsHtml } from "./html.js";
+import { DEFAULT_MODEL, apiKeyEnvVars, hasApiKeyForModel } from "./agent.js";
 import {
   buildSlicePrompt,
   defaultOutFile,
@@ -21,14 +22,16 @@ Options:
   --html <file>    Also write an HTML report of the slices
   --render         Treat the positionals as saved slice JSON files and only
                    rebuild the HTML from them — no model call
-  --model <id>     Model to use (default: claude-opus-5, or DEEP_REVIEW_MODEL)
+  --model <id>     Model to use (default: gpt-5.6-sol, or DEEP_REVIEW_MODEL)
   --max-steps <n>  Cap the agent's tool-calling loop (default: 40)
   --work-dir <d>   Cache the clone/worktrees here instead of the tmp dir
   --dry-run        Print the prompt the agent would get, and stop
   --quiet          Only print the output path
 
 Environment:
-  ANTHROPIC_API_KEY  Required.
+  OPENAI_API_KEY     Required for the default model.
+  ANTHROPIC_API_KEY  Required for claude-* models.
+  GROK_API_KEY       Required for grok-* models.
   GITHUB_TOKEN       Needed for private repos.
   LINEAR_API_KEY     Optional; enables linked-ticket context.
 
@@ -94,8 +97,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!values["dry-run"] && !process.env.ANTHROPIC_API_KEY) {
-    console.error("ANTHROPIC_API_KEY is not set.");
+  const modelId = values.model ?? process.env.DEEP_REVIEW_MODEL ?? DEFAULT_MODEL;
+  if (!values["dry-run"] && !hasApiKeyForModel(modelId)) {
+    console.error(`${apiKeyEnvVars(modelId).join(" or ")} is not set.`);
     process.exit(1);
   }
 

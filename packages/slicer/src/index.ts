@@ -12,6 +12,8 @@ export { buildPrompt, buildRepairPrompt } from "./prompt.js";
 export {
   runSliceAgent,
   DEFAULT_MODEL,
+  apiKeyEnvVars,
+  hasApiKeyForModel,
   type SliceAgentOptions,
   type ReasoningEffort,
 } from "./agent.js";

@@ -9,11 +9,12 @@ import { createReadTools } from "./tools.js";
 import type { PrContext, Slice } from "./types.js";
 import { validateSlices } from "./validate.js";
 
-export const DEFAULT_MODEL = "claude-opus-5";
+export const DEFAULT_MODEL = "gpt-5.6-sol";
 const DEFAULT_MAX_STEPS = 40;
 const DEFAULT_REPAIRS = 2;
 
 export type ReasoningEffort = "medium" | "high" | "xhigh";
+const DEFAULT_EFFORT: ReasoningEffort = "xhigh";
 
 /**
  * Picks the AI SDK provider by model id prefix and, where the provider
@@ -48,6 +49,21 @@ function resolveModel(modelId: string, effort?: ReasoningEffort) {
     model: anthropic(modelId),
     providerOptions: effort ? { anthropic: { effort } } : undefined,
   };
+}
+
+/**
+ * The environment variables a given model id can take its API key from, for
+ * CLI preflight checks — any one of them satisfies the requirement.
+ */
+export function apiKeyEnvVars(modelId: string): string[] {
+  if (modelId.startsWith("gpt-")) return ["OPENAI_API_KEY"];
+  if (modelId.startsWith("grok-")) return ["XAI_API_KEY", "GROK_API_KEY"];
+  return ["ANTHROPIC_API_KEY"];
+}
+
+/** Whether any of the model's acceptable API key env vars is set. */
+export function hasApiKeyForModel(modelId: string): boolean {
+  return apiKeyEnvVars(modelId).some((name) => Boolean(process.env[name]));
 }
 
 /**
@@ -115,7 +131,7 @@ export async function runSliceAgent(
 ): Promise<{ overview: string; slices: Slice[]; model: string; llmMs: number }> {
   const modelId = options.model ?? process.env.DEEP_REVIEW_MODEL ?? DEFAULT_MODEL;
   const report = options.onProgress ?? (() => {});
-  const { model, providerOptions } = resolveModel(modelId, options.effort);
+  const { model, providerOptions } = resolveModel(modelId, options.effort ?? DEFAULT_EFFORT);
   let llmMs = 0;
 
   const agent = new ToolLoopAgent({
@@ -130,10 +146,45 @@ export async function runSliceAgent(
     ...(providerOptions ? { providerOptions } : {}),
   });
 
-  const timedGenerate: typeof agent.generate = async (...args) => {
+  // Streamed (rather than a single blocking generate() call) so long real-world
+  // runs show live progress — reasoning and tool-call activity — instead of
+  // going dark for the whole call.
+  const timedGenerate = async (args: { prompt: string }): Promise<{ output: AgentOutput }> => {
     const start = performance.now();
+    let step = 0;
+    let reasoningChars = 0;
+    let lastHeartbeat = start;
     try {
-      return await agent.generate(...args);
+      const stream = await agent.stream({
+        prompt: args.prompt,
+        onStepFinish: (event: { toolCalls?: { toolName: string }[] }) => {
+          step += 1;
+          const elapsed = ((performance.now() - start) / 1000).toFixed(1);
+          const calls =
+            event.toolCalls?.map((c) => c.toolName).join(", ") || "(no tool calls)";
+          report(`  step ${step} (${elapsed}s elapsed): ${calls}`);
+        },
+      });
+      for await (const part of stream.fullStream) {
+        if (part.type === "reasoning-delta") {
+          reasoningChars += part.text?.length ?? 0;
+          const now = performance.now();
+          if (now - lastHeartbeat > 15_000) {
+            lastHeartbeat = now;
+            report(
+              `    ...thinking (${((now - start) / 1000).toFixed(0)}s elapsed, ~${reasoningChars.toLocaleString()} reasoning chars so far)`,
+            );
+          }
+        } else if (part.type === "tool-call") {
+          report(
+            `    tool-call: ${part.toolName} (${((performance.now() - start) / 1000).toFixed(1)}s elapsed)`,
+          );
+        } else if (part.type === "error") {
+          report(`    stream error: ${String((part as { error?: unknown }).error)}`);
+        }
+      }
+      const output = (await stream.output) as AgentOutput;
+      return { output };
     } finally {
       llmMs += performance.now() - start;
     }
