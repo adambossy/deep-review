@@ -176,7 +176,7 @@ export const EXPLORER_CSS = `
  * slice explorer, which stacks these vertically.
  */
 export const EXPLORER_NAV_JS = `
-function initExplorer(root, NAMES) {
+function initExplorer(root, NAMES, onNavigate) {
   var defs = root.querySelector(".panel-defs");
   var viewport = root.querySelector(".viewport");
   var track = root.querySelector(".track");
@@ -184,8 +184,21 @@ function initExplorer(root, NAMES) {
   var railRight = root.querySelector(".rail-right");
   if (!viewport || !track) return;
   var pos = 0;
+  /* True right after a walk up *replaces* whoever sits at the pin — a fresh,
+     un-drilled caller with no accumulated depth behind it. A walk down
+     always represents real progress and clears it, even one that lands
+     right next to the slice: two callee hops deep deserves a way back just
+     as much as ten. Left untouched by the reveal-in-place shortcut below,
+     since that's a pure "look left", not a new pick. */
+  var freshCaller = false;
+  /* The slice panel (when this track has one) is server-rendered directly
+     into the track, not duplicated into the defs — its diff content can be
+     large, and there's only ever one. Keep a live reference so a history
+     restore can move it back in without needing a def to clone. */
+  var pinnedNode = track.children[0] && track.children[0].dataset.node === "__slice__" ? track.children[0] : null;
   function esc1(id) { return window.CSS && CSS.escape ? CSS.escape(id) : id; }
   function panelFor(id) {
+    if (pinnedNode && id === "__slice__") return pinnedNode;
     var def = defs && defs.querySelector('[data-node="' + esc1(id) + '"]');
     return def ? def.cloneNode(true) : null;
   }
@@ -196,9 +209,17 @@ function initExplorer(root, NAMES) {
   function updateRails() {
     var count = track.children.length;
     track.style.setProperty("--pos", String(pos));
-    viewport.classList.toggle("can-back", pos > 0);
+    /* The pinned slice panel always sits at index 0, and every lateral
+       caller swap collapses back to right beside it — so "behind" is the
+       slice itself right after a caller pick, and that's not a real
+       waypoint (the sidebar already reaches the slice). But once a walk
+       down has happened since, the slice sitting behind reflects genuine
+       accumulated depth, not a swap — show the rail regardless of what's
+       immediately behind it. */
+    var behind = pos > 0 && (nodeAt(pos - 1) !== "__slice__" || !freshCaller);
+    viewport.classList.toggle("can-back", behind);
     viewport.classList.toggle("can-fwd", count > pos + 2);
-    if (pos > 0 && railLeft) railLeft.textContent = "\\u25c0 " + (NAMES[nodeAt(pos - 1)] || "back");
+    if (behind && railLeft) railLeft.textContent = "\\u25c0 " + (NAMES[nodeAt(pos - 1)] || "back");
     if (count > pos + 2 && railRight) railRight.textContent = (NAMES[nodeAt(pos + 2)] || "forward") + " \\u25b6";
   }
   function setPos(p, animate) {
@@ -213,10 +234,16 @@ function initExplorer(root, NAMES) {
     if (!panel) return null;
     while (track.children.length > fromIndex + 1) track.removeChild(track.lastChild);
     track.appendChild(panel);
+    freshCaller = false;
     setPos(Math.max(0, track.children.length - 2), true);
     return panel;
   }
-  /* Caller direction: reveal the caller on the LEFT and slide right. */
+  /* Caller direction: reveal the caller on the LEFT and slide right, so the
+     track always reads caller → callee. The slice panel is pinned at the
+     head of the track — the caller slots in after it, so the way back to
+     the slice is never lost. Only the panels between the pin and the tapped
+     one go: they were a different caller chain, and each stays one tap away
+     in its callee's "called by" rows. */
   function walkUp(id, fromIndex) {
     if (fromIndex > 0 && nodeAt(fromIndex - 1) === id) {
       setPos(fromIndex - 1, true);
@@ -224,14 +251,16 @@ function initExplorer(root, NAMES) {
     }
     var panel = panelFor(id);
     if (!panel) return null;
+    var pin = nodeAt(0) === "__slice__" ? 1 : 0;
     var oldSlot = fromIndex - pos;
-    while (fromIndex > 0) { track.removeChild(track.firstChild); fromIndex--; }
-    track.insertBefore(panel, track.firstChild);
+    while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
+    track.insertBefore(panel, track.children[pin] || null);
+    freshCaller = true;
     if (oldSlot <= 0) {
-      setPos(1, false);
-      setPos(0, true);
+      setPos(pin + 1, false);
+      setPos(pin, true);
     } else {
-      setPos(0, false);
+      setPos(pin, false);
     }
     return panel;
   }
@@ -256,6 +285,18 @@ function initExplorer(root, NAMES) {
       });
     });
   }
+  /* Every action that lands the viewport on a particular node — walking,
+     or just paging the rail to reveal one already on the track — reports
+     that node's id here. The history list decides for itself whether
+     that's new ground or a spot it's already visited. */
+  function report(id) {
+    if (!onNavigate) return;
+    onNavigate({
+      id: id,
+      ids: Array.prototype.map.call(track.children, function (c) { return c.dataset.node; }),
+      pos: pos,
+    });
+  }
   root.addEventListener("click", function (e) {
     var link = e.target.closest(".csite, .caller-row");
     if (link && link.dataset.target) {
@@ -265,12 +306,32 @@ function initExplorer(root, NAMES) {
       var dest = link.classList.contains("caller-row")
         ? walkUp(link.dataset.target, i)
         : walkDown(link.dataset.target, i);
-      if (dest) linkSymbols(link, dest);
+      if (dest) {
+        linkSymbols(link, dest);
+        report(link.dataset.target);
+      }
       return;
     }
-    if (e.target.closest(".rail-left")) setPos(Math.max(0, pos - 1), true);
-    else if (e.target.closest(".rail-right")) setPos(Math.min(track.children.length - 2, pos + 1), true);
+    if (e.target.closest(".rail-left")) {
+      var backTo = Math.max(0, pos - 1);
+      setPos(backTo, true);
+      report(nodeAt(backTo));
+    } else if (e.target.closest(".rail-right")) {
+      var fwdTo = Math.min(track.children.length - 2, pos + 1);
+      setPos(fwdTo, true);
+      report(nodeAt(fwdTo + 1));
+    }
   });
+  /* External restore point for a history entry: rebuild the track from a
+     saved list of node ids and re-settle the viewport at the saved slot. */
+  root.__restore = function (ids, newPos) {
+    track.innerHTML = "";
+    for (var r = 0; r < ids.length; r++) {
+      var restored = panelFor(ids[r]);
+      if (restored) track.appendChild(restored);
+    }
+    setPos(Math.max(0, Math.min(newPos, track.children.length - 2)), true);
+  };
   updateRails();
 }
 `;

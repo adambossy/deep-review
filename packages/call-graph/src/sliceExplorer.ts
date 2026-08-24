@@ -346,6 +346,29 @@ const SLICE_CSS = `
   .side .foot { margin-top: auto; font-size: 0.7rem; color: var(--ink-faint); }
   .progress-label { font-variant-numeric: tabular-nums; }
 
+  .history-toggle {
+    display: flex; align-items: center; justify-content: space-between; width: 100%;
+    background: none; border: none; padding: 0; margin-bottom: 0.4rem; cursor: pointer;
+    color: inherit; font: inherit;
+  }
+  .history-toggle .chev {
+    color: var(--ink-faint); font-size: 0.65rem; transition: transform 0.2s ease;
+  }
+  .history-block.collapsed .chev { transform: rotate(-90deg); }
+  .history-block.collapsed .history-body { display: none; }
+  .history-panel { display: flex; flex-direction: column; gap: 2px; }
+  .history-panel[hidden] { display: none; }
+  .history-entry {
+    display: flex; gap: 0.5rem; align-items: baseline; text-align: left; width: 100%;
+    padding: 0.32rem 0.55rem; border-radius: 6px; border: none;
+    background: none; color: var(--ink-soft); font: inherit; font-size: 0.74rem;
+    cursor: pointer; line-height: 1.3; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .history-entry:hover { background: var(--panel-2); color: var(--ink); }
+  .history-entry.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .history-entry .n { font-variant-numeric: tabular-nums; font-size: 0.65rem; opacity: 0.7; }
+
   .vrail {
     position: absolute; left: 50%; transform: translateX(-50%); z-index: 3;
     display: none; align-items: center; gap: 0.5rem; max-width: 60%;
@@ -410,6 +433,7 @@ const DECK_JS = `
   var railDown = document.querySelector(".vrail-down");
   var pips = Array.prototype.slice.call(document.querySelectorAll(".slice-link"));
   var label = document.querySelector(".progress-label");
+  var historyPanels = Array.prototype.slice.call(document.querySelectorAll(".history-panel"));
   var TITLES = JSON.parse(document.getElementById("slice-titles").textContent);
   var current = 0, locked = false, overscroll = 0, overscrollDown = true, lastWheel = 0;
   /* How much overscroll past an edge commits to the next slice. One firm
@@ -428,6 +452,9 @@ const DECK_JS = `
     if (current < views.length - 1) railDown.textContent = TITLES[current + 1] + " \\u25bc";
     for (var i = 0; i < pips.length; i++) pips[i].classList.toggle("on", i === current);
     if (label) label.textContent = (current + 1) + " / " + views.length;
+    for (var h = 0; h < historyPanels.length; h++) {
+      historyPanels[h].hidden = Number(historyPanels[h].dataset.slice) !== current;
+    }
   }
   /* Land where the reader was heading: entering from above starts at the top
      of the new slice, entering from below starts at its bottom, so the
@@ -487,6 +514,92 @@ const DECK_JS = `
 `;
 
 /**
+ * A collapsible breadcrumb trail per slice, in the sidebar. Every walk into
+ * a caller or callee appends a step; clicking any earlier step restores the
+ * track to exactly that arrangement and drops everything after it, the way
+ * browser history does. Each slice keeps its own trail — switching slices
+ * (the DECK_JS vertical axis) just swaps which trail is visible.
+ */
+const HISTORY_JS = `
+(function () {
+  var views = Array.prototype.slice.call(document.querySelectorAll(".slice-view"));
+  var TITLES = JSON.parse(document.getElementById("slice-titles").textContent);
+  var block = document.querySelector(".history-block");
+  var trails = {};
+
+  function esc1(s) {
+    var d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+  function sameIds(a, b) {
+    if (a.length !== b.length) return false;
+    for (var m = 0; m < a.length; m++) if (a[m] !== b[m]) return false;
+    return true;
+  }
+  function render(sliceIndex) {
+    var panel = document.querySelector('.history-panel[data-slice="' + sliceIndex + '"]');
+    if (!panel) return;
+    var trail = trails[sliceIndex] || [];
+    panel.innerHTML = trail.map(function (step, i) {
+      var on = i === trail.length - 1 ? " on" : "";
+      return '<button class="history-entry' + on + '" data-idx="' + i + '">' +
+        '<span class="n">' + (i + 1) + '</span> ' + esc1(step.label) + '</button>';
+    }).join("");
+  }
+
+  views.forEach(function (view) {
+    var sliceIndex = Number(view.dataset.slice);
+    var names = JSON.parse(view.dataset.names);
+    trails[sliceIndex] = [{ id: "__slice__", ids: ["__slice__"], pos: 0, label: TITLES[sliceIndex] }];
+    render(sliceIndex);
+    initExplorer(view, names, function (step) {
+      var trail = trails[sliceIndex];
+      // Landing on a state the trail already recorded — same track
+      // composition AND the same slot in view, whether reached by tapping
+      // a reference back to it or just paging the rail — is not a new
+      // step. Only the id matching isn't enough: a fresh path can land on
+      // a node the trail visited earlier in a completely different
+      // arrangement, and that deserves its own entry, not a merge into the
+      // old one.
+      var foundIdx = -1;
+      for (var k = trail.length - 1; k >= 0; k--) {
+        if (trail[k].pos === step.pos && sameIds(trail[k].ids, step.ids)) { foundIdx = k; break; }
+      }
+      trails[sliceIndex] = foundIdx >= 0
+        ? trail.slice(0, foundIdx + 1)
+        : trail.concat([{ id: step.id, ids: step.ids, pos: step.pos, label: names[step.id] || step.id }]);
+      render(sliceIndex);
+    });
+  });
+
+  document.addEventListener("click", function (e) {
+    var entry = e.target.closest(".history-entry");
+    if (entry) {
+      var panel = entry.closest(".history-panel");
+      var sliceIndex = Number(panel.dataset.slice);
+      var idx = Number(entry.dataset.idx);
+      var step = trails[sliceIndex][idx];
+      views[sliceIndex].__restore(step.ids, step.pos);
+      trails[sliceIndex] = trails[sliceIndex].slice(0, idx + 1);
+      render(sliceIndex);
+      return;
+    }
+    if (e.target.closest(".history-toggle")) {
+      block.classList.toggle("collapsed");
+      try {
+        localStorage.setItem("history-collapsed", block.classList.contains("collapsed") ? "1" : "0");
+      } catch (err) { /* localStorage unavailable (e.g. file:// in some browsers) */ }
+    }
+  });
+
+  try {
+    if (localStorage.getItem("history-collapsed") === "1") block.classList.add("collapsed");
+  } catch (err) { /* localStorage unavailable */ }
+})();
+`;
+
+/**
  * The two axes fused: slices stacked vertically in priority order, and each
  * slice's call graph walkable horizontally from the symbols in its diff.
  */
@@ -510,6 +623,9 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
       const names = Object.fromEntries(
         (graph?.nodes ?? []).map((n) => [n.id, n.name]),
       );
+      // The slice panel sits at the head of the track, so the back rail can
+      // point at it; give it the slice's own title rather than "back".
+      names["__slice__"] = slice.title;
       // Entity-escaped rather than raw: the browser decodes the attribute
       // before JSON.parse sees it, so a name containing a quote or ampersand
       // survives intact.
@@ -550,6 +666,15 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
     <div class="side-label">Slices · <span class="progress-label"></span></div>
     <div class="slice-nav">${sliceLinks}</div>
   </nav>
+  <div class="history-block">
+    <button class="history-toggle" type="button">
+      <span class="side-label">History</span>
+      <span class="chev">▾</span>
+    </button>
+    <div class="history-body">
+      ${input.slices.map((_, i) => `<div class="history-panel" data-slice="${i}"${i === 0 ? "" : " hidden"}></div>`).join("")}
+    </div>
+  </div>
   <div class="foot">scroll past the end of a slice to reach the next</div>
 </aside>
 
@@ -566,9 +691,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 <script>
 ${GAP_JS}
 ${EXPLORER_NAV_JS}
-document.querySelectorAll(".slice-view").forEach(function (view) {
-  initExplorer(view, JSON.parse(view.dataset.names));
-});
+${HISTORY_JS}
 ${DECK_JS}
 </script>
 </body>
