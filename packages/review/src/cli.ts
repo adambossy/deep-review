@@ -5,7 +5,10 @@ import process from "node:process";
 import { parseArgs } from "node:util";
 import { renderSliceExplorerHtml } from "@deep-review/call-graph";
 import {
+  apiKeyEnvVars,
+  DEFAULT_MODEL,
   defaultOutFile,
+  hasApiKeyForModel,
   loadRenderEntry,
   slicePr,
   writeSliceReport,
@@ -24,12 +27,14 @@ Options:
   --save <file>     Also write the slice JSON from this run
   --max-graphs <n>  Analyze at most n slices' call graphs (default: all)
   --work-dir <d>    Cache the clone/worktrees here instead of the tmp dir
-  --model <id>      Model to use for slicing (default: claude-opus-5)
+  --model <id>      Model to use for slicing (default: gpt-5.6-sol)
   --no-open         Don't open the report in a browser
   --quiet           Only print the output path
 
 Environment:
-  ANTHROPIC_API_KEY  Required unless --slices is given.
+  OPENAI_API_KEY     Required for the default model, unless --slices is given.
+  ANTHROPIC_API_KEY  Required for claude-* models.
+  GROK_API_KEY       Required for grok-* models.
   GITHUB_TOKEN       Needed for private repos.
   LINEAR_API_KEY     Optional; enables linked-ticket context.
 
@@ -92,8 +97,9 @@ async function main(): Promise<void> {
     reportFile = values.slices;
     log(`Using slices from ${reportFile}`);
   } else {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.error("ANTHROPIC_API_KEY is not set (or pass --slices).");
+    const modelId = values.model ?? DEFAULT_MODEL;
+    if (!hasApiKeyForModel(modelId)) {
+      console.error(`${apiKeyEnvVars(modelId).join(" or ")} is not set (or pass --slices).`);
       process.exit(1);
     }
     const report = await slicePr({

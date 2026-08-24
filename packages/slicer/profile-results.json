@@ -1,0 +1,202 @@
+[
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10305",
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 176522.12708299997,
+    "totalMs": 176539.62675,
+    "sliceCount": 10
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10305",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 217241.91883300003,
+    "totalMs": 217244.22670899998,
+    "sliceCount": 5
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10305",
+    "model": "grok-4.6",
+    "effort": "high",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 420594.02616799995,
+    "totalMs": 420595.87279200007,
+    "sliceCount": 5
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10305",
+    "model": "grok-4.6",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 2,
+    "llmMs": 409121.198541,
+    "totalMs": 409123.49595799996,
+    "sliceCount": 5
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10303",
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 1001913.0033339998,
+    "totalMs": 1001914.1103749999,
+    "sliceCount": 4
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10303",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 198091.3804589999,
+    "totalMs": 198092.76974999998,
+    "sliceCount": 4
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10303",
+    "model": "grok-4.6",
+    "effort": "high",
+    "ok": true,
+    "attempts": 2,
+    "llmMs": 434602.6787919998,
+    "totalMs": 434604.00804199977,
+    "sliceCount": 5
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10303",
+    "model": "grok-4.6",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 765518.9967090008,
+    "totalMs": 765520.7676670002,
+    "sliceCount": 6
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10266",
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 105959.40420900006,
+    "totalMs": 105960.96229200065,
+    "sliceCount": 6
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10266",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 174839.92787500098,
+    "totalMs": 174841.16941600014,
+    "sliceCount": 8
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10266",
+    "model": "grok-4.6",
+    "effort": "high",
+    "ok": true,
+    "attempts": 6,
+    "llmMs": 314345.14683400095,
+    "totalMs": 314347.3410420008,
+    "sliceCount": 7
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10266",
+    "model": "grok-4.6",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 170480.73495799862,
+    "totalMs": 170481.70254200138,
+    "sliceCount": 7
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10221",
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 144632.008041,
+    "totalMs": 144633.69466600008,
+    "sliceCount": 8
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10221",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 246216.40037499927,
+    "totalMs": 246217.97416600026,
+    "sliceCount": 10
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10221",
+    "model": "grok-4.6",
+    "effort": "high",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 268328.2767090015,
+    "totalMs": 268330.0878340006,
+    "sliceCount": 7
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10221",
+    "model": "grok-4.6",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 5,
+    "llmMs": 316934.8290840015,
+    "totalMs": 316936.4987500012,
+    "sliceCount": 5
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10172",
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 113840.6602910012,
+    "totalMs": 113842.430292001,
+    "sliceCount": 6
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10172",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 188756.55133299902,
+    "totalMs": 188757.4377909992,
+    "sliceCount": 6
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10172",
+    "model": "grok-4.6",
+    "effort": "high",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 201716.33404199965,
+    "totalMs": 201717.3915420007,
+    "sliceCount": 6
+  },
+  {
+    "prUrl": "https://github.com/spara-ai/spara-app/pull/10172",
+    "model": "grok-4.6",
+    "effort": "xhigh",
+    "ok": true,
+    "attempts": 1,
+    "llmMs": 172611.3524159994,
+    "totalMs": 172612.9020420015,
+    "sliceCount": 7
+  }
+]

@@ -8,7 +8,7 @@ import {
   parseUnifiedDiff,
   prepareCheckouts,
 } from "@deep-review/pr";
-import { runSliceAgent } from "./agent.js";
+import { runSliceAgent, type ReasoningEffort } from "./agent.js";
 import { indexDiff, type DiffIndex } from "./annotate.js";
 import type { RenderEntry } from "./html.js";
 import { buildPrompt } from "./prompt.js";
@@ -20,6 +20,7 @@ export interface SliceOptions {
   /** Where to cache the clone + worktrees. Defaults to a per-PR tmp dir. */
   workDir?: string;
   model?: string;
+  effort?: ReasoningEffort;
   maxSteps?: number;
   maxRepairs?: number;
   onProgress?: (message: string) => void;
@@ -70,7 +71,7 @@ async function gatherContext(options: SliceOptions): Promise<PrContext> {
   };
 }
 
-async function prepare(
+export async function prepare(
   options: SliceOptions,
 ): Promise<{ context: PrContext; index: DiffIndex }> {
   const report = options.onProgress ?? (() => {});
@@ -102,6 +103,7 @@ export async function slicePr(options: SliceOptions): Promise<SliceReport> {
 
   const { overview, slices, model } = await runSliceAgent(context, index, {
     ...(options.model ? { model: options.model } : {}),
+    ...(options.effort ? { effort: options.effort } : {}),
     ...(options.maxSteps ? { maxSteps: options.maxSteps } : {}),
     ...(options.maxRepairs !== undefined ? { maxRepairs: options.maxRepairs } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
