@@ -301,21 +301,20 @@ const SLICE_CSS = `
  * the previous one.
  */
 /**
- * Debug builds: hold Shift and every marked span says why it is marked, in a
- * small label over the span, colour-coded by kind; identifiers the resolver
- * left alone get a label too. Nothing shows until Shift is down.
+ * Debug builds: hold Shift and hover a span to see why it is marked, in a
+ * label over it, colour-coded by kind; identifiers the resolver left alone
+ * answer too. Only the hovered span speaks — labelling every span at once
+ * buries a dense line. Nothing shows until Shift is down.
  */
 const DEBUG_MARKS_CSS = `
-  body.debug-marks [data-why] { position: relative; outline: 1px dashed var(--dbg, var(--ink-faint)); outline-offset: 1px; }
-  body.debug-marks .source .line:has([data-why]) { padding-top: 0.95em; }
-  body.debug-marks [data-why]::after {
-    content: attr(data-why); position: absolute; left: 0; bottom: 100%; z-index: 6;
-    font: 500 0.55rem/1.3 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0;
-    color: var(--ink); background: var(--panel-2); border: 1px solid var(--dbg, var(--line-c));
-    border-radius: 3px; padding: 0 3px; white-space: nowrap; pointer-events: none;
-    max-width: 60ch; overflow: hidden; text-overflow: ellipsis;
+  body.debug-marks [data-why]:hover { position: relative; outline: 1px dashed var(--dbg, var(--ink-faint)); outline-offset: 1px; }
+  body.debug-marks [data-why]:hover::after {
+    content: attr(data-why); position: absolute; left: 0; bottom: calc(100% + 3px); z-index: 7;
+    font: 500 0.72rem/1.35 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0;
+    color: var(--ink); background: var(--panel); border: 1px solid var(--dbg, var(--line-c));
+    border-radius: 4px; padding: 2px 6px; white-space: nowrap; pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   }
-  body.debug-marks [data-why]:hover::after { max-width: none; z-index: 7; }
   body.debug-marks .csite[data-why] { --dbg: var(--accent); }
   body.debug-marks .sym[data-why] { --dbg: var(--add-edge); }
   body.debug-marks .self-sym[data-why] { --dbg: #a855f7; }
@@ -334,7 +333,7 @@ const DEBUG_MARKS_CSS = `
 `;
 
 const DEBUG_MARKS_LEGEND = `<div id="debug-legend">
-  <b>Why is this marked? (Shift held)</b>
+  <b>Hold Shift and hover a symbol to see why it is marked</b>
   <span><i class="sw" style="border-color: var(--accent)"></i><b>csite</b> — call-graph edge or text match of a graph symbol</span>
   <span><i class="sw" style="border-color: var(--add-edge)"></i><b>sym</b> — language service resolved it to a definition</span>
   <span><i class="sw" style="border-color: #a855f7"></i><b>decl</b> — a declaration the page knows (lights up in place)</span>

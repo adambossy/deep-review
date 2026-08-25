@@ -449,7 +449,7 @@ describe("renderSliceExplorerHtml with navigation data", () => {
     // The overlay itself: legend, Shift toggle, per-kind colours.
     expect(debug).toContain('id="debug-legend"');
     expect(debug).toContain('e.key === "Shift"');
-    expect(debug).toContain("body.debug-marks [data-why]::after");
+    expect(debug).toContain("body.debug-marks [data-why]:hover::after");
   });
 
 });
