@@ -415,7 +415,8 @@ describe("renderSliceExplorerHtml with navigation data", () => {
     expect(html).toContain('"total":12');
     // The site is also a link to the same definition, so one span carries both marks.
     expect(html).toMatch(/class="[^"]*sym ref-site"[^>]*data-ref-of="a\.ts:60:6"/);
-    expect(html).toContain("contextmenu");
+    expect(html).toContain("e.metaKey || e.ctrlKey");
+    expect(html).not.toContain("contextmenu");
     expect(html).toContain("ref-menu");
   });
 });

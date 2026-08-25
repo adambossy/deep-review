@@ -26,7 +26,7 @@ export interface NavigationOptions {
   maxLookups?: number;
   /** Synthesize at most this many definition panels; later links are dropped. */
   maxPanels?: number;
-  /** Call sites kept per definition for the right-click menu. */
+  /** Call sites kept per definition for the callers menu. */
   maxReferences?: number;
 }
 
@@ -260,7 +260,7 @@ export async function resolveNavigation(
   };
   const isLocal = (d: DefinitionTarget): boolean => LOCAL_KINDS.has(d.kind);
 
-  // Who calls each repo-internal, named definition — for the right-click
+  // Who calls each repo-internal, named definition — for the callers
   // menu. Call hierarchy for callables; plain references for classes and
   // constants, which call hierarchy does not answer for. Each site's
   // enclosing declaration gets a panel too (budget permitting), so a row can

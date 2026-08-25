@@ -298,7 +298,7 @@ export const EXPLORER_CSS = `
      panel full of resolvable names does not read as a wall of tint. */
   .sym { cursor: pointer; border-bottom: 1px dotted var(--ink-faint); }
   .sym:hover { color: var(--accent); border-bottom-color: var(--accent); }
-  /* Right-click menu of callers; lives inside the panel so it scrolls with it. */
+  /* Cmd-click menu of callers; lives inside the panel so it scrolls with it. */
   .ref-menu {
     position: absolute; z-index: 5; min-width: 18rem; max-width: 34rem;
     display: flex; flex-direction: column; gap: 2px; padding: 0.4rem;
@@ -322,10 +322,9 @@ function closeRefMenu() {
   var open = document.querySelectorAll(".ref-menu");
   for (var i = 0; i < open.length; i++) open[i].remove();
 }
-/* Any click or right-click outside the menu, Escape, or scrolling the page
-   dismisses it — a menu that drifts away from its symbol is worse than none. */
+/* Any click outside the menu, Escape, or scrolling the page dismisses it —
+   a menu that drifts away from its symbol is worse than none. */
 document.addEventListener("click", function (e) { if (!e.target.closest(".ref-menu")) closeRefMenu(); });
-document.addEventListener("contextmenu", function (e) { if (!e.target.closest(".ref-menu")) closeRefMenu(); }, true);
 document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeRefMenu(); });
 document.addEventListener("wheel", closeRefMenu, { passive: true });
 function initExplorer(root, NAMES, onNavigate) {
@@ -482,6 +481,12 @@ function initExplorer(root, NAMES, onNavigate) {
     });
   }
   root.addEventListener("click", function (e) {
+    /* Cmd-click (Ctrl-click elsewhere) on a symbol opens its callers menu;
+       a right-click would fight the browser's own menu. */
+    if ((e.metaKey || e.ctrlKey) && e.target.closest(".sym, .self-sym")) {
+      openRefMenu(e, e.target.closest(".sym, .self-sym"));
+      return;
+    }
     var link = e.target.closest(".csite, .caller-row, .sym");
     if (link && (link.dataset.target || link.dataset.def)) {
       var panel = link.closest(".panel");
@@ -497,9 +502,9 @@ function initExplorer(root, NAMES, onNavigate) {
         : walkDown(link.dataset.target, i);
       if (dest) {
         linkSymbols(link, dest);
-        /* A row from the right-click menu: the menu is gone once the caller
-           slides in, so the trail marker is the symbol that was right-clicked,
-           and the destination is the call site inside the caller. */
+        /* A row from the callers menu: the menu is gone once the caller
+           slides in, so the trail marker is the symbol the menu was opened
+           on, and the destination is the call site inside the caller. */
         if (link.dataset.refDef) {
           var origin = panel.querySelectorAll('.sym[data-def="' + esc1(link.dataset.refDef) + '"], .self-sym[data-decl="' + esc1(link.dataset.refDef) + '"]');
           for (var o = 0; o < origin.length; o++) origin[o].classList.add("sym-link", "sym-dim");
@@ -523,16 +528,15 @@ function initExplorer(root, NAMES, onNavigate) {
       report(nodeAt(fwdTo + 1));
     }
   });
-  /* Right-click on a symbol: a menu of who calls (or, for a class or
-     constant, who references) its definition. Rows are caller-rows, so the
-     click handler above walks up into the caller exactly as a panel's own
-     called-by rows do. */
-  root.addEventListener("contextmenu", function (e) {
-    var sym = e.target.closest(".sym, .self-sym");
-    var id = sym && (sym.dataset.def || sym.dataset.decl);
+  /* A menu of who calls (or, for a class or constant, who references) a
+     symbol's definition. Rows are caller-rows, so the click handler above
+     walks up into the caller exactly as a panel's own called-by rows do. */
+  function openRefMenu(e, sym) {
+    var id = sym.dataset.def || sym.dataset.decl;
     var refs = id && window.REFS && window.REFS[id];
     if (!refs) return;
     e.preventDefault();
+    e.stopPropagation();
     closeRefMenu();
     var panel = sym.closest(".panel");
     var menu = document.createElement("div");
@@ -553,7 +557,7 @@ function initExplorer(root, NAMES, onNavigate) {
     menu.style.left = (e.clientX - rect.left + panel.scrollLeft) + "px";
     menu.style.top = (e.clientY - rect.top + panel.scrollTop) + "px";
     panel.appendChild(menu);
-  });
+  }
   /* External restore point for a history entry: rebuild the track from a
      saved list of node ids and re-settle the viewport at the saved slot. */
   root.__restore = function (ids, newPos) {

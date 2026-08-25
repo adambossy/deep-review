@@ -107,7 +107,7 @@ export class NavIndex {
   /**
    * Call-site marks on a head-side line: where a listed caller invokes a
    * definition, tagged with that definition's id so walking up from the
-   * right-click menu can light the site up in the caller's panel.
+   * callers menu can light the site up in the caller's panel.
    */
   refSiteMarks(file: string, line: number): Mark[] {
     const sites = this.sitesByFile.get(file)?.get(line) ?? [];
