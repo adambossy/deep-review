@@ -74,13 +74,39 @@ export interface SymbolLink {
   def: DefinitionId;
 }
 
+/** One place a definition is called from (or, for non-callables, referenced). */
+export interface ReferenceSite {
+  /** Repo-relative head-side file. */
+  file: string;
+  line: number;
+  startColumn: number;
+  endColumn: number;
+  snippet: string;
+  /** Name of the function (or class) the site sits in; the file's basename at module level. */
+  enclosingName: string;
+  /**
+   * Panel to open for this site — the enclosing declaration's graph-node or
+   * synthesized panel. Absent when the panel budget left it without one.
+   */
+  panelId?: string;
+}
+
+export interface ReferenceList {
+  /** "calls" from call hierarchy; "references" when the symbol is not callable. */
+  kind: "calls" | "references";
+  /** How many sites exist in total; `sites` holds the first few. */
+  total: number;
+  sites: ReferenceSite[];
+}
+
 /**
  * Everything the page needs to open any symbol's definition without a
- * server: per-file links and the definitions they point at.
+ * server: per-file links, the definitions they point at, and who calls them.
  */
 export interface NavigationData {
   links: Record<string, SymbolLink[]>;
   definitions: Record<DefinitionId, DefinitionTarget>;
+  references?: Record<DefinitionId, ReferenceList>;
 }
 
 /**

@@ -289,6 +289,23 @@ describe("renderSliceExplorerHtml with navigation data", () => {
         source: { startLine: 95, lines: Array.from({ length: 11 }, (_, i) => `// lib line ${95 + i}`) },
       },
     },
+    references: {
+      "a.ts:60:6": {
+        kind: "references",
+        total: 12,
+        sites: [
+          {
+            file: "a.ts",
+            line: 40,
+            startColumn: 6,
+            endColumn: 7,
+            snippet: "const y = 2;",
+            enclosingName: "retry",
+            panelId: "a.ts#retry",
+          },
+        ],
+      },
+    },
   };
 
   const html = renderSliceExplorerHtml({
@@ -359,5 +376,14 @@ describe("renderSliceExplorerHtml with navigation data", () => {
   it("ships the in-place highlight shortcut", () => {
     expect(html).toContain("inView");
     expect(html).toContain("linkInPlace");
+  });
+
+  it("embeds the caller lists and marks each listed call site in its caller's code", () => {
+    expect(html).toContain('id="ref-data"');
+    expect(html).toContain('"total":12');
+    // The site is also a link to the same definition, so one span carries both marks.
+    expect(html).toMatch(/class="[^"]*sym ref-site"[^>]*data-ref-of="a\.ts:60:6"/);
+    expect(html).toContain("contextmenu");
+    expect(html).toContain("ref-menu");
   });
 });

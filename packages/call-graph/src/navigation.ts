@@ -5,13 +5,21 @@
  */
 
 import path from "node:path";
-import type { DeclRef, LanguageBackend } from "./backend.js";
+import type { DeclRef, IncomingReference as IncomingReferenceOf, LanguageBackend } from "./backend.js";
 import { panelRange } from "./explorer.js";
 import { identifiersOf, languageOf } from "./highlight.js";
 import { LspBackend, pyrightConfig } from "./lspBackend.js";
+import { definitionPanelId as definitionPanelIdOf } from "./navLinks.js";
 import { fileBlockRanges, type SliceExplorerInput } from "./sliceExplorer.js";
 import { TsBackend } from "./tsBackend.js";
-import type { DefinitionId, DefinitionTarget, NavigationData, SymbolLink } from "./types.js";
+import type {
+  DefinitionId,
+  DefinitionTarget,
+  NavigationData,
+  ReferenceList,
+  ReferenceSite,
+  SymbolLink,
+} from "./types.js";
 
 export interface NavigationOptions {
   onProgress?: (message: string) => void;
@@ -19,6 +27,8 @@ export interface NavigationOptions {
   maxLookups?: number;
   /** Synthesize at most this many definition panels; later links are dropped. */
   maxPanels?: number;
+  /** Call sites kept per definition for the right-click menu. */
+  maxReferences?: number;
 }
 
 /** Context lines shown either side of a windowed definition. */
@@ -132,11 +142,13 @@ export async function resolveNavigation(
   options: NavigationOptions = {},
 ): Promise<NavigationData> {
   const log = options.onProgress ?? (() => {});
-  // Defaults sized from a ~1k-line Python PR: ~13k lookups in ~25s with
-  // pyright, ~2k distinct definitions. Each synthesized panel is ~10 KB of
-  // pre-rendered HTML, so the panel cap is what bounds the page.
+  // Defaults sized from a ~1k-line Python PR: ~20k lookups in ~90s with
+  // pyright, ~4k distinct definitions, ~370 named ones plus their callers
+  // wanting panels. Each synthesized panel is ~7 KB of pre-rendered HTML, so
+  // the panel cap is what bounds the page.
   const maxLookups = options.maxLookups ?? 20_000;
-  const maxPanels = options.maxPanels ?? 600;
+  const maxPanels = options.maxPanels ?? 1000;
+  const maxReferences = options.maxReferences ?? 10;
   const backends = new Backends(headDir);
 
   const linesByFile = new Map<string, string[]>();
@@ -240,8 +252,12 @@ export async function resolveNavigation(
   // all); any other gets a window — embedding whole files for every
   // definition reached would triple the page.
   let panels = 0;
-  const attachPanel = async (def: DefinitionTarget): Promise<[number, number] | null> => {
-    if (panels >= maxPanels) return null;
+  /** Head lines of every synthesized panel, to link their bodies in turn. */
+  const panelLines = new Map<string, Map<number, number>>();
+  const attachPanel = async (def: DefinitionTarget): Promise<boolean> => {
+    if (def.panel) return true;
+    if (panels >= maxPanels) return false;
+    panels++; // reserve before awaiting so concurrent callers cannot overshoot
     let range: [number, number];
     if (!def.external && pageFiles.has(def.file)) {
       range = panelRange(def, linesByFile.get(def.file)!.length);
@@ -250,7 +266,10 @@ export async function resolveNavigation(
       if (!lines) {
         const backend = backends.for(def.file);
         lines = (await backend?.fileInfo(def.file).catch(() => null))?.lines;
-        if (!lines) return null;
+        if (!lines) {
+          panels--;
+          return false;
+        }
         linesByFile.set(def.file, lines);
       }
       const from = Math.max(1, def.startLine - WINDOW_CONTEXT);
@@ -259,27 +278,90 @@ export async function resolveNavigation(
       range = [from, to];
     }
     def.panel = true;
-    panels++;
-    return range;
-  };
-  /** Named declarations before locals: a class is worth a panel before a loop variable is. */
-  const byPanelWorth = (a: DefinitionTarget, b: DefinitionTarget): number =>
-    Number(LOCAL_KINDS.has(a.kind)) - Number(LOCAL_KINDS.has(b.kind));
-
-  try {
-    await resolveLines(visibleLines(input));
-
-    const firstPass = Object.values(definitions)
-      .filter((d) => !d.nodeId)
-      .sort(byPanelWorth);
-    const panelLines = new Map<string, Map<number, number>>();
-    for (const def of firstPass) {
-      const range = await attachPanel(def);
-      if (!range || def.external) continue;
+    if (!def.external) {
       const lines = panelLines.get(def.file) ?? new Map<number, number>();
       for (let n = range[0]; n <= range[1]; n++) lines.set(n, 3);
       panelLines.set(def.file, lines);
     }
+    return true;
+  };
+  const isLocal = (d: DefinitionTarget): boolean => LOCAL_KINDS.has(d.kind);
+
+  // Who calls each repo-internal, named definition — for the right-click
+  // menu. Call hierarchy for callables; plain references for classes and
+  // constants, which call hierarchy does not answer for. Each site's
+  // enclosing declaration gets a panel too (budget permitting), so a row can
+  // walk up into it.
+  const references: Record<DefinitionId, ReferenceList> = {};
+  const enclosingPanel = async (ref: NonNullable<IncomingReferenceOf["enclosing"]>): Promise<string | undefined> => {
+      const file = toRelative(headDir, ref.fileName);
+      const nodeId = nodeByDecl.get(`${file}:${ref.line}`);
+      if (nodeId) return nodeId;
+      const site = `${ref.fileName}:${ref.line}:${ref.column}`;
+      let id = idBySite.get(site);
+      if (!id) {
+        id = `d${idBySite.size + 1}`;
+        idBySite.set(site, id);
+        definitions[id] = {
+          id,
+          name: ref.name,
+          kind: ref.kind,
+          file,
+          external: false,
+          nameLine: ref.line,
+          nameColumn: ref.column,
+          nameEndColumn: ref.column + ref.name.length,
+          startLine: ref.startLine,
+          endLine: ref.endLine,
+          panel: false,
+        };
+      }
+      const def = definitions[id]!;
+      return (await attachPanel(def)) ? definitionPanelIdOf(def) : undefined;
+    };
+    const collectReferences = async (def: DefinitionTarget): Promise<void> => {
+      const backend = backends.for(def.file);
+      if (!backend) return;
+      const ref: DeclRef = { fileName: path.join(headDir, def.file), line: def.nameLine, column: def.nameColumn };
+      const calls = await backend.incomingCallsAt(ref).catch(() => null);
+      const found = calls ?? (await backend.referencesAt(ref).catch(() => []));
+      if (!found.length) return;
+      const sites: ReferenceSite[] = [];
+      for (const r of found.slice(0, maxReferences)) {
+        const panelId = r.enclosing ? await enclosingPanel(r.enclosing) : undefined;
+        sites.push({
+          file: toRelative(headDir, r.fileName),
+          line: r.line,
+          startColumn: r.startColumn,
+          endColumn: r.endColumn,
+          snippet: r.snippet,
+          enclosingName: r.enclosing?.name ?? path.basename(r.fileName),
+          ...(panelId ? { panelId } : {}),
+        });
+      }
+      references[def.id] = { kind: calls ? "calls" : "references", total: found.length, sites };
+    };
+
+  try {
+    await resolveLines(visibleLines(input));
+
+    // Panel budget, in order of worth: named declarations the diff mentions,
+    // then the functions that call them (so every menu row can walk up),
+    // then locals — a loop variable's declaration is usually on screen anyway.
+    const firstPass = Object.values(definitions).filter((d) => !d.nodeId);
+    for (const def of firstPass) if (!isLocal(def)) await attachPanel(def);
+
+    const candidates = Object.values(definitions).filter((d) => d.panel && !d.external && !isLocal(d));
+    log(`navigation: collecting callers of ${candidates.length} definitions…`);
+    for (let i = 0; i < candidates.length; ) {
+      const backend = backends.for(candidates[i]!.file);
+      const batch = backend && backends.batched(backend) ? LSP_BATCH : 1;
+      const group = candidates.slice(i, i + batch).filter((c) => backends.for(c.file) === backend);
+      await Promise.all(group.map(collectReferences));
+      i += group.length;
+    }
+
+    for (const def of firstPass) if (isLocal(def)) await attachPanel(def);
 
     // Second pass: link the synthesized panels' own bodies, one level deep.
     // Named declarations found here get panels too (within the budget);
@@ -287,11 +369,10 @@ export async function resolveNavigation(
     // window that mentions them, where the in-place highlight covers it.
     // Nothing found here is resolved in turn: that would be the whole codebase.
     const before = new Set(Object.keys(definitions));
-    await resolveLines(panelLines);
-    const secondPass = Object.values(definitions)
-      .filter((d) => !before.has(d.id) && !d.nodeId && !LOCAL_KINDS.has(d.kind))
-      .sort(byPanelWorth);
-    for (const def of secondPass) await attachPanel(def);
+    await resolveLines(new Map(panelLines));
+    for (const def of Object.values(definitions)) {
+      if (!before.has(def.id) && !def.nodeId && !isLocal(def)) await attachPanel(def);
+    }
 
     const unopenable = Object.values(definitions).filter((d) => !d.panel).length;
     if (unopenable) {
@@ -300,11 +381,13 @@ export async function resolveNavigation(
 
     const linked = Object.values(links).reduce((n, l) => n + l.length, 0);
     log(
-      `navigation: ${linked} symbol links → ${Object.keys(definitions).length} definitions (${lookups} lookups${
+      `navigation: ${linked} symbol links → ${Object.keys(definitions).length} definitions, ${
+        Object.keys(references).length
+      } with callers (${lookups} lookups${
         unresolvedForBudget ? `, ${unresolvedForBudget} skipped for --nav-budget` : ""
       }).`,
     );
-    return { links, definitions };
+    return { links, definitions, references };
   } finally {
     backends.dispose();
   }

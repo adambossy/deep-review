@@ -38,6 +38,25 @@ export interface DefinitionLocation {
   endLine: number;
 }
 
+/** The declaration a reference sits inside: a function/method, or failing that a class. */
+export interface EnclosingDeclaration extends DeclRef {
+  name: string;
+  kind: string;
+  startLine: number;
+  endLine: number;
+}
+
+/** One place a symbol is called from or referenced. */
+export interface IncomingReference {
+  fileName: string;
+  line: number;
+  startColumn: number;
+  endColumn: number;
+  snippet: string;
+  /** Null at module level. */
+  enclosing: EnclosingDeclaration | null;
+}
+
 /**
  * A language service the analysis can drive: the in-process TypeScript
  * service, or any LSP server that supports call hierarchy.
@@ -60,6 +79,13 @@ export interface LanguageBackend {
    * `ref` is the declaration itself (nothing to navigate to).
    */
   definitionAt(ref: DeclRef): Promise<DefinitionLocation | null>;
+  /**
+   * Call sites of the callable declared at `ref`, via call hierarchy. Null
+   * when `ref` is not callable — the caller falls back to `referencesAt`.
+   */
+  incomingCallsAt(ref: DeclRef): Promise<IncomingReference[] | null>;
+  /** Every use of the symbol declared at `ref`, excluding the declaration. */
+  referencesAt(ref: DeclRef): Promise<IncomingReference[]>;
   dispose(): void;
 }
 

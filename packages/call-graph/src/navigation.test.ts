@@ -148,6 +148,26 @@ describe("resolveNavigation", () => {
     expect(lines.size).toBe(1);
   }, 30_000);
 
+  it("collects callers per definition, walking up through panels for their enclosing functions", async () => {
+    const nav = await resolveNavigation(dir, input, { maxReferences: 1 });
+    const limit = Object.values(nav.definitions).find((d) => d.name === "LIMIT")!;
+    const refs = nav.references![limit.id]!;
+    // A constant is not callable: references, not calls. Three uses exist
+    // (import, lib.ts body, use.ts body); one is kept.
+    expect([refs.kind, refs.total, refs.sites.length]).toEqual(["references", 3, 1]);
+    const site = refs.sites[0]!;
+    expect(site.panelId).toBeDefined();
+    expect(["use", "helper"]).toContain(site.enclosingName);
+
+    // `use` is not a graph node; its panel was synthesized so the row can walk up.
+    const useDef = Object.values(nav.definitions).find((d) => d.name === "use");
+    expect(useDef?.panel).toBe(true);
+    // `helper` is a graph node: its callers go straight to the node's panel.
+    const helper = Object.values(nav.definitions).find((d) => d.name === "helper")!;
+    expect(nav.references![helper.id]!.kind).toBe("calls");
+    expect(nav.references![helper.id]!.sites[0]!.enclosingName).toBe("use");
+  }, 30_000);
+
   it("spends the panel budget on named declarations before locals", async () => {
     const nav = await resolveNavigation(dir, input, { maxPanels: 1 });
     const withPanel = Object.values(nav.definitions).filter((d) => d.panel && !d.nodeId);

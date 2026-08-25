@@ -5,7 +5,13 @@
  */
 
 import { escapeHtml as esc, type Mark } from "./highlight.js";
-import type { DefinitionId, DefinitionTarget, NavigationData, SymbolLink } from "./types.js";
+import type {
+  DefinitionId,
+  DefinitionTarget,
+  NavigationData,
+  ReferenceSite,
+  SymbolLink,
+} from "./types.js";
 
 /** Panel id of a synthesized definition panel (a graph node keeps its own id). */
 export function definitionPanelId(def: DefinitionTarget): string {
@@ -15,10 +21,21 @@ export function definitionPanelId(def: DefinitionTarget): string {
 export class NavIndex {
   private linksByFile = new Map<string, Map<number, SymbolLink[]>>();
   private declsByFile = new Map<string, Map<number, DefinitionTarget[]>>();
+  /** file → line → [definition id, site] for every listed call site. */
+  private sitesByFile = new Map<string, Map<number, Array<[DefinitionId, ReferenceSite]>>>();
   readonly definitions: ReadonlyMap<DefinitionId, DefinitionTarget>;
 
   constructor(readonly nav: NavigationData | undefined) {
     this.definitions = new Map(Object.entries(nav?.definitions ?? {}));
+    for (const [id, list] of Object.entries(nav?.references ?? {})) {
+      for (const site of list.sites) {
+        const byLine = this.sitesByFile.get(site.file) ?? new Map<number, Array<[DefinitionId, ReferenceSite]>>();
+        const at = byLine.get(site.line) ?? [];
+        at.push([id, site]);
+        byLine.set(site.line, at);
+        this.sitesByFile.set(site.file, byLine);
+      }
+    }
     for (const [file, links] of Object.entries(nav?.links ?? {})) {
       const byLine = new Map<number, SymbolLink[]>();
       for (const link of links) {
@@ -87,11 +104,30 @@ export class NavIndex {
     }));
   }
 
-  /** Both kinds of mark for a line, deduped against marks the caller already has. */
+  /**
+   * Call-site marks on a head-side line: where a listed caller invokes a
+   * definition, tagged with that definition's id so walking up from the
+   * right-click menu can light the site up in the caller's panel.
+   */
+  refSiteMarks(file: string, line: number): Mark[] {
+    const sites = this.sitesByFile.get(file)?.get(line) ?? [];
+    return sites.map(([id, site]) => ({
+      start: site.startColumn,
+      end: site.endColumn,
+      cls: "ref-site",
+      attrs: `data-ref-of="${esc(id)}"`,
+    }));
+  }
+
+  /** Every kind of mark for a line, deduped against marks the caller already has. */
   marksFor(file: string, line: number, existing: readonly Mark[] = []): Mark[] {
     const decls = this.declMarks(file, line).filter(
       (d) => !existing.some((m) => m.cls === "self-sym" && m.start === d.start),
     );
-    return [...this.linkMarks(file, line, [...existing, ...decls]), ...decls];
+    return [
+      ...this.linkMarks(file, line, [...existing, ...decls]),
+      ...decls,
+      ...this.refSiteMarks(file, line),
+    ];
   }
 }

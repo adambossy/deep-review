@@ -4,7 +4,9 @@ import {
   extractSource,
   type DeclRef,
   type DefinitionLocation,
+  type EnclosingDeclaration,
   type FunctionRelations,
+  type IncomingReference,
 } from "./backend.js";
 import type { CallSite, FunctionSnapshot, SymbolRange } from "./types.js";
 
@@ -282,6 +284,107 @@ export function fileSnapshot(
   const sourceFile = ps.program.getSourceFile(path.resolve(ps.rootDir, file));
   if (!sourceFile) return null;
   return { lines: sourceFile.text.split("\n"), symbols: collectSymbols(sourceFile) };
+}
+
+/** The name node of a declaration that can enclose code, or undefined. */
+function scopeName(node: ts.Node): ts.Node | undefined {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isClassDeclaration(node)
+  ) {
+    return node.name;
+  }
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    (ts.isVariableDeclaration(node.parent) || ts.isPropertyDeclaration(node.parent))
+  ) {
+    return node.parent.name;
+  }
+  return undefined;
+}
+
+/** The innermost named function (else class) containing `pos`. */
+function enclosingAt(sourceFile: ts.SourceFile, pos: number): EnclosingDeclaration | null {
+  let node: ts.Node = sourceFile;
+  for (;;) {
+    const child = ts.forEachChild(node, (c) => (c.getStart(sourceFile) <= pos && pos < c.getEnd() ? c : undefined));
+    if (!child) break;
+    node = child;
+  }
+  let fn: ts.Node | null = null;
+  let cls: ts.Node | null = null;
+  for (let n: ts.Node | undefined = node; n && !fn; n = n.parent) {
+    const name = scopeName(n);
+    if (!name) continue;
+    if (ts.isClassDeclaration(n)) cls ??= n;
+    else fn = n;
+  }
+  const scope = fn ?? cls;
+  const name = scope && scopeName(scope);
+  if (!scope || !name) return null;
+  const decl = ts.isArrowFunction(scope) || ts.isFunctionExpression(scope) ? scope.parent : scope;
+  const lc = sourceFile.getLineAndCharacterOfPosition(name.getStart(sourceFile));
+  return {
+    fileName: sourceFile.fileName,
+    line: lc.line + 1,
+    column: lc.character,
+    name: name.getText(sourceFile),
+    kind: ts.isClassDeclaration(scope) ? "class" : ts.isMethodDeclaration(scope) ? "method" : "function",
+    startLine: sourceFile.getLineAndCharacterOfPosition(decl.getStart(sourceFile)).line + 1,
+    endLine: sourceFile.getLineAndCharacterOfPosition(decl.getEnd()).line + 1,
+  };
+}
+
+function referenceAt(ps: ProjectService, fileName: string, span: ts.TextSpan): IncomingReference | null {
+  const sourceFile = ps.program.getSourceFile(fileName);
+  if (!sourceFile) return null;
+  const start = sourceFile.getLineAndCharacterOfPosition(span.start);
+  const end = sourceFile.getLineAndCharacterOfPosition(span.start + span.length);
+  const lineText = sourceFile.text.split("\n")[start.line] ?? "";
+  return {
+    fileName,
+    line: start.line + 1,
+    startColumn: start.character,
+    endColumn: end.line === start.line ? end.character : lineText.length,
+    snippet: lineText.trim(),
+    enclosing: enclosingAt(sourceFile, span.start),
+  };
+}
+
+/** Call sites of the callable at `pos`; null when nothing callable is there. */
+export function incomingCallsAt(
+  ps: ProjectService,
+  fileName: string,
+  pos: number,
+): IncomingReference[] | null {
+  const prepared = ps.service.prepareCallHierarchy(fileName, pos);
+  const item = Array.isArray(prepared) ? prepared[0] : prepared;
+  if (!item) return null;
+  const refs: IncomingReference[] = [];
+  for (const incoming of ps.service.provideCallHierarchyIncomingCalls(item.file, item.selectionSpan.start)) {
+    if (!isProjectFile(ps.rootDir, incoming.from.file)) continue;
+    for (const span of incoming.fromSpans) {
+      const ref = referenceAt(ps, incoming.from.file, span);
+      if (ref) refs.push(ref);
+    }
+  }
+  return refs;
+}
+
+/** Uses of the symbol at `pos` across the project, excluding its declaration. */
+export function referencesAt(ps: ProjectService, fileName: string, pos: number): IncomingReference[] {
+  const refs: IncomingReference[] = [];
+  for (const symbol of ps.service.findReferences(fileName, pos) ?? []) {
+    for (const entry of symbol.references) {
+      if (entry.isDefinition || !isProjectFile(ps.rootDir, entry.fileName)) continue;
+      const ref = referenceAt(ps, entry.fileName, entry.textSpan);
+      if (ref) refs.push(ref);
+    }
+  }
+  return refs;
 }
 
 /**

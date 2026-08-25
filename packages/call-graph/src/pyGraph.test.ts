@@ -9,7 +9,7 @@ import type { FileDiff } from "./types.js";
 // Same chain as the TS test, in Python, analyzed via pyright over LSP:
 // top() -> mid() -> target() -> leaf(); diff touches mid and target.
 const dir = mkdtempSync(path.join(os.tmpdir(), "py-graph-test-"));
-writeFileSync(path.join(dir, "leaf.py"), "def leaf(n):\n    return n + 1\n");
+writeFileSync(path.join(dir, "leaf.py"), "STEP = 1\n\n\ndef leaf(n):\n    return n + STEP\n");
 writeFileSync(
   path.join(dir, "target.py"),
   "import os\nfrom leaf import leaf\n\n\ndef target(n):\n    return leaf(n) * 2 + len(os.sep)\n",
@@ -69,7 +69,7 @@ describe("pyright backend", () => {
       expect(edge.callSites[0]!.snippet).toContain("leaf(n)");
 
       const leaf = graph.nodes.get("leaf.py#leaf")!;
-      expect(leaf.snapshot.source[0]!.lines.join("\n")).toContain("return n + 1");
+      expect(leaf.snapshot.source[0]!.lines.join("\n")).toContain("return n + STEP");
     },
   );
 
@@ -86,8 +86,18 @@ describe("pyright backend", () => {
     const def = await backend.definitionAt({ fileName: path.join(dir, "target.py"), line: 6, column: 11 });
     expect(def).not.toBeNull();
     expect(def!.fileName).toBe(path.join(dir, "leaf.py"));
-    expect([def!.kind, def!.external, def!.nameLine, def!.nameColumn]).toEqual(["function", false, 1, 4]);
-    expect([def!.startLine, def!.endLine]).toEqual([1, 2]);
+    expect([def!.kind, def!.external, def!.nameLine, def!.nameColumn]).toEqual(["function", false, 4, 4]);
+    expect([def!.startLine, def!.endLine]).toEqual([4, 5]);
+  });
+
+  it("lists callers of a function and references of a constant, each with its enclosing scope", { timeout: 30_000 }, async () => {
+    const calls = await backend.incomingCallsAt({ fileName: path.join(dir, "leaf.py"), line: 4, column: 4 });
+    expect(calls!.map((c) => [c.enclosing?.name, path.basename(c.fileName), c.line, c.snippet])).toEqual([
+      ["target", "target.py", 6, "return leaf(n) * 2 + len(os.sep)"],
+    ]);
+    expect(await backend.incomingCallsAt({ fileName: path.join(dir, "leaf.py"), line: 1, column: 0 })).toBeNull();
+    const refs = await backend.referencesAt({ fileName: path.join(dir, "leaf.py"), line: 1, column: 0 });
+    expect(refs.map((r) => [r.enclosing?.name, r.line, r.startColumn, r.endColumn])).toEqual([["leaf", 5, 15, 19]]);
   });
 
   it("flags a stdlib definition as external and returns null on a declaration", { timeout: 30_000 }, async () => {

@@ -50,6 +50,7 @@ export class LspClient {
           // linkSupport makes definition answers carry the whole declaration
           // range alongside the name range, not just the name.
           definition: { linkSupport: true },
+          references: {},
         },
         workspace: { symbol: {} },
       },

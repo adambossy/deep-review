@@ -254,6 +254,16 @@ export const EXPLORER_CSS = `
      panel full of resolvable names does not read as a wall of tint. */
   .sym { cursor: pointer; border-bottom: 1px dotted var(--ink-faint); }
   .sym:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  /* Right-click menu of callers; lives inside the panel so it scrolls with it. */
+  .ref-menu {
+    position: absolute; z-index: 5; min-width: 18rem; max-width: 34rem;
+    display: flex; flex-direction: column; gap: 2px; padding: 0.4rem;
+    border: 1px solid var(--line-c); border-radius: 8px; background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+  .ref-menu .call-sites-label { margin: 0 0.5rem 0.2rem; }
+  .ref-menu .ref-more { padding: 0.2rem 0.5rem; font-size: 0.72rem; color: var(--ink-faint); }
+  .ref-site.sym-link { background: var(--accent); }
 `;
 
 /**
@@ -262,6 +272,18 @@ export const EXPLORER_CSS = `
  * slice explorer, which stacks these vertically.
  */
 export const EXPLORER_NAV_JS = `
+function escText(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function escAttr(s) { return escText(s).replace(/"/g, "&quot;"); }
+function closeRefMenu() {
+  var open = document.querySelectorAll(".ref-menu");
+  for (var i = 0; i < open.length; i++) open[i].remove();
+}
+/* Any click or right-click outside the menu, Escape, or scrolling the page
+   dismisses it — a menu that drifts away from its symbol is worse than none. */
+document.addEventListener("click", function (e) { if (!e.target.closest(".ref-menu")) closeRefMenu(); });
+document.addEventListener("contextmenu", function (e) { if (!e.target.closest(".ref-menu")) closeRefMenu(); }, true);
+document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeRefMenu(); });
+document.addEventListener("wheel", closeRefMenu, { passive: true });
 function initExplorer(root, NAMES, onNavigate) {
   var defs = root.querySelector(".panel-defs");
   /* Definition panels are shared by every track on the page (a class is the
@@ -431,6 +453,18 @@ function initExplorer(root, NAMES, onNavigate) {
         : walkDown(link.dataset.target, i);
       if (dest) {
         linkSymbols(link, dest);
+        /* A row from the right-click menu: the menu is gone once the caller
+           slides in, so the trail marker is the symbol that was right-clicked,
+           and the destination is the call site inside the caller. */
+        if (link.dataset.refDef) {
+          var origin = panel.querySelectorAll('.sym[data-def="' + esc1(link.dataset.refDef) + '"], .self-sym[data-decl="' + esc1(link.dataset.refDef) + '"]');
+          for (var o = 0; o < origin.length; o++) origin[o].classList.add("sym-link", "sym-dim");
+          var sites = dest.querySelectorAll('.ref-site[data-ref-of="' + esc1(link.dataset.refDef) + '"]');
+          for (var s = 0; s < sites.length; s++) sites[s].classList.add("sym-link");
+          var row = dest.querySelector('.ref-site[data-ref-of="' + esc1(link.dataset.refDef) + '"]');
+          if (row) row.scrollIntoView({ block: "center" });
+          closeRefMenu();
+        }
         report(link.dataset.target);
       }
       return;
@@ -444,6 +478,37 @@ function initExplorer(root, NAMES, onNavigate) {
       setPos(fwdTo, true);
       report(nodeAt(fwdTo + 1));
     }
+  });
+  /* Right-click on a symbol: a menu of who calls (or, for a class or
+     constant, who references) its definition. Rows are caller-rows, so the
+     click handler above walks up into the caller exactly as a panel's own
+     called-by rows do. */
+  root.addEventListener("contextmenu", function (e) {
+    var sym = e.target.closest(".sym, .self-sym");
+    var id = sym && (sym.dataset.def || sym.dataset.decl);
+    var refs = id && window.REFS && window.REFS[id];
+    if (!refs) return;
+    e.preventDefault();
+    closeRefMenu();
+    var panel = sym.closest(".panel");
+    var menu = document.createElement("div");
+    menu.className = "ref-menu";
+    var html = '<div class="call-sites-label">' + (refs.kind === "calls" ? "called by" : "referenced by") + "</div>";
+    for (var r = 0; r < refs.sites.length; r++) {
+      var site = refs.sites[r];
+      html += '<button class="caller-row"' +
+        (site.panelId ? ' data-target="' + escAttr(site.panelId) + '"' : " disabled") +
+        ' data-ref-def="' + escAttr(id) + '">\\u2196 <code class="fn-name">' + escText(site.enclosingName) +
+        '</code> <span class="loc">L' + site.line + "</span> <code>" + escText(site.snippet) + "</code></button>";
+    }
+    if (refs.total > refs.sites.length) {
+      html += '<div class="ref-more">+' + (refs.total - refs.sites.length) + " more</div>";
+    }
+    menu.innerHTML = html;
+    var rect = panel.getBoundingClientRect();
+    menu.style.left = (e.clientX - rect.left + panel.scrollLeft) + "px";
+    menu.style.top = (e.clientY - rect.top + panel.scrollTop) + "px";
+    panel.appendChild(menu);
   });
   /* External restore point for a history entry: rebuild the track from a
      saved list of node ids and re-settle the viewport at the saved slot. */

@@ -736,9 +736,11 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 
 <script type="application/json" id="slice-titles">${JSON.stringify(titles).replaceAll("</", "<\\/")}</script>
 <script type="application/json" id="def-names">${JSON.stringify(defNames).replaceAll("</", "<\\/")}</script>
+<script type="application/json" id="ref-data">${JSON.stringify(input.nav?.references ?? {}).replaceAll("</", "<\\/")}</script>
 <script type="application/json" id="render-data">${renderDataBlob(index)}</script>
 <script>
 window.DEFNAMES = JSON.parse(document.getElementById("def-names").textContent);
+window.REFS = JSON.parse(document.getElementById("ref-data").textContent);
 ${GAP_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}

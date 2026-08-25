@@ -8,6 +8,8 @@ import {
   fileSnapshot,
   findFunction,
   getRelations,
+  incomingCallsAt,
+  referencesAt,
 } from "./callHierarchy.js";
 
 const dir = mkdtempSync(path.join(os.tmpdir(), "call-graph-test-"));
@@ -23,8 +25,10 @@ export function target(x: number): number {
 );
 writeFileSync(
   path.join(dir, "helper.ts"),
-  `export function helper(x: number): number {
-  return x * 2;
+  `export const SCALE = 2;
+
+export function helper(x: number): number {
+  return x * SCALE;
 }
 `,
 );
@@ -108,7 +112,7 @@ describe("call hierarchy over a fixture project", () => {
     expect(callees[0]!.snapshot.callSites[0]!.snippet).toContain("helper(x)");
     const source = callees[0]!.snapshot.source.flatMap((s) => s.lines).join("\n");
     expect(source).toContain("export function helper");
-    expect(source).toContain("return x * 2;");
+    expect(source).toContain("return x * SCALE;");
     expect(callees[0]!.snapshot.truncated).toBe(false);
   });
 
@@ -137,9 +141,9 @@ describe("definitionAt", () => {
     const def = definitionAt(ps, main, offsetOf(4, "helper"))!;
     expect(def.fileName).toBe(path.join(dir, "helper.ts"));
     expect([def.kind, def.external, def.nameLine, def.nameColumn, def.nameEndColumn]).toEqual([
-      "function", false, 1, 16, 22,
+      "function", false, 3, 16, 22,
     ]);
-    expect([def.startLine, def.endLine]).toEqual([1, 3]);
+    expect([def.startLine, def.endLine]).toEqual([3, 5]);
   });
 
   it("resolves a parameter use to its declaration in the signature", () => {
@@ -155,6 +159,38 @@ describe("definitionAt", () => {
     const def = definitionAt(ps, main, offsetOf(4, "Math"))!;
     expect(def.external).toBe(true);
     expect(def.fileName.endsWith(".d.ts")).toBe(true);
+  });
+});
+
+describe("incomingCallsAt / referencesAt", () => {
+  const ps = createProjectService(dir);
+  const mainText = fileSnapshot(ps, "main.ts")!.lines;
+  const helperText = fileSnapshot(ps, "helper.ts")!.lines;
+  const offsetIn = (lines: string[], line: number, word: string): number =>
+    lines.slice(0, line - 1).join("\n").length + (line > 1 ? 1 : 0) + lines[line - 1]!.indexOf(word);
+
+  it("lists each call site with the function it sits in", () => {
+    const calls = incomingCallsAt(ps, path.join(dir, "main.ts"), offsetIn(mainText, 3, "target"))!;
+    const byCaller = calls.map((c) => [c.enclosing?.name, path.basename(c.fileName), c.line, c.snippet]);
+    expect(byCaller).toEqual(
+      expect.arrayContaining([
+        ["useTarget", "consumer.ts", 4, "return target(1) + target(2);"],
+        ["bigCaller", "big.ts", 74, "return target(3);"],
+      ]),
+    );
+    // Two calls on one line are two sites.
+    expect(calls.filter((c) => c.line === 4)).toHaveLength(2);
+    const use = calls.find((c) => c.enclosing?.name === "useTarget")!.enclosing!;
+    expect([use.kind, use.line, use.column, use.startLine, use.endLine]).toEqual(["function", 3, 16, 3, 5]);
+  });
+
+  it("returns null for a non-callable, so the caller falls back to references", () => {
+    const helperFile = path.join(dir, "helper.ts");
+    expect(incomingCallsAt(ps, helperFile, offsetIn(helperText, 1, "SCALE"))).toBeNull();
+    const refs = referencesAt(ps, helperFile, offsetIn(helperText, 1, "SCALE"));
+    expect(refs.map((r) => [r.enclosing?.name, r.line, r.startColumn, r.endColumn])).toEqual([
+      ["helper", 4, 13, 18],
+    ]);
   });
 });
 

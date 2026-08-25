@@ -7,7 +7,9 @@ import {
   extractSource,
   type DeclRef,
   type DefinitionLocation,
+  type EnclosingDeclaration,
   type FunctionRelations,
+  type IncomingReference,
   type LanguageBackend,
   type RelationEntry,
 } from "./backend.js";
@@ -88,6 +90,22 @@ function deepestSymbol(symbols: LspDocumentSymbol[], pos: LspPosition): LspDocum
     return (symbol.children && deepestSymbol(symbol.children, pos)) ?? symbol;
   }
   return null;
+}
+
+/** Innermost callable containing `pos`, else the innermost class, else null. */
+function enclosingScope(symbols: LspDocumentSymbol[], pos: LspPosition): LspDocumentSymbol | null {
+  let cls: LspDocumentSymbol | null = null;
+  let fn: LspDocumentSymbol | null = null;
+  const walk = (list: LspDocumentSymbol[]): void => {
+    for (const symbol of list) {
+      if (!contains(symbol.range, pos)) continue;
+      if (CALLABLE_KINDS.has(symbol.kind)) fn = symbol;
+      else if (symbol.kind === 5) cls = symbol;
+      if (symbol.children) walk(symbol.children);
+    }
+  };
+  walk(symbols);
+  return fn ?? cls;
 }
 
 const CALLABLE_KINDS = new Set([6, 9, 12]);
@@ -463,6 +481,65 @@ export class LspBackend implements LanguageBackend {
       startLine: extent.start.line + 1,
       endLine: extent.end.line + 1,
     };
+  }
+
+  private async referenceAt(uri: string, range: LspRange): Promise<IncomingReference> {
+    const fileName = fileURLToPath(uri);
+    const lineText = this.linesOf(fileName)[range.start.line] ?? "";
+    const scope = enclosingScope(await this.docSymbols(fileName), range.start);
+    let enclosing: EnclosingDeclaration | null = null;
+    if (scope) {
+      const sel = scope.selectionRange ?? scope.range;
+      enclosing = {
+        fileName,
+        line: sel.start.line + 1,
+        column: sel.start.character,
+        name: scope.name,
+        kind: SYMBOL_KIND_NAMES[scope.kind] ?? "function",
+        startLine: scope.range.start.line + 1,
+        endLine: scope.range.end.line + 1,
+      };
+    }
+    return {
+      fileName,
+      line: range.start.line + 1,
+      startColumn: range.start.character,
+      endColumn: range.end.line === range.start.line ? range.end.character : lineText.length,
+      snippet: lineText.trim(),
+      enclosing,
+    };
+  }
+
+  async incomingCallsAt(ref: DeclRef): Promise<IncomingReference[] | null> {
+    const client = await this.start();
+    const item = await this.prepare(ref);
+    if (!item) return null;
+    const incoming = await client.request<Array<{ from: LspCallHierarchyItem; fromRanges: LspRange[] }> | null>(
+      "callHierarchy/incomingCalls",
+      { item },
+    );
+    const refs: IncomingReference[] = [];
+    for (const call of incoming ?? []) {
+      if (!this.isProjectFile(fileURLToPath(call.from.uri))) continue;
+      for (const range of call.fromRanges) refs.push(await this.referenceAt(call.from.uri, range));
+    }
+    return refs;
+  }
+
+  async referencesAt(ref: DeclRef): Promise<IncomingReference[]> {
+    const client = await this.start();
+    await this.open(client, ref.fileName);
+    const locations = await client.request<LspLocation[] | null>("textDocument/references", {
+      textDocument: { uri: pathToFileURL(ref.fileName).href },
+      position: { line: ref.line - 1, character: ref.column },
+      context: { includeDeclaration: false },
+    });
+    const refs: IncomingReference[] = [];
+    for (const loc of locations ?? []) {
+      if (!this.isProjectFile(fileURLToPath(loc.uri))) continue;
+      refs.push(await this.referenceAt(loc.uri, loc.range));
+    }
+    return refs;
   }
 
   dispose(): void {
