@@ -312,7 +312,7 @@ const DEBUG_MARKS_CSS = `
     content: attr(data-why); position: absolute; left: 0; bottom: calc(100% + 3px); z-index: 7;
     font: 500 0.72rem/1.35 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0;
     color: var(--ink); background: var(--panel); border: 1px solid var(--dbg, var(--line-c));
-    border-radius: 4px; padding: 2px 6px; white-space: nowrap; pointer-events: none;
+    border-radius: 4px; padding: 2px 6px; width: max-content; max-width: 44ch; white-space: normal; pointer-events: none;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   }
   body.debug-marks .csite[data-why] { --dbg: var(--accent); }
