@@ -340,11 +340,7 @@ function renderSlicePanel(
       <span class="badge">${files.size} file${files.size === 1 ? "" : "s"}</span>
       ${slice.target ? `<span class="badge target">→ ${esc(slice.target.name)}</span>` : ""}
       ${slice.graph ? "" : '<span class="badge">no call graph</span>'}
-      ${
-        slice.graph
-          ? '<span class="hint">tap a highlighted symbol to walk into its call graph</span>'
-          : ""
-      }
+      <span class="hint">tap a symbol to open its definition · ⌘-click for its callers</span>
     </div>
     ${[...byFile].map(([file, group]) => renderFileBlock(file, group, index.get(`after:${file}`), symbols, nav)).join("")}
   </article>`;

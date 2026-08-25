@@ -533,15 +533,18 @@ function initExplorer(root, NAMES, onNavigate) {
      walks up into the caller exactly as a panel's own called-by rows do. */
   function openRefMenu(e, sym) {
     var id = sym.dataset.def || sym.dataset.decl;
-    var refs = id && window.REFS && window.REFS[id];
-    if (!refs) return;
+    if (!id) return;
     e.preventDefault();
     e.stopPropagation();
     closeRefMenu();
     var panel = sym.closest(".panel");
     var menu = document.createElement("div");
     menu.className = "ref-menu";
+    /* Always answer the gesture: a local or an unresolved symbol has no
+       callers to list, and silence reads as a broken shortcut. */
+    var refs = (window.REFS && window.REFS[id]) || { kind: "calls", total: 0, sites: [] };
     var html = '<div class="call-sites-label">' + (refs.kind === "calls" ? "called by" : "referenced by") + "</div>";
+    if (!refs.sites.length) html += '<div class="ref-more">no callers found</div>';
     for (var r = 0; r < refs.sites.length; r++) {
       var site = refs.sites[r];
       html += '<button class="caller-row"' +
