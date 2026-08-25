@@ -188,6 +188,21 @@ describe("renderSliceExplorerHtml", () => {
     expect(new Set(rows)).toEqual(new Set(["", "diff-add", "diff-del"]));
   });
 
+  it("marks the words that changed inside a paired −/+ line, and nothing when a line was rewritten", () => {
+    const pairFragment = {
+      ...farFragment,
+      id: "a.ts#2@40-41",
+      lines: ["-const y = 1;", "+const y = 2;"],
+      newLineNumbers: [null, 40] as (number | null)[],
+    };
+    const paired = render({ fragments: [fragment, pairFragment] });
+    expect(paired).toContain('diff-del-inner">1</span>');
+    expect(paired).toContain('diff-add-inner">2</span>');
+    // `const retryDelayed = 2;` → `function retry() {}` shares only spaces.
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(paired)![0];
+    expect(panel).not.toContain('diff-del-inner">const');
+  });
+
   it("puts an expander over the run hidden between two fragments", () => {
     // The first fragment ends at line 3 and shows 5 lines after it; the next
     // starts at 40 and shows 5 before it, leaving 9..34 hidden.

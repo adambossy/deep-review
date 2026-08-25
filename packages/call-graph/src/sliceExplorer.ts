@@ -5,13 +5,8 @@ import {
   renderPanel,
 } from "./explorer.js";
 import { NavIndex, definitionPanelId } from "./navLinks.js";
-import {
-  escapeHtml as esc,
-  languageOf,
-  renderLine,
-  tokenizeLines,
-  type Mark,
-} from "./highlight.js";
+import { fragmentRows as diffFragmentRows, markIntraLine, renderDiffRows } from "./diffView.js";
+import { escapeHtml as esc, languageOf, renderLine, type Mark } from "./highlight.js";
 import {
   buildFileIndex,
   CSS,
@@ -19,6 +14,8 @@ import {
   gapRow,
   lineRow,
   renderDataBlob,
+  staticGapRow,
+  type FileEntry,
   type FileIndex,
 } from "./html.js";
 import type { CallPathResult, EmbeddedFile, NavigationData } from "./types.js";
@@ -167,36 +164,29 @@ export function fileBlockRanges(
   return ranges;
 }
 
-/** The fragment's own diff rows: additions tinted, removals kept in place. */
+/** The fragment's own diff rows, GitHub-style, with graph and nav marks on top. */
 function fragmentRows(
   fragment: SliceFragmentInput,
   width: number,
   symbols: Symbols,
   nav: NavIndex,
-): string[] {
-  const lang = languageOf(fragment.file);
-  const contents = fragment.lines.map((l) => l.slice(1));
-  const tokens = tokenizeLines(contents, lang);
-
-  return fragment.lines.map((line, i) => {
-    if (line.startsWith("\\")) {
-      return lineRow("", width, esc(line));
-    }
+  entry: FileEntry | undefined,
+): string {
+  const rows = diffFragmentRows(fragment.lines, fragment.newLineNumbers);
+  markIntraLine(rows);
+  return renderDiffRows(rows, {
+    width,
+    lang: languageOf(fragment.file),
+    entry,
     // A removed line has no head-side number, so it can never be the
     // declaration site the head-side check compares against — and has no
     // navigation links either.
-    const headLine = fragment.newLineNumbers[i] ?? null;
-    const graphMarks = symbolMarks(contents[i]!, symbols, fragment.file, headLine);
-    const marks =
-      headLine === null ? graphMarks : [...graphMarks, ...nav.marksFor(fragment.file, headLine, graphMarks)];
-    const html = renderLine(contents[i]!, tokens[i]!, marks);
-    if (line.startsWith("-")) return lineRow("−", width, html, ["diff-del"]);
-    return lineRow(
-      fragment.newLineNumbers[i] ?? "",
-      width,
-      html,
-      line.startsWith("+") ? ["diff-add"] : [],
-    );
+    marksFor: (text, headLine) => {
+      const graphMarks = symbolMarks(text, symbols, fragment.file, headLine);
+      return headLine === null
+        ? graphMarks
+        : [...graphMarks, ...nav.marksFor(fragment.file, headLine, graphMarks)];
+    },
   });
 }
 
@@ -236,13 +226,17 @@ function renderFileBlock(
   nav: NavIndex,
 ): string {
   // Without the file's text there is no context to show and nothing to
-  // expand into, so each fragment stands alone.
+  // expand into, so the fragments stand alone with fixed gaps between them.
   if (!entry) {
     const width = 4;
-    const rows = fragments.flatMap((f) => [
-      `<span class="line hunk-header">${esc(f.hunkHeader)}</span>`,
-      ...fragmentRows(f, width, symbols, nav),
-    ]);
+    const ordered = [...fragments].sort((a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd);
+    const rows: string[] = [];
+    let previousEnd = 0;
+    for (const fragment of ordered) {
+      if (previousEnd > 0) rows.push(staticGapRow(fragment.headStart - previousEnd - 1));
+      rows.push(fragmentRows(fragment, width, symbols, nav, undefined));
+      previousEnd = Math.max(previousEnd, fragment.headEnd);
+    }
     return `<div class="file-block">${fileHead(file, fragments)}<pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
   }
 
@@ -273,7 +267,7 @@ function renderFileBlock(
     while (n <= to) {
       const fragment = ordered[next];
       if (fragment && fragment.headStart === n) {
-        rows.push(...fragmentRows(fragment, width, symbols, nav));
+        rows.push(fragmentRows(fragment, width, symbols, nav, entry));
         next++;
         n = Math.max(n, fragment.headEnd + 1);
         continue;

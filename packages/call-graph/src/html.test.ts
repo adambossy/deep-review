@@ -224,7 +224,8 @@ describe("renderCallGraphColumnsHtml", () => {
       html.indexOf('<article class="callee-panel" data-idx="0"'),
       html.indexOf('<article class="callee-panel" data-idx="1"'),
     );
-    expect(panel).toContain("@@ -0,0 +1,2 @@");
+    expect(panel).toContain('class="line diff-add"');
+    expect(panel).not.toContain("@@");
     expect(panel).not.toContain('class="side side-');
     expect(panel).not.toContain("not present before the PR");
   });

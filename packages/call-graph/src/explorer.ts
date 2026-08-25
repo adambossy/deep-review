@@ -1,19 +1,32 @@
+import {
+  fileDiffRows,
+  markIntraLine,
+  renderDiffBlock,
+  rowsWidth,
+  segmentRows,
+  type DiffRow,
+} from "./diffView.js";
 import { escapeHtml as esc, languageOf, type Mark } from "./highlight.js";
 import {
   buildFileIndex,
   dataScripts,
-  diffDecorations,
   GAP_JS,
   pageHead,
   pageHeader,
   presenceBadge,
-  renderCodeBlock,
-  renderHunksBlock,
   type Decorations,
+  type FileEntry,
   type FileIndex,
 } from "./html.js";
 import { NavIndex, definitionPanelId } from "./navLinks.js";
-import type { CallPathResult, CallSite, DefinitionTarget, PathNode } from "./types.js";
+import type {
+  CallPathResult,
+  CallSite,
+  DefinitionTarget,
+  DiffHunk,
+  PathNode,
+  SourceSegment,
+} from "./types.js";
 
 function sitesFor(side: "before" | "after", edge: { before: CallSite[]; after: CallSite[] }): CallSite[] {
   return side === "after" ? edge.after : edge.before;
@@ -51,6 +64,29 @@ function addNavMarks(
   }
 }
 
+/**
+ * The diff rows a panel shows for a declaration: the whole file's changes
+ * and the declaration itself, each with context, when the file is embedded;
+ * otherwise the source segments we have, with the hunks applied.
+ */
+function panelRows(
+  span: LineSpanWithSource,
+  hunks: DiffHunk[],
+  entry: FileEntry | undefined,
+): DiffRow[] {
+  const rows = entry
+    ? fileDiffRows(entry.lines, hunks, { context: PANEL_CONTEXT, focus: span })
+    : segmentRows(span.source, hunks);
+  markIntraLine(rows);
+  return rows;
+}
+
+interface LineSpanWithSource {
+  startLine: number;
+  endLine: number;
+  source: SourceSegment[];
+}
+
 export function renderPanel(
   node: PathNode,
   result: CallPathResult,
@@ -60,23 +96,13 @@ export function renderPanel(
   const side: "before" | "after" = node.after ? "after" : "before";
   const snapshot = (node.after ?? node.before)!;
   const entry = index.get(`${side}:${snapshot.file}`);
-
-  // Pad the visible source with context from the embedded file so tiny
-  // functions (one-line arrows, etc.) aren't shown as a lone line.
   const range = entry ? panelRange(snapshot, entry.lines.length) : null;
-  const segments =
-    entry && range
-      ? [{ startLine: range[0], lines: entry.lines.slice(range[0] - 1, range[1]) }]
-      : snapshot.source;
 
-  // Decorations: PR-added lines tinted, PR-removed lines interleaved in red;
-  // each outgoing call tappable. Decorate only within the function itself —
-  // surrounding context lines may also be "added" (e.g. in a new file) but
-  // should read as plain context.
+  // Hunks are in head coordinates; a before-only function shows plain source.
+  const rows = panelRows(snapshot, side === "after" ? node.hunks : [], entry);
+
+  // Overlays on the diff: each outgoing call tappable, the declared name marked.
   const decorations: Decorations = new Map();
-  if (side === "after") {
-    diffDecorations(decorations, node.hunks, snapshot.startLine, snapshot.endLine);
-  }
   for (const edge of result.edges) {
     if (edge.from !== node.id) continue;
     for (const site of sitesFor(side, edge)) {
@@ -153,8 +179,13 @@ export function renderPanel(
       node.expanded ? "" : ' <span class="badge">boundary</span>'
     }</div>
     ${callerRows ? `<div class="call-sites-label">called by — tap to walk up</div><div class="caller-rows">${callerRows}</div>` : ""}
-    ${node.hunks.length ? `<details class="fn"><summary>diff (${node.hunks.length} hunk${node.hunks.length > 1 ? "s" : ""})</summary><div class="fn-body">${renderHunksBlock(node.hunks, entry, languageOf(node.file))}</div></details>` : ""}
-    ${renderCodeBlock(segments, { entry, gaps: true, lang: languageOf(snapshot.file), decorations })}
+    ${renderDiffBlock(rows, {
+      width: rowsWidth(rows, entry),
+      lang: languageOf(snapshot.file),
+      entry,
+      decorations,
+      focus: snapshot,
+    })}
   </article>`;
 }
 
@@ -166,14 +197,8 @@ export function renderPanel(
 export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, nav: NavIndex): string {
   // A window wins when present: the file is not on the page whole.
   const entry = def.external || def.source ? undefined : index.get(`after:${def.file}`);
-  const range = entry ? panelRange(def, entry.lines.length) : null;
-  const segments =
-    entry && range
-      ? [{ startLine: range[0], lines: entry.lines.slice(range[0] - 1, range[1]) }]
-      : def.source
-        ? [def.source]
-        : [];
-  if (!segments.length) return "";
+  if (!entry && !def.source) return "";
+  const rows = panelRows({ ...def, source: def.source ? [def.source] : [] }, [], entry);
 
   const decorations: Decorations = new Map();
   decorations.set(def.nameLine, {
@@ -182,10 +207,9 @@ export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, n
     ],
   });
   if (!def.external) {
-    const [from, to] = range ?? [
-      segments[0]!.startLine,
-      segments[0]!.startLine + segments[0]!.lines.length - 1,
-    ];
+    const [from, to] = entry
+      ? panelRange(def, entry.lines.length)
+      : [def.source!.startLine, def.source!.startLine + def.source!.lines.length - 1];
     // The declaration's own mark is already placed above; marksFor dedupes it.
     addNavMarks(decorations, nav, def.file, from, to);
   }
@@ -197,7 +221,7 @@ export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, n
       def.external ? ' <span class="badge">external</span>' : ""
     }</h3>
     <div class="side-loc"><code>${esc(shownFile)}:${def.startLine}–${def.endLine}</code> <span class="badge">after</span></div>
-    ${renderCodeBlock(segments, { entry, gaps: true, lang: languageOf(def.file), decorations })}
+    ${renderDiffBlock(rows, { width: rowsWidth(rows, entry), lang: languageOf(def.file), entry, decorations, focus: def })}
   </article>`;
 }
 

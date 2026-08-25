@@ -1,3 +1,4 @@
+import { fileDiffRows, hunkRows, markIntraLine, renderDiffBlock, rowsWidth } from "./diffView.js";
 import {
   escapeHtml as esc,
   languageOf,
@@ -91,6 +92,12 @@ export function lineRow(
   return `<span class="${classes}"><span class="lineno">${String(lineNumber).padStart(width)}</span>${contentHtml}</span>`;
 }
 
+/** A gap bar with nothing to expand into: the file's text is not on the page. */
+export function staticGapRow(count: number): string {
+  if (count <= 0) return "";
+  return `<div class="gap static"><span class="gap-count">⋯ ${count} hidden lines</span></div>`;
+}
+
 /** GitHub-style expander: ▲ reveals the gap's bottom, ▼ its top. */
 export function gapRow(entry: FileEntry, from: number, to: number): string {
   const count = to - from + 1;
@@ -160,57 +167,21 @@ export function renderCodeBlock(segments: SourceSegment[], opts: BlockOptions): 
 }
 
 // ---------------------------------------------------------------------------
-// Diff hunks (target card): hunk header + lines, expander gaps around
+// Diff hunks (target card): unified view with expander gaps around
 
-function renderHunkRows(hunk: DiffHunk, width: number, lang: Language): string[] {
-  const rows: string[] = [];
-  const contents = hunk.lines.map((l) => l.slice(1));
-  const tokens = tokenizeLines(contents, lang);
-  let newN = hunk.newStart;
-  hunk.lines.forEach((line, i) => {
-    const markerCls =
-      line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-del" : "";
-    const html = renderLine(contents[i]!, tokens[i]!, []);
-    if (line.startsWith("-")) {
-      rows.push(lineRow("−", width, html, ["diff-del"]));
-    } else if (line.startsWith("\\")) {
-      rows.push(lineRow("", width, esc(line)));
-    } else {
-      rows.push(lineRow(newN, width, html, markerCls ? [markerCls] : []));
-      newN++;
-    }
-  });
-  return rows;
-}
+/** Context shown around each change in a hunks-only block, like `git diff`. */
+const HUNK_CONTEXT = 3;
 
-/** Hunks with GitHub-style expandable context between and around them. */
+/** A function's hunks as one unified diff, with expandable context when the file is embedded. */
 export function renderHunksBlock(
   hunks: DiffHunk[],
   entry: FileEntry | undefined,
   lang?: Language,
 ): string {
   if (!hunks.length) return "";
-  const hunkLang = lang ?? entry?.lang ?? "ts";
-  const sorted = [...hunks].sort((a, b) => a.newStart - b.newStart);
-  const width = entry
-    ? String(entry.lines.length).length
-    : String(Math.max(...sorted.map((h) => h.newStart + h.newLines))).length;
-
-  const rows: string[] = [];
-  let previousEnd = 0;
-  for (const hunk of sorted) {
-    if (entry) rows.push(gapRow(entry, previousEnd + 1, hunk.newStart - 1));
-    const crumb = entry ? crumbFor(entry.symbols, hunk.newStart) : "";
-    rows.push(
-      `<span class="line hunk-header">${esc(hunk.header)}${crumb ? ` <span class="gap-crumb">${crumb}</span>` : ""}</span>`,
-    );
-    rows.push(...renderHunkRows(hunk, width, hunkLang));
-    previousEnd = hunk.newStart + Math.max(hunk.newLines, 1) - 1;
-  }
-  if (entry && previousEnd < entry.lines.length) {
-    rows.push(gapRow(entry, previousEnd + 1, entry.lines.length));
-  }
-  return `<pre class="source" data-w="${width}">${rows.join("")}</pre>`;
+  const rows = entry ? fileDiffRows(entry.lines, hunks, { context: HUNK_CONTEXT }) : hunkRows(hunks);
+  markIntraLine(rows);
+  return renderDiffBlock(rows, { width: rowsWidth(rows, entry), lang: lang ?? entry?.lang ?? "ts", entry });
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +342,7 @@ export const CSS = `
     --add-bg: rgba(22, 163, 74, 0.09); --add-edge: #16a34a;
     --del-bg: rgba(220, 38, 38, 0.08); --del-edge: #dc2626;
     --callsite-bg: rgba(79, 70, 229, 0.10);
+    --add-inner: rgba(22, 163, 74, 0.28); --del-inner: rgba(220, 38, 38, 0.26);
     --tok-kw: #9333ea; --tok-str: #15803d; --tok-com: #a1a1aa;
     --tok-num: #b45309; --tok-fn: #4f46e5; --tok-type: #0e7490; --tok-lit: #b45309;
   }
@@ -383,6 +355,7 @@ export const CSS = `
       --add-bg: rgba(74, 222, 128, 0.08); --add-edge: #4ade80;
       --del-bg: rgba(248, 113, 113, 0.08); --del-edge: #f87171;
       --callsite-bg: rgba(129, 140, 248, 0.14);
+      --add-inner: rgba(74, 222, 128, 0.28); --del-inner: rgba(248, 113, 113, 0.26);
       --tok-kw: #c084fc; --tok-str: #86efac; --tok-com: #5c5f66;
       --tok-num: #fbbf24; --tok-fn: #a5b4fc; --tok-type: #67e8f9; --tok-lit: #fbbf24;
     }
@@ -434,7 +407,13 @@ export const CSS = `
   .source .line.diff-add { background: var(--add-bg); }
   .source .line.diff-del { background: var(--del-bg); }
   .source .line.diff-del .lineno { color: var(--del-edge); }
-  .source .line.hunk-header { color: var(--ink-faint); background: var(--panel-2); padding: 0.15rem 0.9rem; }
+  .source .line.diff-add .lineno { color: var(--add-edge); }
+  /* Within a changed pair of lines, the words that actually differ. */
+  .source .diff-add-inner { background: var(--add-inner); border-radius: 2px; }
+  .source .diff-del-inner { background: var(--del-inner); border-radius: 2px; }
+  /* The declaration a panel is about, marked along its left edge so it stands
+     out from the context around it without competing with the diff colors. */
+  .source .line.in-focus { box-shadow: inset 3px 0 0 var(--accent); }
   .source .line.elide { color: var(--ink-faint); font-style: italic; }
   .callsite { background: var(--callsite-bg); border-radius: 4px; padding: 0.05rem 0; }
   .csite { color: var(--accent); background: var(--callsite-bg); border-radius: 4px;
@@ -446,6 +425,7 @@ export const CSS = `
          border-top: 1px solid var(--line-c); border-bottom: 1px solid var(--line-c);
          padding: 0.22rem 0.9rem; font-family: ui-sans-serif, system-ui, sans-serif;
          font-size: 0.68rem; color: var(--ink-faint); }
+  .gap.static { cursor: default; }
   .gap-btns { display: inline-flex; gap: 2px; }
   .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.7rem; padding: 0.05rem 0.3rem; border-radius: 4px; }
   .gap-btn:hover { background: var(--accent-soft); }

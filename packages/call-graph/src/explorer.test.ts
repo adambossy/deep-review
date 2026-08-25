@@ -71,16 +71,15 @@ const result: CallPathResult = {
         source: [{ startLine: 20, lines: ["function leaf(n) {", "}"] }],
         truncated: false,
       },
-      // Whole file added by the PR — but only the function's own lines
-      // should be tinted green in the panel, not the surrounding context.
+      // The PR added exactly these two lines to an existing file.
       hunks: [
         {
-          header: "@@ -0,0 +1,40 @@",
-          oldStart: 0,
+          header: "@@ -19,0 +20,2 @@",
+          oldStart: 19,
           oldLines: 0,
-          newStart: 1,
-          newLines: 40,
-          lines: Array.from({ length: 40 }, (_, i) => `+line ${i + 1}`),
+          newStart: 20,
+          newLines: 2,
+          lines: ["+function leaf(n) {", "+}"],
         },
       ],
       changedInPr: true,
@@ -166,28 +165,34 @@ describe("renderCallPathExplorerHtml", () => {
     expect(leafPanel).toContain('data-from="32" data-to="40"');
   });
 
-  it("tints only the function's own added lines, not surrounding context", () => {
+  it("tints exactly the added lines and outlines the function's own rows", () => {
     const leafPanel = html.slice(
       html.lastIndexOf('data-node="leaf.ts#leaf"'),
       html.lastIndexOf('data-node="top.ts#top"'),
     );
-    // The panel's last <pre> is the source block (the first is the diff).
-    const source = leafPanel.slice(leafPanel.lastIndexOf("<pre"));
-    // Function spans 20–21: exactly two tinted rows in the source block.
-    expect(source.match(/class="line diff-add"/g)).toHaveLength(2);
-    expect(source).toContain('diff-add"><span class="lineno">20</span>');
+    // One pane per panel now: no separate diff block, no hunk headers.
+    expect(leafPanel.match(/<pre/g)).toHaveLength(1);
+    expect(leafPanel).not.toContain('<details class="fn">');
+    expect(leafPanel).not.toContain("@@");
+    // Function spans 20–21: exactly two added rows, both in focus.
+    expect(leafPanel.match(/class="line diff-add in-focus"/g)).toHaveLength(2);
+    expect(leafPanel.match(/in-focus"/g)).toHaveLength(2);
+    expect(leafPanel).toContain('diff-add in-focus"><span class="lineno">20</span>');
   });
 
-  it("interleaves removed lines as red rows above their replacement", () => {
+  it("interleaves removed lines as red rows above their replacement, with the changed words marked", () => {
     const midPanel = html.slice(
       html.lastIndexOf('data-node="mid.ts#mid"'),
       html.lastIndexOf('data-node="leaf.ts#leaf"'),
     );
-    const source = midPanel.slice(midPanel.lastIndexOf("<pre"));
-    const deletedRow = /<span class="line diff-del">[^]*?oldMid/.exec(source);
+    const deletedRow = /<span class="line diff-del">[^]*?oldMid/.exec(midPanel);
     expect(deletedRow).not.toBeNull();
     // The removed row sits above the added declaration line.
-    expect(deletedRow!.index).toBeLessThan(source.indexOf('lineno">1</span>'));
+    expect(deletedRow!.index).toBeLessThan(midPanel.indexOf('lineno">1</span>'));
+    // `function ` and `(n) {` are shared; only the names differ.
+    expect(midPanel).toContain('diff-del-inner">oldMid</span>');
+    expect(midPanel).toContain('diff-add-inner self-sym">mid</span>');
+    expect(midPanel).not.toContain('diff-del-inner">function');
   });
 
   it("includes the sliding rails and navigation script", () => {
