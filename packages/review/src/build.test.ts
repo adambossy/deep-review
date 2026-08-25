@@ -109,4 +109,9 @@ describe("buildSliceExplorerInput with a head checkout", () => {
     const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir, navigation: false });
     expect(input.nav).toBeUndefined();
   });
+
+  it("embeds the changed files with their text so the page has context and scopes", async () => {
+    const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir, navigation: false });
+    expect(input.files.map((f) => [f.path, f.lines.length])).toEqual([["src/new.ts", 5]]);
+  });
 });

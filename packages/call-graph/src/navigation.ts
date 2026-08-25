@@ -6,12 +6,11 @@
 
 import path from "node:path";
 import type { DeclRef, IncomingReference as IncomingReferenceOf, LanguageBackend } from "./backend.js";
+import { Backends } from "./backends.js";
 import { panelRange } from "./explorer.js";
 import { identifiersOf, languageOf } from "./highlight.js";
-import { LspBackend, pyrightConfig } from "./lspBackend.js";
 import { definitionPanelId as definitionPanelIdOf } from "./navLinks.js";
 import { fileBlockRanges, type SliceExplorerInput } from "./sliceExplorer.js";
-import { TsBackend } from "./tsBackend.js";
 import type {
   DefinitionId,
   DefinitionTarget,
@@ -37,32 +36,6 @@ const WINDOW_CONTEXT = 10;
 const WINDOW_MAX_LINES = 200;
 /** Concurrent in-flight requests to an LSP server; one round trip per batch. */
 const LSP_BATCH = 32;
-
-const TS_EXTENSIONS = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
-
-/** One language backend per language, started lazily on first use. */
-class Backends {
-  private ts: TsBackend | null = null;
-  private py: LspBackend | null = null;
-
-  constructor(private headDir: string) {}
-
-  for(file: string): LanguageBackend | null {
-    if (TS_EXTENSIONS.test(file)) return (this.ts ??= new TsBackend(this.headDir));
-    if (/\.pyi?$/.test(file)) return (this.py ??= new LspBackend(this.headDir, pyrightConfig()));
-    return null;
-  }
-
-  /** Whether requests to this backend should be issued in parallel batches. */
-  batched(backend: LanguageBackend): boolean {
-    return backend === this.py;
-  }
-
-  dispose(): void {
-    this.ts?.dispose();
-    this.py?.dispose();
-  }
-}
 
 /**
  * Head-side lines the renderers will show, by file, each tagged with a

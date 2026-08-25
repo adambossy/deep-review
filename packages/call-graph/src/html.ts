@@ -60,13 +60,30 @@ function symbolLabel(symbol: SymbolRange): string {
     : `${symbol.name}()`;
 }
 
-/** Outermost → innermost symbols containing a line: "class Ky › #retry()". */
-function crumbFor(symbols: SymbolRange[], line: number): string {
-  return symbols
-    .filter((s) => s.startLine <= line && s.endLine >= line)
-    .sort((a, b) => b.endLine - b.startLine - (a.endLine - a.startLine))
+/** Outermost → innermost declarations containing a line, following the symbol tree. */
+export function scopeChainFor(symbols: readonly SymbolRange[], line: number): SymbolRange[] {
+  const chain: SymbolRange[] = [];
+  let level: readonly SymbolRange[] = symbols;
+  for (;;) {
+    const hit = level.find((s) => s.startLine <= line && s.endLine >= line);
+    if (!hit) return chain;
+    chain.push(hit);
+    level = hit.children ?? [];
+  }
+}
+
+/** Breadcrumb on expanders: "class Ky › #retry()". */
+function crumbFor(symbols: readonly SymbolRange[], line: number): string {
+  return scopeChainFor(symbols, line)
     .map((s) => esc(symbolLabel(s)))
     .join(" › ");
+}
+
+/** Sticky-header label: "Ky.#retry" — the chain of names, dotted. */
+export function scopeLabelFor(symbols: readonly SymbolRange[], line: number): string {
+  return scopeChainFor(symbols, line)
+    .map((s) => s.name)
+    .join(".");
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +127,22 @@ export function gapRow(entry: FileEntry, from: number, to: number): string {
   return `<div class="gap" data-key="${esc(entry.key)}" data-from="${from}" data-to="${to}"><span class="gap-btns">${buttons}</span><span class="gap-count">⋯ ${count} hidden lines</span>${
     crumb ? `<span class="gap-crumb">${crumb}</span>` : ""
   }</div>`;
+}
+
+/**
+ * A code block under its sticky scope header. The header names the file
+ * and, when the file is embedded (so its symbols are on the page), the
+ * declaration at `firstLine` — the client keeps that in step with scrolling.
+ */
+export function codePane(
+  file: string,
+  entry: FileEntry | undefined,
+  firstLine: number,
+  block: string,
+): string {
+  const shown = esc(file);
+  const label = entry ? esc(scopeLabelFor(entry.symbols, firstLine)) : "";
+  return `<div class="code-pane"><div class="scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><span class="scope-path">${shown}</span><span class="scope-sym">${label}</span></div>${block}</div>`;
 }
 
 interface BlockOptions {
@@ -426,6 +459,19 @@ export const CSS = `
          padding: 0.22rem 0.9rem; font-family: ui-sans-serif, system-ui, sans-serif;
          font-size: 0.68rem; color: var(--ink-faint); }
   .gap.static { cursor: default; }
+  /* Sticky scope header: the file, and the declaration the first visible
+     line is in, pinned to the top of the pane as it scrolls. */
+  .code-pane { position: relative; margin: 0.5rem 0 0.2rem; }
+  .scope-bar {
+    position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 0.15rem;
+    padding: 0.35rem 0.9rem; background: var(--panel-2);
+    border: 1px solid var(--line-c); border-bottom: none; border-radius: 8px 8px 0 0;
+    font-family: var(--mono); font-size: 0.72rem; white-space: nowrap; overflow: hidden;
+  }
+  .scope-bar .scope-path { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; }
+  .scope-bar .scope-sym { color: var(--ink); font-weight: 600; }
+  .scope-bar .scope-sym:not(:empty)::before { content: ":"; color: var(--ink-faint); font-weight: 400; }
+  .code-pane > pre.source { margin: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
   .gap-btns { display: inline-flex; gap: 2px; }
   .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.7rem; padding: 0.05rem 0.3rem; border-radius: 4px; }
   .gap-btn:hover { background: var(--accent-soft); }
@@ -440,14 +486,24 @@ export const CSS = `
 export const GAP_JS = `
   var RD = JSON.parse(document.getElementById("render-data").textContent);
   var STEP = RD.step;
-  function crumbFor(file, line) {
-    var parts = [];
-    for (var i = 0; i < file.symbols.length; i++) {
-      var s = file.symbols[i];
-      if (s[1] <= line && s[2] >= line) parts.push({ label: s[0], size: s[2] - s[1] });
+  /* Outermost → innermost symbols containing a line, down the symbol tree. */
+  function scopeChain(file, line) {
+    var chain = [], level = file.symbols;
+    for (;;) {
+      var hit = null;
+      for (var i = 0; i < level.length; i++) {
+        if (level[i].s <= line && level[i].e >= line) { hit = level[i]; break; }
+      }
+      if (!hit) return chain;
+      chain.push(hit);
+      level = hit.c || [];
     }
-    parts.sort(function (a, b) { return b.size - a.size; });
-    return parts.map(function (p) { return p.label; }).join(" \\u203a ");
+  }
+  function crumbFor(file, line) {
+    return scopeChain(file, line).map(function (s) { return s.l; }).join(" \\u203a ");
+  }
+  function scopeLabel(file, line) {
+    return scopeChain(file, line).map(function (s) { return s.n; }).join(".");
   }
   function rowHtml(file, n, w) {
     var num = String(n); while (num.length < w) num = " " + num;
@@ -489,8 +545,66 @@ export const GAP_JS = `
     gap.dataset.from = String(from);
     gap.dataset.to = String(to);
     gap.innerHTML = gapInner(file, from, to);
+    if (window.updateScopeBars) updateScopeBars(gap.closest(".panel, .col") || document);
   });
 `;
+
+/**
+ * The sticky scope header over each code pane: as the pane scrolls, it names
+ * the declaration the first visible line sits in, the way GitHub pins the
+ * enclosing hunk header. Panels are cloned at runtime, so the listener is
+ * one capturing document-level scroll handler rather than one per pane.
+ */
+export const SCOPE_JS = `
+  /* Head line of the first row not scrolled under the bar: binary search
+     over the pre's children (rows and gaps, in document order). */
+  function firstVisibleLine(bar, pre) {
+    var limit = bar.getBoundingClientRect().bottom;
+    var kids = pre.children, lo = 0, hi = kids.length - 1, found = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (kids[mid].getBoundingClientRect().bottom > limit) { found = mid; hi = mid - 1; }
+      else lo = mid + 1;
+    }
+    for (var i = Math.max(found, 0); i < kids.length; i++) {
+      var el = kids[i];
+      if (el.classList.contains("gap")) return Number(el.dataset.from);
+      var no = el.querySelector(".lineno");
+      var n = no ? Number(no.textContent) : NaN;
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return NaN;
+  }
+  function updateScopeBars(scope) {
+    var bars = (scope || document).querySelectorAll(".scope-bar[data-key]");
+    for (var b = 0; b < bars.length; b++) {
+      var bar = bars[b];
+      var file = RD.files[bar.dataset.key];
+      var pre = bar.parentElement && bar.parentElement.querySelector("pre.source");
+      var sym = bar.querySelector(".scope-sym");
+      if (!file || !pre || !sym) continue;
+      var line = firstVisibleLine(bar, pre);
+      sym.textContent = isNaN(line) ? "" : scopeLabel(file, line);
+    }
+  }
+  window.updateScopeBars = updateScopeBars;
+  document.addEventListener("scroll", function (e) {
+    var pane = e.target instanceof Element ? e.target.closest(".panel, .col") : null;
+    if (!pane) return;
+    requestAnimationFrame(function () { updateScopeBars(pane); });
+  }, true);
+`;
+
+/** A symbol for the page: label, bare name, start, end, children — short keys, it is repeated a lot. */
+function symbolBlob(s: SymbolRange): unknown {
+  return {
+    l: symbolLabel(s),
+    n: s.name,
+    s: s.startLine,
+    e: s.endLine,
+    ...(s.children?.length ? { c: s.children.map(symbolBlob) } : {}),
+  };
+}
 
 export function renderDataBlob(index: FileIndex): string {
   const files: Record<string, unknown> = {};
@@ -498,7 +612,7 @@ export function renderDataBlob(index: FileIndex): string {
     files[key] = {
       html: entry.html,
       count: entry.lines.length,
-      symbols: entry.symbols.map((s) => [symbolLabel(s), s.startLine, s.endLine]),
+      symbols: entry.symbols.map(symbolBlob),
     };
   }
   return JSON.stringify({ step: EXPAND_STEP, files }).replaceAll("</", "<\\/");
@@ -579,6 +693,7 @@ ${renderGroup("Callees", "callees", result.callees, index)}
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
+${SCOPE_JS}
   for (const button of document.querySelectorAll('.controls button[data-view]')) {
     button.addEventListener("click", () => {
       document.body.dataset.view = button.dataset.view;
@@ -780,7 +895,7 @@ ${pageHeader(result)}
     </h2>
     <div class="side-loc"><code>${esc(snapshot.file)}:${snapshot.startLine}–${snapshot.endLine}</code> <span class="badge">${side}</span></div>
     <p class="missing">click a highlighted call to open that callee →</p>
-    ${targetBlock}
+    ${codePane(snapshot.file, entry, snapshot.source[0]?.startLine ?? 1, targetBlock)}
   </section>
 
   <section class="col col-callees">
@@ -793,6 +908,7 @@ ${pageHeader(result)}
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
+${SCOPE_JS}
   var cols = document.querySelector(".cols");
   var railRight = document.querySelector(".rail-right");
   document.addEventListener("click", function (e) {

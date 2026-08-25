@@ -234,9 +234,9 @@ const SYMBOL_KINDS: Array<[check: (n: ts.Node) => boolean, kind: string]> = [
   [ts.isSetAccessorDeclaration, "accessor"],
 ];
 
+/** Declared symbols as a tree: a class holds its methods, a function its inner functions. */
 function collectSymbols(sourceFile: ts.SourceFile): SymbolRange[] {
-  const symbols: SymbolRange[] = [];
-  const push = (node: ts.Node, nameNode: ts.Node | undefined, name: string, kind: string) => {
+  const build = (node: ts.Node, nameNode: ts.Node | undefined, name: string, kind: string): SymbolRange => {
     const symbol: SymbolRange = {
       name,
       kind,
@@ -250,25 +250,37 @@ function collectSymbols(sourceFile: ts.SourceFile): SymbolRange[] {
       symbol.nameColumn = start.character;
       symbol.nameEndColumn = end.line === start.line ? end.character : start.character + name.length;
     }
-    symbols.push(symbol);
+    return symbol;
   };
-  const visit = (node: ts.Node): void => {
+  const symbolOf = (node: ts.Node): SymbolRange | null => {
     const match = SYMBOL_KINDS.find(([check]) => check(node));
     if (match) {
       const named = node as ts.NamedDeclaration;
-      if (named.name) push(node, named.name, named.name.getText(sourceFile), match[1]);
-    } else if (ts.isConstructorDeclaration(node)) {
-      push(node, undefined, "constructor", "constructor");
-    } else if (
+      return named.name ? build(node, named.name, named.name.getText(sourceFile), match[1]) : null;
+    }
+    if (ts.isConstructorDeclaration(node)) return build(node, undefined, "constructor", "constructor");
+    if (
       (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) &&
       node.initializer &&
       (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
     ) {
-      push(node, node.name, node.name.getText(sourceFile), "function");
+      return build(node, node.name, node.name.getText(sourceFile), "function");
     }
-    ts.forEachChild(node, visit);
+    return null;
   };
-  visit(sourceFile);
+  const visit = (node: ts.Node, into: SymbolRange[]): void => {
+    const symbol = symbolOf(node);
+    if (symbol) {
+      into.push(symbol);
+      const children: SymbolRange[] = [];
+      ts.forEachChild(node, (child) => visit(child, children));
+      if (children.length) symbol.children = children;
+    } else {
+      ts.forEachChild(node, (child) => visit(child, into));
+    }
+  };
+  const symbols: SymbolRange[] = [];
+  visit(sourceFile, symbols);
   return symbols;
 }
 

@@ -22,6 +22,10 @@ writeFileSync(
   path.join(dir, "top.py"),
   "from mid import mid\n\n\ndef top():\n    return mid(1)\n",
 );
+writeFileSync(
+  path.join(dir, "shapes.py"),
+  "class Shape:\n    def area(self):\n        return 0\n\n    def name(self):\n        return 'shape'\n",
+);
 
 const backend = new LspBackend(dir, pyrightConfig());
 afterAll(() => {
@@ -80,6 +84,12 @@ describe("pyright backend", () => {
     expect([target.kind, target.nameLine, target.nameColumn, target.nameEndColumn]).toEqual([
       "function", 5, 4, 10,
     ]);
+  });
+
+  it("nests methods under their class", { timeout: 30_000 }, async () => {
+    const info = await backend.fileInfo("shapes.py");
+    expect(info!.symbols.map((s) => s.name)).toEqual(["Shape"]);
+    expect(info!.symbols[0]!.children!.map((s) => `${s.kind}:${s.name}`)).toEqual(["method:area", "method:name"]);
   });
 
   it("resolves a call to its definition in another file", { timeout: 30_000 }, async () => {

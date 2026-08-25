@@ -1,7 +1,6 @@
-import { readFileSync } from "node:fs";
-import { resolve, sep } from "node:path";
 import {
   analyzePrCallPath,
+  embedHeadFiles,
   resolveNavigation,
   type CallPathResult,
   type EmbeddedFile,
@@ -73,38 +72,22 @@ function fragmentInput(fragment: Fragment, index: DiffIndex) {
 }
 
 /**
- * Head-side text of every file the slices touch, so a file's fragments can
- * be shown as one continuous stretch with real context between them. Files
- * the PR deleted are absent from the head worktree and simply omitted; the
+ * Head-side text and symbols of every file the slices touch, so a file's
+ * fragments can be shown as one continuous stretch with real context
+ * between them and every pane knows which scope it is in. Files the PR
+ * deleted are absent from the head worktree and simply omitted; the
  * renderer falls back to fragment-by-fragment for those.
  */
-function readChangedFiles(
+async function readChangedFiles(
   report: SliceReport,
   headDir: string,
   log: (message: string) => void,
-): EmbeddedFile[] {
+): Promise<EmbeddedFile[]> {
   const paths = new Set(
     report.slices.flatMap((s) => s.fragments.map((f) => f.file)),
   );
-  const files: EmbeddedFile[] = [];
-  let missing = 0;
-  for (const path of paths) {
-    const full = resolve(headDir, path);
-    if (!full.startsWith(resolve(headDir) + sep)) continue;
-    try {
-      files.push({
-        side: "after",
-        path,
-        lines: readFileSync(full, "utf8").split("\n"),
-        // The language service is not run here, so expanders in these files
-        // get no symbol breadcrumb. A file a call graph also embedded keeps
-        // the richer entry — the renderer prefers it.
-        symbols: [],
-      });
-    } catch {
-      missing++;
-    }
-  }
+  const files = await embedHeadFiles(headDir, paths);
+  const missing = paths.size - files.length;
   if (missing > 0) {
     log(`${missing} changed file${missing === 1 ? "" : "s"} not in the head checkout (deleted?); shown without context.`);
   }
@@ -189,7 +172,7 @@ export async function buildSliceExplorerInput(
     overview: report.overview,
     slices,
     files: options.headDir
-      ? readChangedFiles(report, options.headDir, log)
+      ? await readChangedFiles(report, options.headDir, log)
       : [],
   };
 

@@ -402,29 +402,32 @@ export class LspBackend implements LanguageBackend {
     const lines = this.linesOf(fileName);
     if (!lines.length) return null;
     const documentSymbols = await this.docSymbols(fileName);
-    const symbols: SymbolRange[] = [];
-    const flatten = (list: LspDocumentSymbol[]): void => {
+    // Keep the server's nesting; a symbol of a kind we do not name (a
+    // variable holding a class, say) hands its children up to its parent.
+    const convert = (list: LspDocumentSymbol[]): SymbolRange[] => {
+      const out: SymbolRange[] = [];
       for (const symbol of list) {
-        if (SCOPE_KINDS.has(symbol.kind)) {
-          const sel = symbol.selectionRange ?? symbol.range;
-          symbols.push({
-            name: symbol.name,
-            kind: SYMBOL_KIND_NAMES[symbol.kind]!,
-            startLine: symbol.range.start.line + 1,
-            endLine: symbol.range.end.line + 1,
-            nameLine: sel.start.line + 1,
-            nameColumn: sel.start.character,
-            nameEndColumn:
-              sel.end.line === sel.start.line
-                ? sel.end.character
-                : sel.start.character + symbol.name.length,
-          });
+        const children = symbol.children ? convert(symbol.children) : [];
+        if (!SCOPE_KINDS.has(symbol.kind)) {
+          out.push(...children);
+          continue;
         }
-        if (symbol.children) flatten(symbol.children);
+        const sel = symbol.selectionRange ?? symbol.range;
+        out.push({
+          name: symbol.name,
+          kind: SYMBOL_KIND_NAMES[symbol.kind]!,
+          startLine: symbol.range.start.line + 1,
+          endLine: symbol.range.end.line + 1,
+          nameLine: sel.start.line + 1,
+          nameColumn: sel.start.character,
+          nameEndColumn:
+            sel.end.line === sel.start.line ? sel.end.character : sel.start.character + symbol.name.length,
+          ...(children.length ? { children } : {}),
+        });
       }
+      return out;
     };
-    flatten(documentSymbols);
-    return { lines, symbols };
+    return { lines, symbols: convert(documentSymbols) };
   }
 
   async definitionAt(ref: DeclRef): Promise<DefinitionLocation | null> {

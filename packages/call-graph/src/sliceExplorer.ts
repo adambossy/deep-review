@@ -14,6 +14,8 @@ import {
   gapRow,
   lineRow,
   renderDataBlob,
+  SCOPE_JS,
+  scopeLabelFor,
   staticGapRow,
   type FileEntry,
   type FileIndex,
@@ -200,8 +202,17 @@ function fragmentRows(
  * tinting already says which lines changed, and anything else in the column
  * breaks the listing the reader is trying to follow.
  */
-/** "packages/webhooks/src/retry.ts" → dimmed directory, bold basename, +/− stats. */
-function fileHead(file: string, fragments: SliceFragmentInput[]): string {
+/**
+ * "packages/webhooks/src/retry.ts" → dimmed directory, bold basename, the
+ * scope of the first visible line, +/− stats. Doubles as the block's sticky
+ * scope header: with the file embedded, the scope follows the scroll.
+ */
+function fileHead(
+  file: string,
+  fragments: SliceFragmentInput[],
+  entry: FileEntry | undefined,
+  firstLine: number,
+): string {
   const cut = file.lastIndexOf("/") + 1;
   const adds = fragments.reduce(
     (n, f) => n + f.lines.filter((l) => l.startsWith("+")).length,
@@ -211,9 +222,10 @@ function fileHead(file: string, fragments: SliceFragmentInput[]): string {
     (n, f) => n + f.lines.filter((l) => l.startsWith("-")).length,
     0,
   );
-  return `<div class="file-head"><code>${
+  const scope = entry ? esc(scopeLabelFor(entry.symbols, firstLine)) : "";
+  return `<div class="file-head scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><code class="scope-path">${
     cut > 0 ? `<span class="dir">${esc(file.slice(0, cut))}</span>` : ""
-  }<span class="name">${esc(file.slice(cut))}</span></code><span class="stat">${
+  }<span class="name">${esc(file.slice(cut))}</span></code><span class="scope-sym">${scope}</span><span class="stat">${
     adds ? `<span class="plus">+${adds}</span>` : ""
   }${dels ? `<span class="minus">−${dels}</span>` : ""}</span></div>`;
 }
@@ -237,7 +249,7 @@ function renderFileBlock(
       rows.push(fragmentRows(fragment, width, symbols, nav, undefined));
       previousEnd = Math.max(previousEnd, fragment.headEnd);
     }
-    return `<div class="file-block">${fileHead(file, fragments)}<pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
+    return `<div class="file-block">${fileHead(file, fragments, undefined, ordered[0]?.headStart ?? 1)}<pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
   }
 
   const width = String(entry.lines.length).length;
@@ -282,8 +294,9 @@ function renderFileBlock(
     rows.push(gapRow(entry, cursor + 1, entry.lines.length));
   }
 
+  // The block always opens at line 1 — as a gap, or as the first visible line.
   return `<div class="file-block">
-    ${fileHead(file, fragments)}
+    ${fileHead(file, fragments, entry, 1)}
     <pre class="source" data-w="${width}">${rows.join("")}</pre>
   </div>`;
 }
@@ -430,22 +443,26 @@ const SLICE_CSS = `
                   font-family: var(--mono); }
   .hint { font-size: 0.7rem; color: var(--ink-faint); margin-left: 0.3rem; }
 
+  /* No overflow clipping here: it would make the block the sticky header's
+     scroll root instead of the panel. The head and pre round their own corners. */
   .file-block {
-    border: 1px solid var(--line-c); border-radius: 8px; overflow: hidden;
+    border: 1px solid var(--line-c); border-radius: 8px;
     margin: 0 0 1.1rem; background: var(--panel);
   }
-  .file-head {
+  .file-head.scope-bar {
     display: flex; align-items: center; gap: 0.6rem;
     padding: 0.5rem 0.9rem; background: var(--panel-2);
-    border-bottom: 1px solid var(--line-c);
+    border: none; border-bottom: 1px solid var(--line-c); border-radius: 8px 8px 0 0;
     font-family: var(--mono); font-size: 0.74rem;
   }
+  .file-head .scope-path { display: inline; gap: 0; }
   .file-head .dir { color: var(--ink-faint); }
   .file-head .name { color: var(--ink); font-weight: 600; }
+  .file-head .scope-sym { margin-left: -0.45rem; }
   .file-head .stat { margin-left: auto; font-size: 0.68rem; font-variant-numeric: tabular-nums; }
   .file-head .plus { color: var(--add-edge); }
   .file-head .minus { color: var(--del-edge); margin-left: 0.4rem; }
-  .file-block pre.source { border: none; border-radius: 0; margin: 0; }
+  .file-block pre.source { border: none; border-radius: 0 0 8px 8px; margin: 0; }
 `;
 
 /**
@@ -736,6 +753,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 window.DEFNAMES = JSON.parse(document.getElementById("def-names").textContent);
 window.REFS = JSON.parse(document.getElementById("ref-data").textContent);
 ${GAP_JS}
+${SCOPE_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}
 ${DECK_JS}

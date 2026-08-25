@@ -120,7 +120,15 @@ const result: CallPathResult = {
       lines: Array.from({ length: 40 }, (_, i) =>
         i === 19 ? "function leaf(n) {" : i === 20 ? "}" : `// filler ${i + 1}`,
       ),
-      symbols: [{ name: "leaf", kind: "function", startLine: 20, endLine: 21 }],
+      symbols: [
+        {
+          name: "Mod",
+          kind: "namespace",
+          startLine: 1,
+          endLine: 40,
+          children: [{ name: "leaf", kind: "function", startLine: 20, endLine: 21 }],
+        },
+      ],
     },
   ],
 };
@@ -243,6 +251,31 @@ describe("renderCallPathExplorerHtml", () => {
   it("marks the name on unchanged boundary panels, even below a JSDoc block", () => {
     const topPanel = html.slice(html.lastIndexOf('data-node="top.ts#top"'));
     expect(topPanel).toContain('self-sym">top</span>');
+  });
+});
+
+describe("sticky scope header", () => {
+  const html = renderCallPathExplorerHtml(result);
+
+  it("names the file and the scope of the first visible line, keyed to the embedded file", () => {
+    const leafPanel = html.slice(
+      html.lastIndexOf('data-node="leaf.ts#leaf"'),
+      html.lastIndexOf('data-node="top.ts#top"'),
+    );
+    // The pane opens on the gap over lines 1–9, inside Mod.
+    expect(leafPanel).toContain(
+      '<div class="scope-bar" data-key="after:leaf.ts"><span class="scope-path">leaf.ts</span><span class="scope-sym">Mod</span></div>',
+    );
+  });
+
+  it("shows the path alone when the file is not embedded", () => {
+    const midPanel = html.slice(html.lastIndexOf('data-node="mid.ts#mid"'), html.lastIndexOf('data-node="leaf.ts#leaf"'));
+    expect(midPanel).toContain('<div class="scope-bar"><span class="scope-path">mid.ts</span><span class="scope-sym"></span></div>');
+  });
+
+  it("includes the scroll-following script", () => {
+    expect(html).toContain("firstVisibleLine");
+    expect(html).toContain('addEventListener("scroll"');
   });
 });
 

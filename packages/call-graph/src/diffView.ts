@@ -267,6 +267,15 @@ export function renderDiffBlock(rows: readonly DiffRow[], options: DiffRenderOpt
   return `<pre class="source" data-w="${options.width}">${renderDiffRows(rows, options)}</pre>`;
 }
 
+/** Head line the rows start at: the first row's line, or a leading gap's first hidden line. */
+export function firstHeadLine(rows: readonly DiffRow[]): number {
+  for (const row of rows) {
+    if (row.kind === "gap") return row.from;
+    if (row.kind === "ctx" || row.kind === "add") return row.n;
+  }
+  return 1;
+}
+
 /** Gutter width for rows: the widest head line number they show. */
 export function rowsWidth(rows: readonly DiffRow[], entry?: FileEntry): number {
   if (entry) return String(entry.lines.length).length;

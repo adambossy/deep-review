@@ -1,5 +1,6 @@
 import {
   fileDiffRows,
+  firstHeadLine,
   markIntraLine,
   renderDiffBlock,
   rowsWidth,
@@ -9,11 +10,13 @@ import {
 import { escapeHtml as esc, languageOf, type Mark } from "./highlight.js";
 import {
   buildFileIndex,
+  codePane,
   dataScripts,
   GAP_JS,
   pageHead,
   pageHeader,
   presenceBadge,
+  SCOPE_JS,
   type Decorations,
   type FileEntry,
   type FileIndex,
@@ -183,13 +186,18 @@ export function renderPanel(
       node.expanded ? "" : ' <span class="badge">boundary</span>'
     }</div>
     ${calledBy}
-    ${renderDiffBlock(rows, {
-      width: rowsWidth(rows, entry),
-      lang: languageOf(snapshot.file),
+    ${codePane(
+      snapshot.file,
       entry,
-      decorations,
-      focus: snapshot,
-    })}
+      firstHeadLine(rows),
+      renderDiffBlock(rows, {
+        width: rowsWidth(rows, entry),
+        lang: languageOf(snapshot.file),
+        entry,
+        decorations,
+        focus: snapshot,
+      }),
+    )}
   </article>`;
 }
 
@@ -225,7 +233,12 @@ export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, n
       def.external ? ' <span class="badge">external</span>' : ""
     }</h3>
     <div class="side-loc"><code>${esc(shownFile)}:${def.startLine}–${def.endLine}</code> <span class="badge">after</span></div>
-    ${renderDiffBlock(rows, { width: rowsWidth(rows, entry), lang: languageOf(def.file), entry, decorations, focus: def })}
+    ${codePane(
+      shownFile,
+      entry,
+      firstHeadLine(rows),
+      renderDiffBlock(rows, { width: rowsWidth(rows, entry), lang: languageOf(def.file), entry, decorations, focus: def }),
+    )}
   </article>`;
 }
 
@@ -585,6 +598,7 @@ ${pageHeader(result)}
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
+${SCOPE_JS}
 ${EXPLORER_NAV_JS}
 initExplorer(document.body, JSON.parse(document.getElementById("node-names").textContent));
 </script>

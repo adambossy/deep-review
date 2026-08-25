@@ -1,6 +1,7 @@
 export {
   analyzePrCallGraph,
   analyzePrCallPath,
+  embedHeadFiles,
   type AnalyzeOptions,
   type PathOptions,
 } from "./analyze.js";

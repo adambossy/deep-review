@@ -25,6 +25,8 @@ export interface SymbolRange {
   nameLine?: number;
   nameColumn?: number;
   nameEndColumn?: number;
+  /** Declarations nested inside this one: a class's methods, an inner function. */
+  children?: SymbolRange[];
 }
 
 /**

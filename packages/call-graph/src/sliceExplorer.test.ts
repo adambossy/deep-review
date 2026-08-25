@@ -83,7 +83,15 @@ const files = [
     side: "after" as const,
     path: "a.ts",
     lines: Array.from({ length: 60 }, (_, i) => `line ${i + 1};`),
-    symbols: [],
+    symbols: [
+      {
+        name: "Box",
+        kind: "class",
+        startLine: 1,
+        endLine: 45,
+        children: [{ name: "open", kind: "method", startLine: 30, endLine: 44 }],
+      },
+    ],
   },
 ];
 
@@ -203,10 +211,19 @@ describe("renderSliceExplorerHtml", () => {
     expect(panel).not.toContain('diff-del-inner">const');
   });
 
-  it("puts an expander over the run hidden between two fragments", () => {
+  it("puts an expander over the run hidden between two fragments, labelled with the scope after it", () => {
     // The first fragment ends at line 3 and shows 5 lines after it; the next
-    // starts at 40 and shows 5 before it, leaving 9..34 hidden.
+    // starts at 40 and shows 5 before it, leaving 9..34 hidden. Line 35 is
+    // inside Box.open.
     expect(html).toContain('data-from="9" data-to="34"');
+    expect(html).toContain('<span class="gap-crumb">class Box › open()</span>');
+  });
+
+  it("makes the file head a sticky scope header keyed to the embedded file", () => {
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
+    expect(panel).toContain('<div class="file-head scope-bar" data-key="after:a.ts">');
+    // Line 1 is the first visible line, inside Box.
+    expect(panel).toContain('<span class="scope-sym">Box</span>');
   });
 
   it("shows context around a fragment and an expander over the tail", () => {

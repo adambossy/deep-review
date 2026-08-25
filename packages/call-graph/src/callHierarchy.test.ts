@@ -195,9 +195,17 @@ describe("incomingCallsAt / referencesAt", () => {
 });
 
 describe("fileSnapshot symbols", () => {
+  const ps = createProjectService(dir);
+
   it("records where each declared name sits", () => {
-    const ps = createProjectService(dir);
     const widget = fileSnapshot(ps, "klass.ts")!.symbols.find((s) => s.name === "Widget")!;
     expect([widget.nameLine, widget.nameColumn, widget.nameEndColumn]).toEqual([1, 13, 19]);
+  });
+
+  it("nests methods under their class rather than listing them flat", () => {
+    const symbols = fileSnapshot(ps, "klass.ts")!.symbols;
+    expect(symbols.map((s) => s.name)).toEqual(["Widget"]);
+    expect(symbols[0]!.children!.map((s) => `${s.kind}:${s.name}`)).toEqual(["method:render", "method:#compute"]);
+    expect(fileSnapshot(ps, "main.ts")!.symbols[0]!.children).toBeUndefined();
   });
 });
