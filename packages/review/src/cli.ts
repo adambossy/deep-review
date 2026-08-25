@@ -28,6 +28,7 @@ Options:
   --max-graphs <n>  Analyze at most n slices' call graphs (default: all)
   --no-nav          Skip resolving symbols to definitions (only call-graph symbols tappable)
   --nav-budget <n>  Cap language-service lookups for symbol navigation (default: 20000)
+  --debug-marks     Hold Shift on the page to see why each symbol is (or is not) tappable
   --work-dir <d>    Cache the clone/worktrees here instead of the tmp dir
   --model <id>      Model to use for slicing (default: gpt-5.6-sol)
   --no-open         Don't open the report in a browser
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
       "max-graphs": { type: "string" },
       "no-nav": { type: "boolean", default: false },
       "nav-budget": { type: "string" },
+      "debug-marks": { type: "boolean", default: false },
       "work-dir": { type: "string" },
       model: { type: "string" },
       "no-open": { type: "boolean", default: false },
@@ -133,6 +135,7 @@ async function main(): Promise<void> {
     ...(maxGraphs !== undefined ? { maxGraphs } : {}),
     navigation: !values["no-nav"],
     ...(navBudget !== undefined ? { navBudget } : {}),
+    ...(values["debug-marks"] ? { debugMarks: true } : {}),
     ...(values.quiet ? {} : { onProgress: log }),
   });
 

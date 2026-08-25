@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fileDiffRows,
+  fragmentDiffRows,
   fragmentRows,
   hunkRows,
   markIntraLine,
@@ -94,6 +95,33 @@ describe("hunkRows / fragmentRows / segmentRows", () => {
       hunks,
     );
     expect(summary(rows)).toEqual(["28", "29", "+30", "gap 31-43", "44", "- gone;", "45"]);
+  });
+});
+
+describe("fragmentDiffRows", () => {
+  const first = { lines: [" line 2;", "+line 3;", "-old;"], newLineNumbers: [2, 3, null], headStart: 2, headEnd: 3 };
+  const deletion = { lines: ["-gone;"], newLineNumbers: [null], headStart: 40, headEnd: 39 };
+  const far = { lines: ["+line 50;"], newLineNumbers: [50], headStart: 50, headEnd: 50 };
+
+  it("shows each fragment with context, merges touching pads, and gaps the rest", () => {
+    const rows = fragmentDiffRows(lines, [far, first], 2);
+    // Two lines of context before line 2 reach line 1: no gap to open on.
+    expect(summary(rows)).toEqual([
+      "1", "2", "+3", "- old;", "4", "5",
+      "gap 6-47",
+      "48", "49", "+50", "51", "52",
+      "gap 53-60",
+    ]);
+  });
+
+  it("puts a deletion-only fragment between the lines it sits at, with context around the point", () => {
+    const rows = fragmentDiffRows(lines, [deletion], 2);
+    expect(summary(rows)).toEqual(["gap 1-37", "38", "39", "- gone;", "40", "41", "gap 42-60"]);
+  });
+
+  it("falls back to the fragments alone, fixed gaps between them, without the file's text", () => {
+    const rows = fragmentDiffRows(undefined, [far, first]);
+    expect(summary(rows)).toEqual(["2", "+3", "- old;", "gap 4-49", "+50"]);
   });
 });
 

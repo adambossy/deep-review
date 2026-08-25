@@ -15,6 +15,8 @@ export interface Mark {
   end: number;
   cls: string;
   attrs?: string;
+  /** Debug builds only: why this span is marked the way it is; emitted as `data-why`. */
+  why?: string;
 }
 
 export type Language = "ts" | "py";
@@ -248,10 +250,11 @@ export function renderLine(text: string, tokens: readonly Token[], marks: readon
       ...(token ? [`tok-${token.cls}`] : []),
       ...active.map((m) => m.cls),
     ];
-    const attrs = active
-      .map((m) => m.attrs)
-      .filter(Boolean)
-      .join(" ");
+    const whys = active.map((m) => m.why).filter(Boolean);
+    const attrs = [
+      ...active.map((m) => m.attrs).filter(Boolean),
+      ...(whys.length ? [`data-why="${escapeHtml(whys.join(" | "))}"`] : []),
+    ].join(" ");
     out +=
       classes.length || attrs
         ? `<span class="${classes.join(" ")}"${attrs ? " " + attrs : ""}>${segment}</span>`

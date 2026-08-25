@@ -64,6 +64,8 @@ export interface DefinitionTarget {
    * Definitions in embedded files read from the file instead.
    */
   source?: SourceSegment;
+  /** Debug builds only: why this definition has no panel. */
+  why?: string;
 }
 
 /** One occurrence of a symbol on a head-side line, resolved to its definition. */
@@ -109,6 +111,20 @@ export interface NavigationData {
   links: Record<string, SymbolLink[]>;
   definitions: Record<DefinitionId, DefinitionTarget>;
   references?: Record<DefinitionId, ReferenceList>;
+  /**
+   * Debug builds only: identifiers the resolver visited but did not link,
+   * by repo-relative file, each with the reason. Rendered as hints the
+   * reader can reveal (hold Shift) to see why a name is not tappable.
+   */
+  debug?: Record<string, UnlinkedIdentifier[]>;
+}
+
+/** Debug builds only: one identifier the resolver looked at and left unlinked. */
+export interface UnlinkedIdentifier {
+  line: number;
+  start: number;
+  end: number;
+  why: string;
 }
 
 /**

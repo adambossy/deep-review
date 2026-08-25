@@ -11,6 +11,7 @@
 import { diffWordsWithSpace } from "diff";
 import {
   escapeHtml as esc,
+  identifiersOf,
   renderLine,
   tokenizeLines,
   type Language,
@@ -120,6 +121,104 @@ export function fragmentRows(lines: readonly string[], newLineNumbers: readonly 
   });
 }
 
+/** The part of a slice fragment the diff view needs: where it sits and what it says. */
+export interface FragmentSpan {
+  /** Raw diff lines, each still prefixed with " ", "+", "-", or "\\". */
+  lines: string[];
+  /** Head-side file line per entry of `lines`; null for removed lines. */
+  newLineNumbers: (number | null)[];
+  /** Head-side extent; a deletion-only fragment has `headEnd === headStart - 1`. */
+  headStart: number;
+  headEnd: number;
+}
+
+/** Lines of the head-side file shown either side of a fragment. */
+export const FRAGMENT_CONTEXT = 5;
+
+/**
+ * The head-side line ranges a file's fragments show: each fragment padded
+ * with context, overlapping or touching pads merged. Shared with the
+ * navigation resolver so it asks about exactly the lines that render. A
+ * deletion-only fragment (empty head extent) still earns context around the
+ * point it sits at.
+ */
+export function fileBlockRanges(
+  fragments: readonly FragmentSpan[],
+  lineCount: number,
+  context: number = FRAGMENT_CONTEXT,
+): Array<[number, number]> {
+  const ordered = [...fragments].sort(
+    (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
+  );
+  const ranges: Array<[number, number]> = [];
+  for (const fragment of ordered) {
+    const from = Math.max(1, fragment.headStart - context);
+    const to = Math.min(lineCount, Math.max(fragment.headEnd, fragment.headStart - 1) + context);
+    if (to < from) continue;
+    const last = ranges[ranges.length - 1];
+    if (last && from <= last[1] + 1) last[1] = Math.max(last[1], to);
+    else ranges.push([from, to]);
+  }
+  return ranges;
+}
+
+/**
+ * Every fragment a slice has in one file, as one continuous stretch of that
+ * file: each fragment's own rows surrounded by real context, the runs
+ * between them as gaps. Without the file's text there is no context to show
+ * and nothing to expand into, so the fragments stand alone with fixed gaps
+ * between them. Nothing is interleaved between fragments — no ids, no
+ * summaries — the tinting already says which lines changed.
+ */
+export function fragmentDiffRows(
+  lines: readonly string[] | undefined,
+  fragments: readonly FragmentSpan[],
+  context: number = FRAGMENT_CONTEXT,
+): DiffRow[] {
+  const ordered = [...fragments].sort(
+    (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
+  );
+  const rows: DiffRow[] = [];
+
+  if (!lines) {
+    let previousEnd = 0;
+    for (const fragment of ordered) {
+      if (previousEnd > 0 && fragment.headStart > previousEnd + 1) {
+        rows.push({ kind: "gap", from: previousEnd + 1, to: fragment.headStart - 1 });
+      }
+      rows.push(...fragmentRows(fragment.lines, fragment.newLineNumbers));
+      previousEnd = Math.max(previousEnd, fragment.headEnd);
+    }
+    markIntraLine(rows);
+    return rows;
+  }
+
+  // Walk the visible ranges; within each, a fragment's own rows stand in
+  // for the head lines it covers (a deletion-only fragment covers none, so
+  // its rows go in just before the line it sits at).
+  let cursor = 0;
+  let next = 0;
+  for (const [from, to] of fileBlockRanges(ordered, lines.length, context)) {
+    if (from > cursor + 1) rows.push({ kind: "gap", from: cursor + 1, to: from - 1 });
+    let n = from;
+    while (n <= to) {
+      const fragment = ordered[next];
+      if (fragment && fragment.headStart === n) {
+        rows.push(...fragmentRows(fragment.lines, fragment.newLineNumbers));
+        next++;
+        n = Math.max(n, fragment.headEnd + 1);
+        continue;
+      }
+      rows.push({ kind: "ctx", n, text: lines[n - 1] ?? "" });
+      n++;
+    }
+    cursor = to;
+  }
+  if (cursor < lines.length) rows.push({ kind: "gap", from: cursor + 1, to: lines.length });
+  markIntraLine(rows);
+  return rows;
+}
+
 /**
  * A function's source segments (when its file is not embedded) as a diff:
  * added lines tinted, removed lines interleaved, omitted stretches as gaps.
@@ -211,11 +310,26 @@ export interface DiffRenderOptions {
   marksFor?: ((text: string, headLine: number | null) => Mark[]) | undefined;
   /** Head span outlined as the focused declaration. */
   focus?: LineSpan | undefined;
+  /**
+   * Debug builds: every identifier no mark accounts for gets a `data-why`
+   * of its own, so a name that is not tappable can say so when asked.
+   */
+  debug?: boolean | undefined;
+}
+
+/** Debug builds: hint marks over the identifiers of a line that no other mark covers. */
+function unexplainedMarks(text: string, lang: Language, marks: readonly Mark[]): Mark[] {
+  const ids = identifiersOf([text], lang)[0] ?? [];
+  return ids
+    .filter((id) => !marks.some((m) => m.start < id.end && id.start < m.end))
+    .map((id) => ({ start: id.start, end: id.end, cls: "id-dbg", why: "not visited by the resolver" }));
 }
 
 /** Render rows to `<span class="line">`s; the caller wraps them in a `<pre>`. */
 export function renderDiffRows(rows: readonly DiffRow[], options: DiffRenderOptions): string {
-  const { width, lang, entry, decorations, marksFor, focus } = options;
+  const { width, lang, entry, decorations, marksFor, focus, debug } = options;
+  const explained = (text: string, marks: Mark[]): Mark[] =>
+    debug ? [...marks, ...unexplainedMarks(text, lang, marks)] : marks;
   // Rows without an embedded file are tokenized together so multi-line
   // strings and comments carry across them; removed rows always are, since
   // the embedded file (head side) has no tokens for them.
@@ -233,17 +347,17 @@ export function renderDiffRows(rows: readonly DiffRow[], options: DiffRenderOpti
         out.push(lineRow("", width, esc(row.text)));
         return;
       case "del": {
-        const marks = [...(row.marks ?? []), ...(marksFor?.(row.text, null) ?? [])];
+        const marks = explained(row.text, [...(row.marks ?? []), ...(marksFor?.(row.text, null) ?? [])]);
         out.push(lineRow("−", width, renderLine(row.text, localTokens[i]!, marks), ["diff-del"]));
         return;
       }
       default: {
         const deco = decorations?.get(row.n);
-        const marks = [
+        const marks = explained(row.text, [
           ...(row.kind === "add" ? row.marks ?? [] : []),
           ...(deco?.marks ?? []),
           ...(marksFor?.(row.text, row.n) ?? []),
-        ];
+        ]);
         // The embedded file's pre-rendered line is reusable only when it is
         // this row's text; a row from a stale hunk falls back to its own tokens.
         const fromFile = entry && entry.lines[row.n - 1] === row.text ? entry : undefined;

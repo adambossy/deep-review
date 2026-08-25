@@ -141,6 +141,26 @@ describe("resolveNavigation", () => {
     expect(limitDef.source).toBeUndefined();
   }, 30_000);
 
+  it("records nothing about unlinked names unless asked", async () => {
+    const nav = await resolveNavigation(dir, input, { maxLookups: 3 });
+    expect(nav.debug).toBeUndefined();
+    expect(Object.values(nav.definitions).every((d) => d.why === undefined)).toBe(true);
+  }, 30_000);
+
+  it("with debugMarks, says why each visited name was left unlinked and why a definition has no panel", async () => {
+    const nav = await resolveNavigation(dir, input, { debugMarks: true, maxLookups: 3, maxPanels: 0 });
+    const skipped = nav.debug!["use.ts"]!;
+    expect(skipped.length).toBeGreaterThan(0);
+    // A declaration site resolves to nothing; everything past the budget says so.
+    expect(skipped.every((u) => u.why.startsWith("not resolved: "))).toBe(true);
+    expect(skipped.some((u) => u.why.includes("lookup budget of 3 exhausted"))).toBe(true);
+    // Every non-graph definition wanted a panel and was refused, with a reason.
+    const refused = Object.values(nav.definitions).filter((d) => !d.nodeId);
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused.every((d) => d.why !== undefined)).toBe(true);
+    expect(refused.some((d) => d.why === "panel budget of 0 exhausted")).toBe(true);
+  }, 30_000);
+
   it("honours the lookup budget, changed lines first", async () => {
     const nav = await resolveNavigation(dir, input, { maxLookups: 3 });
     const lines = new Set((nav.links["use.ts"] ?? []).map((l) => l.line));

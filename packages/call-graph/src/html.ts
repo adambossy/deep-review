@@ -1,4 +1,5 @@
-import { fileDiffRows, hunkRows, markIntraLine, renderDiffBlock, rowsWidth } from "./diffView.js";
+import { renderCodePane } from "./codePane.js";
+import { fileDiffRows, hunkRows, markIntraLine, renderDiffBlock, rowsWidth, segmentRows } from "./diffView.js";
 import {
   escapeHtml as esc,
   languageOf,
@@ -129,21 +130,6 @@ export function gapRow(entry: FileEntry, from: number, to: number): string {
   }</div>`;
 }
 
-/**
- * A code block under its sticky scope header. The header names the file
- * and, when the file is embedded (so its symbols are on the page), the
- * declaration at `firstLine` — the client keeps that in step with scrolling.
- */
-export function codePane(
-  file: string,
-  entry: FileEntry | undefined,
-  firstLine: number,
-  block: string,
-): string {
-  const shown = esc(file);
-  const label = entry ? esc(scopeLabelFor(entry.symbols, firstLine)) : "";
-  return `<div class="code-pane"><div class="scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><span class="scope-path">${shown}</span><span class="scope-sym">${label}</span></div>${block}</div>`;
-}
 
 interface BlockOptions {
   /** Embedded file backing this block; enables expanders when `gaps`. */
@@ -461,16 +447,23 @@ export const CSS = `
   .gap.static { cursor: default; }
   /* Sticky scope header: the file, and the declaration the first visible
      line is in, pinned to the top of the pane as it scrolls. */
-  .code-pane { position: relative; margin: 0.5rem 0 0.2rem; }
+  /* No overflow clipping on the pane: it would make the pane the sticky
+     header's scroll root instead of the panel. The bar and pre round their
+     own corners. */
+  .code-pane { position: relative; margin: 0.5rem 0 0.9rem; }
   .scope-bar {
     position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 0.15rem;
-    padding: 0.35rem 0.9rem; background: var(--panel-2);
+    padding: 0.4rem 0.9rem; background: var(--panel-2);
     border: 1px solid var(--line-c); border-bottom: none; border-radius: 8px 8px 0 0;
     font-family: var(--mono); font-size: 0.72rem; white-space: nowrap; overflow: hidden;
   }
   .scope-bar .scope-path { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; }
+  .scope-bar .scope-path .name { color: var(--ink); font-weight: 600; }
   .scope-bar .scope-sym { color: var(--ink); font-weight: 600; }
   .scope-bar .scope-sym:not(:empty)::before { content: ":"; color: var(--ink-faint); font-weight: 400; }
+  .scope-bar .stat { margin-left: auto; padding-left: 0.8rem; font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+  .scope-bar .plus { color: var(--add-edge); }
+  .scope-bar .minus { color: var(--del-edge); margin-left: 0.4rem; }
   .code-pane > pre.source { margin: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
   .gap-btns { display: inline-flex; gap: 2px; }
   .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.7rem; padding: 0.05rem 0.3rem; border-radius: 4px; }
@@ -824,9 +817,20 @@ export function renderCallGraphColumnsHtml(result: CallGraphResult): string {
     }
   });
 
-  const targetBlock = renderCodeBlock(snapshot.source, {
+  // The target's segments as diff rows (no hunks: plain source), with
+  // expander gaps over the rest of the file when it is embedded.
+  const targetRows = segmentRows(snapshot.source, []);
+  if (entry) {
+    const first = snapshot.source[0]?.startLine ?? 1;
+    const last = snapshot.source.at(-1);
+    const lastLine = last ? last.startLine + last.lines.length - 1 : 0;
+    if (first > 1) targetRows.unshift({ kind: "gap", from: 1, to: first - 1 });
+    if (lastLine < entry.lines.length) targetRows.push({ kind: "gap", from: lastLine + 1, to: entry.lines.length });
+  }
+  const targetPane = renderCodePane({
+    file: snapshot.file,
     entry,
-    gaps: true,
+    rows: targetRows,
     lang: languageOf(snapshot.file),
     decorations,
   });
@@ -895,7 +899,7 @@ ${pageHeader(result)}
     </h2>
     <div class="side-loc"><code>${esc(snapshot.file)}:${snapshot.startLine}–${snapshot.endLine}</code> <span class="badge">${side}</span></div>
     <p class="missing">click a highlighted call to open that callee →</p>
-    ${codePane(snapshot.file, entry, snapshot.source[0]?.startLine ?? 1, targetBlock)}
+    ${targetPane}
   </section>
 
   <section class="col col-callees">

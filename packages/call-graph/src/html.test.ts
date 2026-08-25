@@ -250,7 +250,9 @@ describe("renderCallGraphColumnsHtml", () => {
 
   it("puts a scope header over the target's code", () => {
     // The target is not in an embedded file: path only, nothing to follow.
-    expect(html).toContain('<div class="scope-bar"><span class="scope-path">src/x.ts</span><span class="scope-sym"></span></div>');
+    expect(html).toContain(
+      '<div class="scope-bar"><span class="scope-path"><span class="dir">src/</span><span class="name">x.ts</span></span><span class="scope-sym"></span></div>',
+    );
   });
 
   it("renders clickable rails for the two-pane slide", () => {

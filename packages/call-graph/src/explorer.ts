@@ -1,16 +1,8 @@
-import {
-  fileDiffRows,
-  firstHeadLine,
-  markIntraLine,
-  renderDiffBlock,
-  rowsWidth,
-  segmentRows,
-  type DiffRow,
-} from "./diffView.js";
+import { renderCodePane } from "./codePane.js";
+import { fileDiffRows, markIntraLine, segmentRows, type DiffRow } from "./diffView.js";
 import { escapeHtml as esc, languageOf, type Mark } from "./highlight.js";
 import {
   buildFileIndex,
-  codePane,
   dataScripts,
   GAP_JS,
   pageHead,
@@ -116,6 +108,7 @@ export function renderPanel(
         end: site.endColumn,
         cls: "csite",
         attrs: `data-target="${esc(edge.to)}" role="button" tabindex="0"`,
+        ...(nav.debug ? { why: `csite · call-graph edge ${node.id} → ${edge.to}` } : {}),
       };
       decorations.set(site.line, { ...existing, marks: [...(existing.marks ?? []), mark] });
     }
@@ -136,6 +129,7 @@ export function renderPanel(
     lineTextAt(node.nameLine).startsWith(bareName, node.nameColumn)
       ? { line: node.nameLine, column: node.nameColumn }
       : null;
+  const nameFromService = namePos !== null;
   for (let n = snapshot.startLine; !namePos && n <= snapshot.endLine; n++) {
     const column = lineTextAt(n).indexOf(bareName);
     if (column >= 0) namePos = { line: n, column };
@@ -152,7 +146,14 @@ export function renderPanel(
       ...existing,
       marks: [
         ...(existing.marks ?? []),
-        { start: namePos.column, end: namePos.column + bareName.length, cls: "self-sym" },
+        {
+          start: namePos.column,
+          end: namePos.column + bareName.length,
+          cls: "self-sym",
+          ...(nav.debug
+            ? { why: `decl · ${node.name}, graph node ${node.id} (${nameFromService ? "language service" : "text search"})` }
+            : {}),
+        },
       ],
     });
   }
@@ -186,18 +187,15 @@ export function renderPanel(
       node.expanded ? "" : ' <span class="badge">boundary</span>'
     }</div>
     ${calledBy}
-    ${codePane(
-      snapshot.file,
+    ${renderCodePane({
+      file: snapshot.file,
       entry,
-      firstHeadLine(rows),
-      renderDiffBlock(rows, {
-        width: rowsWidth(rows, entry),
-        lang: languageOf(snapshot.file),
-        entry,
-        decorations,
-        focus: snapshot,
-      }),
-    )}
+      rows,
+      lang: languageOf(snapshot.file),
+      decorations,
+      focus: snapshot,
+      debug: nav.debug,
+    })}
   </article>`;
 }
 
@@ -215,7 +213,13 @@ export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, n
   const decorations: Decorations = new Map();
   decorations.set(def.nameLine, {
     marks: [
-      { start: def.nameColumn, end: def.nameEndColumn, cls: "self-sym", attrs: `data-decl="${esc(def.id)}"` },
+      {
+        start: def.nameColumn,
+        end: def.nameEndColumn,
+        cls: "self-sym",
+        attrs: `data-decl="${esc(def.id)}"`,
+        ...(nav.debug ? { why: `decl · ${def.name} (${def.kind}) ${def.id}` } : {}),
+      },
     ],
   });
   if (!def.external) {
@@ -233,12 +237,15 @@ export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, n
       def.external ? ' <span class="badge">external</span>' : ""
     }</h3>
     <div class="side-loc"><code>${esc(shownFile)}:${def.startLine}–${def.endLine}</code> <span class="badge">after</span></div>
-    ${codePane(
-      shownFile,
+    ${renderCodePane({
+      file: shownFile,
       entry,
-      firstHeadLine(rows),
-      renderDiffBlock(rows, { width: rowsWidth(rows, entry), lang: languageOf(def.file), entry, decorations, focus: def }),
-    )}
+      rows,
+      lang: languageOf(def.file),
+      decorations,
+      focus: def,
+      debug: nav.debug,
+    })}
   </article>`;
 }
 

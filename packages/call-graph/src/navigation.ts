@@ -20,6 +20,7 @@ import type {
   ReferenceSite,
   SymbolLink,
   SymbolRange,
+  UnlinkedIdentifier,
 } from "./types.js";
 
 export interface NavigationOptions {
@@ -30,6 +31,8 @@ export interface NavigationOptions {
   maxPanels?: number;
   /** Call sites kept per definition for the callers menu. */
   maxReferences?: number;
+  /** Record why each visited identifier was or was not linked (debug builds). */
+  debugMarks?: boolean;
 }
 
 /** Context lines shown either side of a windowed definition. */
@@ -126,6 +129,7 @@ export async function resolveNavigation(
   const maxLookups = options.maxLookups ?? 20_000;
   const maxPanels = options.maxPanels ?? 1000;
   const maxReferences = options.maxReferences ?? 10;
+  const debug = options.debugMarks ?? false;
   const backends = new Backends(headDir);
 
   const linesByFile = new Map<string, string[]>();
@@ -148,6 +152,13 @@ export async function resolveNavigation(
   const memo = new Map<string, DefinitionId | null>();
   let lookups = 0;
   let unresolvedForBudget = 0;
+  /** Debug builds: visited identifiers that got no link, with the reason. */
+  const unlinked: Record<string, UnlinkedIdentifier[]> = {};
+  /** Debug builds: why a memoized lookup came back empty. */
+  const memoWhy = new Map<string, string>();
+  const explain = (lookup: Lookup, why: string): void => {
+    if (debug) (unlinked[lookup.file] ??= []).push({ line: lookup.line, start: lookup.start, end: lookup.end, why });
+  };
 
   const resolveOne = async (
     backend: LanguageBackend,
@@ -158,6 +169,7 @@ export async function resolveNavigation(
     if (id === undefined) {
       if (lookups >= maxLookups) {
         unresolvedForBudget++;
+        explain(lookup, `not resolved: lookup budget of ${maxLookups} exhausted (--nav-budget)`);
         return;
       }
       lookups++;
@@ -166,7 +178,13 @@ export async function resolveNavigation(
         line: lookup.line,
         column: lookup.start,
       };
-      const def = await backend.definitionAt(ref).catch(() => null);
+      let failure: string | undefined;
+      const def = await backend.definitionAt(ref).catch((e: unknown) => {
+        failure = e instanceof Error ? e.message : String(e);
+        return null;
+      });
+      if (failure !== undefined) memoWhy.set(key, `not resolved: language service error (${failure})`);
+      else if (!def) memoWhy.set(key, "not resolved: language service found no definition");
       if (def) {
         const site = `${def.fileName}:${def.nameLine}:${def.nameColumn}`;
         id = idBySite.get(site);
@@ -196,6 +214,7 @@ export async function resolveNavigation(
       memo.set(key, id);
     }
     if (id) (links[lookup.file] ??= []).push({ line: lookup.line, start: lookup.start, end: lookup.end, def: id });
+    else explain(lookup, memoWhy.get(key) ?? "not resolved");
   };
 
   const resolveLines = async (wanted: Map<string, Map<number, number>>): Promise<void> => {
@@ -233,7 +252,10 @@ export async function resolveNavigation(
   const panelLines = new Map<string, Map<number, number>>();
   const attachPanel = async (def: DefinitionTarget): Promise<boolean> => {
     if (def.panel) return true;
-    if (panels >= maxPanels) return false;
+    if (panels >= maxPanels) {
+      if (debug) def.why = `panel budget of ${maxPanels} exhausted`;
+      return false;
+    }
     panels++; // reserve before awaiting so concurrent callers cannot overshoot
     let range: [number, number];
     if (!def.external && pageFiles.has(def.file)) {
@@ -245,6 +267,7 @@ export async function resolveNavigation(
         lines = (await backend?.fileInfo(def.file).catch(() => null))?.lines;
         if (!lines) {
           panels--;
+          if (debug) def.why = "source unavailable to the language service";
           return false;
         }
         linesByFile.set(def.file, lines);
@@ -255,6 +278,7 @@ export async function resolveNavigation(
       range = [from, to];
     }
     def.panel = true;
+    delete def.why;
     if (!def.external) {
       const lines = panelLines.get(def.file) ?? new Map<number, number>();
       for (let n = range[0]; n <= range[1]; n++) lines.set(n, 3);
@@ -345,7 +369,11 @@ export async function resolveNavigation(
     // then locals — a loop variable's declaration is usually on screen anyway.
     const firstPass = Object.values(definitions).filter((d) => !d.nodeId);
     const locality = new Map<DefinitionId, boolean>();
-    for (const def of firstPass) locality.set(def.id, await isLocal(def));
+    for (const def of firstPass) {
+      const local = await isLocal(def);
+      locality.set(def.id, local);
+      if (local && debug) def.why = `local ${def.kind}; paneled last, budget permitting`;
+    }
     for (const def of firstPass) if (!locality.get(def.id)) await attachPanel(def);
 
     const candidates = Object.values(definitions).filter(
@@ -370,7 +398,12 @@ export async function resolveNavigation(
     const before = new Set(Object.keys(definitions));
     await resolveLines(new Map(panelLines));
     for (const def of Object.values(definitions)) {
-      if (!before.has(def.id) && !def.nodeId && !(await isLocal(def))) await attachPanel(def);
+      if (before.has(def.id) || def.nodeId) continue;
+      if (await isLocal(def)) {
+        if (debug) def.why = `local ${def.kind} reached only from a synthesized panel's body; its declaration is usually in view`;
+      } else {
+        await attachPanel(def);
+      }
     }
 
     const unopenable = Object.values(definitions).filter((d) => !d.panel).length;
@@ -386,7 +419,7 @@ export async function resolveNavigation(
         unresolvedForBudget ? `, ${unresolvedForBudget} skipped for --nav-budget` : ""
       }).`,
     );
-    return { links, definitions, references };
+    return { links, definitions, references, ...(debug ? { debug: unlinked } : {}) };
   } finally {
     backends.dispose();
   }

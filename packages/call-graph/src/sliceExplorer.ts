@@ -5,21 +5,12 @@ import {
   renderPanel,
 } from "./explorer.js";
 import { NavIndex, definitionPanelId } from "./navLinks.js";
-import { fragmentRows as diffFragmentRows, markIntraLine, renderDiffRows } from "./diffView.js";
-import { escapeHtml as esc, languageOf, renderLine, type Mark } from "./highlight.js";
-import {
-  buildFileIndex,
-  CSS,
-  GAP_JS,
-  gapRow,
-  lineRow,
-  renderDataBlob,
-  SCOPE_JS,
-  scopeLabelFor,
-  staticGapRow,
-  type FileEntry,
-  type FileIndex,
-} from "./html.js";
+import { renderCodePane } from "./codePane.js";
+import { fragmentDiffRows } from "./diffView.js";
+import { escapeHtml as esc, languageOf, type Mark } from "./highlight.js";
+import { buildFileIndex, CSS, GAP_JS, renderDataBlob, SCOPE_JS, type FileIndex } from "./html.js";
+
+export { fileBlockRanges } from "./diffView.js";
 import type { CallPathResult, EmbeddedFile, NavigationData } from "./types.js";
 
 /**
@@ -83,6 +74,11 @@ export interface SliceExplorerInput {
    * Without it only call-graph symbols are tappable.
    */
   nav?: NavigationData | undefined;
+  /**
+   * Debug builds: every marked symbol says why it is marked (and every
+   * unmarked identifier why it is not) in a hint shown while Shift is held.
+   */
+  debugMarks?: boolean | undefined;
 }
 
 interface GraphSymbol {
@@ -112,6 +108,7 @@ function symbolMarks(
   symbols: Symbols,
   file: string,
   line: number | null,
+  debug = false,
 ): Mark[] {
   const marks: Mark[] = [];
   for (const symbol of symbols) {
@@ -131,174 +128,11 @@ function symbolMarks(
         end: from,
         cls: "csite",
         attrs: `data-target="${esc(symbol.nodeId)}" role="button" tabindex="0"`,
+        ...(debug ? { why: `csite · text match of graph symbol ${symbol.name} → ${symbol.nodeId}` } : {}),
       });
     }
   }
   return marks.sort((a, b) => a.start - b.start);
-}
-
-/** Lines of the head-side file shown either side of a fragment. */
-const FRAGMENT_CONTEXT = 5;
-
-/**
- * The head-side line ranges a file block shows for its fragments: each
- * fragment padded with context, overlapping or touching pads merged. Shared
- * with the navigation resolver so it asks about exactly the lines that
- * render. A deletion-only fragment (empty head extent) still earns context
- * around the point it sits at.
- */
-export function fileBlockRanges(
-  fragments: readonly SliceFragmentInput[],
-  lineCount: number,
-): Array<[number, number]> {
-  const ordered = [...fragments].sort(
-    (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
-  );
-  const ranges: Array<[number, number]> = [];
-  for (const fragment of ordered) {
-    const from = Math.max(1, fragment.headStart - FRAGMENT_CONTEXT);
-    const to = Math.min(lineCount, Math.max(fragment.headEnd, fragment.headStart - 1) + FRAGMENT_CONTEXT);
-    if (to < from) continue;
-    const last = ranges[ranges.length - 1];
-    if (last && from <= last[1] + 1) last[1] = Math.max(last[1], to);
-    else ranges.push([from, to]);
-  }
-  return ranges;
-}
-
-/** The fragment's own diff rows, GitHub-style, with graph and nav marks on top. */
-function fragmentRows(
-  fragment: SliceFragmentInput,
-  width: number,
-  symbols: Symbols,
-  nav: NavIndex,
-  entry: FileEntry | undefined,
-): string {
-  const rows = diffFragmentRows(fragment.lines, fragment.newLineNumbers);
-  markIntraLine(rows);
-  return renderDiffRows(rows, {
-    width,
-    lang: languageOf(fragment.file),
-    entry,
-    // A removed line has no head-side number, so it can never be the
-    // declaration site the head-side check compares against — and has no
-    // navigation links either.
-    marksFor: (text, headLine) => {
-      const graphMarks = symbolMarks(text, symbols, fragment.file, headLine);
-      return headLine === null
-        ? graphMarks
-        : [...graphMarks, ...nav.marksFor(fragment.file, headLine, graphMarks)];
-    },
-  });
-}
-
-/**
- * Every fragment a slice has in one file, rendered as one continuous stretch
- * of that file: each fragment surrounded by real context, the runs between
- * them collapsed behind expanders. Reading a file's changes should not mean
- * reassembling them from separate boxes.
- *
- * Nothing is interleaved between the fragments — no ids, no summaries. The
- * tinting already says which lines changed, and anything else in the column
- * breaks the listing the reader is trying to follow.
- */
-/**
- * "packages/webhooks/src/retry.ts" → dimmed directory, bold basename, the
- * scope of the first visible line, +/− stats. Doubles as the block's sticky
- * scope header: with the file embedded, the scope follows the scroll.
- */
-function fileHead(
-  file: string,
-  fragments: SliceFragmentInput[],
-  entry: FileEntry | undefined,
-  firstLine: number,
-): string {
-  const cut = file.lastIndexOf("/") + 1;
-  const adds = fragments.reduce(
-    (n, f) => n + f.lines.filter((l) => l.startsWith("+")).length,
-    0,
-  );
-  const dels = fragments.reduce(
-    (n, f) => n + f.lines.filter((l) => l.startsWith("-")).length,
-    0,
-  );
-  const scope = entry ? esc(scopeLabelFor(entry.symbols, firstLine)) : "";
-  return `<div class="file-head scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><code class="scope-path">${
-    cut > 0 ? `<span class="dir">${esc(file.slice(0, cut))}</span>` : ""
-  }<span class="name">${esc(file.slice(cut))}</span></code><span class="scope-sym">${scope}</span><span class="stat">${
-    adds ? `<span class="plus">+${adds}</span>` : ""
-  }${dels ? `<span class="minus">−${dels}</span>` : ""}</span></div>`;
-}
-
-function renderFileBlock(
-  file: string,
-  fragments: SliceFragmentInput[],
-  entry: ReturnType<FileIndex["get"]>,
-  symbols: Symbols,
-  nav: NavIndex,
-): string {
-  // Without the file's text there is no context to show and nothing to
-  // expand into, so the fragments stand alone with fixed gaps between them.
-  if (!entry) {
-    const width = 4;
-    const ordered = [...fragments].sort((a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd);
-    const rows: string[] = [];
-    let previousEnd = 0;
-    for (const fragment of ordered) {
-      if (previousEnd > 0) rows.push(staticGapRow(fragment.headStart - previousEnd - 1));
-      rows.push(fragmentRows(fragment, width, symbols, nav, undefined));
-      previousEnd = Math.max(previousEnd, fragment.headEnd);
-    }
-    return `<div class="file-block">${fileHead(file, fragments, undefined, ordered[0]?.headStart ?? 1)}<pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
-  }
-
-  const width = String(entry.lines.length).length;
-  const ordered = [...fragments].sort(
-    (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
-  );
-  const rows: string[] = [];
-
-  const contextRow = (n: number): void => {
-    const text = entry.lines[n - 1] ?? "";
-    const graphMarks = symbolMarks(text, symbols, file, n);
-    const marks = [...graphMarks, ...nav.marksFor(file, n, graphMarks)];
-    const html = marks.length
-      ? renderLine(text, entry.tokens[n - 1] ?? [], marks)
-      : (entry.html[n - 1] ?? "");
-    rows.push(lineRow(n, width, html));
-  };
-
-  // Walk the visible ranges; within each, a fragment's own rows stand in
-  // for the head lines it covers (a deletion-only fragment covers none, so
-  // its rows go in just before the line it sits at).
-  let cursor = 0;
-  let next = 0;
-  for (const [from, to] of fileBlockRanges(ordered, entry.lines.length)) {
-    if (from > cursor + 1) rows.push(gapRow(entry, cursor + 1, from - 1));
-    let n = from;
-    while (n <= to) {
-      const fragment = ordered[next];
-      if (fragment && fragment.headStart === n) {
-        rows.push(fragmentRows(fragment, width, symbols, nav, entry));
-        next++;
-        n = Math.max(n, fragment.headEnd + 1);
-        continue;
-      }
-      contextRow(n);
-      n++;
-    }
-    cursor = to;
-  }
-
-  if (cursor < entry.lines.length) {
-    rows.push(gapRow(entry, cursor + 1, entry.lines.length));
-  }
-
-  // The block always opens at line 1 — as a gap, or as the first visible line.
-  return `<div class="file-block">
-    ${fileHead(file, fragments, entry, 1)}
-    <pre class="source" data-w="${width}">${rows.join("")}</pre>
-  </div>`;
 }
 
 /** The slice's own panel: everything the PR changed for this one purpose. */
@@ -342,7 +176,25 @@ function renderSlicePanel(
       ${slice.graph ? "" : '<span class="badge">no call graph</span>'}
       <span class="hint">tap a symbol to open its definition · ⌘-click for its callers</span>
     </div>
-    ${[...byFile].map(([file, group]) => renderFileBlock(file, group, index.get(`after:${file}`), symbols, nav)).join("")}
+    ${[...byFile]
+      .map(([file, group]) => {
+        const entry = index.get(`after:${file}`);
+        return renderCodePane({
+          file,
+          entry,
+          rows: fragmentDiffRows(entry?.lines, group),
+          lang: languageOf(file),
+          // A removed line has no head-side number, so it can never be the
+          // declaration site the head-side check compares against — and has
+          // no navigation links either.
+          marksFor: (text, headLine) => {
+            const graphMarks = symbolMarks(text, symbols, file, headLine, nav.debug);
+            return headLine === null ? graphMarks : [...graphMarks, ...nav.marksFor(file, headLine, graphMarks)];
+          },
+          debug: nav.debug,
+        });
+      })
+      .join("")}
   </article>`;
 }
 
@@ -439,26 +291,7 @@ const SLICE_CSS = `
                   font-family: var(--mono); }
   .hint { font-size: 0.7rem; color: var(--ink-faint); margin-left: 0.3rem; }
 
-  /* No overflow clipping here: it would make the block the sticky header's
-     scroll root instead of the panel. The head and pre round their own corners. */
-  .file-block {
-    border: 1px solid var(--line-c); border-radius: 8px;
-    margin: 0 0 1.1rem; background: var(--panel);
-  }
-  .file-head.scope-bar {
-    display: flex; align-items: center; gap: 0.6rem;
-    padding: 0.5rem 0.9rem; background: var(--panel-2);
-    border: none; border-bottom: 1px solid var(--line-c); border-radius: 8px 8px 0 0;
-    font-family: var(--mono); font-size: 0.74rem;
-  }
-  .file-head .scope-path { display: inline; gap: 0; }
-  .file-head .dir { color: var(--ink-faint); }
-  .file-head .name { color: var(--ink); font-weight: 600; }
-  .file-head .scope-sym { margin-left: -0.45rem; }
-  .file-head .stat { margin-left: auto; font-size: 0.68rem; font-variant-numeric: tabular-nums; }
-  .file-head .plus { color: var(--add-edge); }
-  .file-head .minus { color: var(--del-edge); margin-left: 0.4rem; }
-  .file-block pre.source { border: none; border-radius: 0 0 8px 8px; margin: 0; }
+  .slice-panel .code-pane { margin: 0 0 1.1rem; }
 `;
 
 /**
@@ -467,6 +300,57 @@ const SLICE_CSS = `
  * pushing past the end carries you to the next slice, and past the top to
  * the previous one.
  */
+/**
+ * Debug builds: hold Shift and every marked span says why it is marked, in a
+ * small label over the span, colour-coded by kind; identifiers the resolver
+ * left alone get a label too. Nothing shows until Shift is down.
+ */
+const DEBUG_MARKS_CSS = `
+  body.debug-marks [data-why] { position: relative; outline: 1px dashed var(--dbg, var(--ink-faint)); outline-offset: 1px; }
+  body.debug-marks .source .line:has([data-why]) { padding-top: 0.95em; }
+  body.debug-marks [data-why]::after {
+    content: attr(data-why); position: absolute; left: 0; bottom: 100%; z-index: 6;
+    font: 500 0.55rem/1.3 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0;
+    color: var(--ink); background: var(--panel-2); border: 1px solid var(--dbg, var(--line-c));
+    border-radius: 3px; padding: 0 3px; white-space: nowrap; pointer-events: none;
+    max-width: 60ch; overflow: hidden; text-overflow: ellipsis;
+  }
+  body.debug-marks [data-why]:hover::after { max-width: none; z-index: 7; }
+  body.debug-marks .csite[data-why] { --dbg: var(--accent); }
+  body.debug-marks .sym[data-why] { --dbg: var(--add-edge); }
+  body.debug-marks .self-sym[data-why] { --dbg: #a855f7; }
+  body.debug-marks .ref-site[data-why] { --dbg: var(--tok-num); }
+  body.debug-marks .id-dbg[data-why] { --dbg: var(--ink-faint); }
+  #debug-legend {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50; display: none;
+    flex-direction: column; gap: 3px; padding: 0.5rem 0.7rem;
+    border: 1px solid var(--line-c); border-radius: 8px; background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    font: 0.68rem/1.4 ui-sans-serif, system-ui, sans-serif; color: var(--ink-soft);
+  }
+  body.debug-marks #debug-legend { display: flex; }
+  #debug-legend b { color: var(--ink); }
+  #debug-legend .sw { display: inline-block; width: 0.7em; height: 0.7em; border: 1px dashed; margin-right: 0.4em; vertical-align: -1px; }
+`;
+
+const DEBUG_MARKS_LEGEND = `<div id="debug-legend">
+  <b>Why is this marked? (Shift held)</b>
+  <span><i class="sw" style="border-color: var(--accent)"></i><b>csite</b> — call-graph edge or text match of a graph symbol</span>
+  <span><i class="sw" style="border-color: var(--add-edge)"></i><b>sym</b> — language service resolved it to a definition</span>
+  <span><i class="sw" style="border-color: #a855f7"></i><b>decl</b> — a declaration the page knows (lights up in place)</span>
+  <span><i class="sw" style="border-color: var(--tok-num)"></i><b>ref-site</b> — a listed call/reference of a definition</span>
+  <span><i class="sw" style="border-color: var(--ink-faint)"></i><b>unlinked</b> — visited but not linked, with the reason</span>
+</div>`;
+
+const DEBUG_MARKS_JS = `
+(function () {
+  function set(on) { document.body.classList.toggle("debug-marks", on); }
+  document.addEventListener("keydown", function (e) { if (e.key === "Shift") set(true); });
+  document.addEventListener("keyup", function (e) { if (e.key === "Shift") set(false); });
+  window.addEventListener("blur", function () { set(false); });
+})();
+`;
+
 const DECK_JS = `
 (function () {
   var stage = document.querySelector(".stage");
@@ -656,7 +540,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
     ...input.files,
     ...input.slices.flatMap((s) => s.graph?.files ?? []),
   ]);
-  const nav = new NavIndex(input.nav);
+  const nav = new NavIndex(input.nav, { debug: input.debugMarks });
 
   const views = input.slices
     .map((slice, i) => {
@@ -707,7 +591,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(`${input.repo}#${input.number} — slice explorer`)}</title>
-<style>${CSS}${EXPLORER_CSS}${SLICE_CSS}</style>
+<style>${CSS}${EXPLORER_CSS}${SLICE_CSS}${input.debugMarks ? DEBUG_MARKS_CSS : ""}</style>
 </head>
 <body class="slice-explorer">
 <aside class="side">
@@ -739,6 +623,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 </div>
 </div>
 
+${input.debugMarks ? DEBUG_MARKS_LEGEND : ""}
 <div id="shared-defs" class="panel-defs" hidden>${definitionPanels}</div>
 
 <script type="application/json" id="slice-titles">${JSON.stringify(titles).replaceAll("</", "<\\/")}</script>
@@ -753,6 +638,7 @@ ${SCOPE_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}
 ${DECK_JS}
+${input.debugMarks ? DEBUG_MARKS_JS : ""}
 </script>
 </body>
 </html>

@@ -11,6 +11,7 @@ import type {
   NavigationData,
   ReferenceSite,
   SymbolLink,
+  UnlinkedIdentifier,
 } from "./types.js";
 
 /** Panel id of a synthesized definition panel (a graph node keeps its own id). */
@@ -18,16 +19,36 @@ export function definitionPanelId(def: DefinitionTarget): string {
   return def.nodeId ?? `def:${def.id}`;
 }
 
+export interface NavIndexOptions {
+  /**
+   * Debug builds: every mark carries a `data-why` saying where it came from,
+   * and identifiers the resolver visited but did not link get a hint too.
+   */
+  debug?: boolean | undefined;
+}
+
 export class NavIndex {
   private linksByFile = new Map<string, Map<number, SymbolLink[]>>();
   private declsByFile = new Map<string, Map<number, DefinitionTarget[]>>();
   /** file → line → [definition id, site] for every listed call site. */
   private sitesByFile = new Map<string, Map<number, Array<[DefinitionId, ReferenceSite]>>>();
+  private unlinkedByFile = new Map<string, Map<number, UnlinkedIdentifier[]>>();
+  private referenceKind = new Map<DefinitionId, "calls" | "references">();
   readonly definitions: ReadonlyMap<DefinitionId, DefinitionTarget>;
+  readonly debug: boolean;
 
-  constructor(readonly nav: NavigationData | undefined) {
+  constructor(readonly nav: NavigationData | undefined, options: NavIndexOptions = {}) {
+    this.debug = options.debug ?? false;
     this.definitions = new Map(Object.entries(nav?.definitions ?? {}));
+    if (this.debug) {
+      for (const [file, list] of Object.entries(nav?.debug ?? {})) {
+        const byLine = new Map<number, UnlinkedIdentifier[]>();
+        for (const item of list) byLine.set(item.line, [...(byLine.get(item.line) ?? []), item]);
+        this.unlinkedByFile.set(file, byLine);
+      }
+    }
     for (const [id, list] of Object.entries(nav?.references ?? {})) {
+      this.referenceKind.set(id, list.kind);
       for (const site of list.sites) {
         const byLine = this.sitesByFile.get(site.file) ?? new Map<number, Array<[DefinitionId, ReferenceSite]>>();
         const at = byLine.get(site.line) ?? [];
@@ -84,6 +105,7 @@ export class NavIndex {
         end: link.end,
         cls: "sym",
         attrs: `${target}data-def="${esc(def.id)}" role="button" tabindex="0"`,
+        ...(this.debug ? { why: this.explainLink(def) } : {}),
       });
     }
     return marks;
@@ -101,7 +123,28 @@ export class NavIndex {
       end: def.nameEndColumn,
       cls: "self-sym",
       attrs: `data-decl="${esc(def.id)}"`,
+      ...(this.debug ? { why: `decl · ${def.name} (${def.kind}) ${def.id}` } : {}),
     }));
+  }
+
+  /** Debug builds: where a symbol link came from and whether it opens anything. */
+  private explainLink(def: DefinitionTarget): string {
+    const opens = def.nodeId
+      ? `opens graph panel ${def.nodeId}`
+      : def.panel
+        ? `opens panel${def.source ? " (windowed)" : ""}`
+        : `no panel: ${def.why ?? "unknown"}`;
+    return `sym · ${def.name} (${def.kind}) ${def.id} in ${def.external ? "external " : ""}${
+      def.external ? def.file.slice(def.file.lastIndexOf("/") + 1) : def.file
+    } · ${opens}`;
+  }
+
+  /** Debug builds: hint marks over identifiers the resolver visited but did not link. */
+  unlinkedMarks(file: string, line: number, existing: readonly Mark[] = []): Mark[] {
+    const items = this.unlinkedByFile.get(file)?.get(line) ?? [];
+    return items
+      .filter((u) => !existing.some((m) => m.start < u.end && u.start < m.end))
+      .map((u) => ({ start: u.start, end: u.end, cls: "id-dbg", why: u.why }));
   }
 
   /**
@@ -116,6 +159,7 @@ export class NavIndex {
       end: site.endColumn,
       cls: "ref-site",
       attrs: `data-ref-of="${esc(id)}"`,
+      ...(this.debug ? { why: `ref-site · ${this.referenceKind.get(id) === "calls" ? "call" : "reference"} of ${id}` } : {}),
     }));
   }
 
@@ -124,10 +168,8 @@ export class NavIndex {
     const decls = this.declMarks(file, line).filter(
       (d) => !existing.some((m) => m.cls === "self-sym" && m.start === d.start),
     );
-    return [
-      ...this.linkMarks(file, line, [...existing, ...decls]),
-      ...decls,
-      ...this.refSiteMarks(file, line),
-    ];
+    const links = this.linkMarks(file, line, [...existing, ...decls]);
+    const marks = [...links, ...decls, ...this.refSiteMarks(file, line)];
+    return this.debug ? [...marks, ...this.unlinkedMarks(file, line, [...existing, ...marks])] : marks;
   }
 }

@@ -175,10 +175,10 @@ describe("renderSliceExplorerHtml", () => {
     expect(html).toContain("data-names=\"{&quot;a.ts#retry&quot;");
   });
 
-  it("renders a file's fragments as one block, not one box each", () => {
-    // Both of slice one's fragments are in a.ts, so they share a block.
+  it("renders a file's fragments as one pane, not one box each", () => {
+    // Both of slice one's fragments are in a.ts, so they share a pane.
     const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
-    expect([...panel.matchAll(/class="file-block"/g)]).toHaveLength(1);
+    expect([...panel.matchAll(/class="code-pane"/g)]).toHaveLength(1);
     expect([...panel.matchAll(/class="source"/g)]).toHaveLength(1);
   });
 
@@ -219,11 +219,13 @@ describe("renderSliceExplorerHtml", () => {
     expect(html).toContain('<span class="gap-crumb">class Box › open()</span>');
   });
 
-  it("makes the file head a sticky scope header keyed to the embedded file", () => {
+  it("heads the pane with the same sticky scope bar every panel uses, plus the file's +/− count", () => {
     const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
-    expect(panel).toContain('<div class="file-head scope-bar" data-key="after:a.ts">');
+    expect(panel).toContain('<div class="scope-bar" data-key="after:a.ts"><span class="scope-path"><span class="name">a.ts</span></span>');
     // Line 1 is the first visible line, inside Box.
     expect(panel).toContain('<span class="scope-sym">Box</span>');
+    expect(panel).toContain('<span class="stat"><span class="plus">+3</span><span class="minus">−1</span></span>');
+    expect(panel).not.toContain("file-block");
   });
 
   it("shows context around a fragment and an expander over the tail", () => {
@@ -340,14 +342,15 @@ describe("renderSliceExplorerHtml with navigation data", () => {
     },
   };
 
-  const html = renderSliceExplorerHtml({
+  const page = (debugMarks: boolean, extra: Partial<NavigationData> = {}) => renderSliceExplorerHtml({
     prUrl: "https://github.com/a/b/pull/1",
     prTitle: "A PR",
     repo: "a/b",
     number: 1,
     overview: "does a thing",
     files,
-    nav,
+    nav: { ...nav, ...extra },
+    ...(debugMarks ? { debugMarks } : {}),
     slices: [
       {
         id: "slice-1",
@@ -367,6 +370,7 @@ describe("renderSliceExplorerHtml with navigation data", () => {
       },
     ],
   });
+  const html = page(false);
 
   it("marks resolved symbols as tappable with their definition panel id", () => {
     expect(html).toContain('class="sym" data-target="def:a.ts:60:6" data-def="a.ts:60:6"');
@@ -419,4 +423,33 @@ describe("renderSliceExplorerHtml with navigation data", () => {
     expect(html).not.toContain("contextmenu");
     expect(html).toContain("ref-menu");
   });
+
+  it("ships no debug hints unless asked", () => {
+    expect(html).not.toContain("data-why");
+    expect(html).not.toContain("id-dbg");
+    expect(html).not.toContain("debug-legend");
+  });
+
+  it("with --debug-marks, every mark says why it is there and unlinked identifiers say why not", () => {
+    const debug = page(true, {
+      debug: { "a.ts": [{ line: 4, start: 0, end: 4, why: "not resolved: language service found no definition" }] },
+    });
+    // Graph symbol found by text match on the slice panel.
+    expect(debug).toContain('data-why="csite · text match of graph symbol retry → a.ts#retry"');
+    // A resolved symbol names its definition and what it opens.
+    expect(debug).toContain('data-why="sym · y (const) a.ts:60:6 in a.ts · opens panel"');
+    expect(debug).toContain('data-why="sym · z (variable) d-nopanel in a.ts · no panel: unknown"');
+    // Declarations, call sites, and the resolver's own explanations.
+    expect(debug).toContain('data-why="decl · retry (function) a.ts#retry"');
+    // A span two marks share lists both reasons.
+    expect(debug).toContain('data-why="sym · y (const) a.ts:60:6 in a.ts · opens panel | ref-site · reference of a.ts:60:6"');
+    expect(debug).toContain('<span class="id-dbg" data-why="not resolved: language service found no definition">line</span>');
+    // Identifiers the resolver never saw are pointed out too (line 5 has no entry).
+    expect(debug).toContain('<span class="id-dbg" data-why="not visited by the resolver">line</span>');
+    // The overlay itself: legend, Shift toggle, per-kind colours.
+    expect(debug).toContain('id="debug-legend"');
+    expect(debug).toContain('e.key === "Shift"');
+    expect(debug).toContain("body.debug-marks [data-why]::after");
+  });
+
 });
