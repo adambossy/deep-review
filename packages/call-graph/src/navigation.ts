@@ -9,6 +9,7 @@ import type { DeclRef, IncomingReference as IncomingReferenceOf, LanguageBackend
 import { Backends } from "./backends.js";
 import { panelRange } from "./explorer.js";
 import { identifiersOf, languageOf } from "./highlight.js";
+import { scopeChainFor } from "./html.js";
 import { definitionPanelId as definitionPanelIdOf } from "./navLinks.js";
 import { fileBlockRanges, type SliceExplorerInput } from "./sliceExplorer.js";
 import type {
@@ -18,6 +19,7 @@ import type {
   ReferenceList,
   ReferenceSite,
   SymbolLink,
+  SymbolRange,
 } from "./types.js";
 
 export interface NavigationOptions {
@@ -95,6 +97,8 @@ function toRelative(root: string, fileName: string): string {
  * so those stay eligible.
  */
 const LOCAL_KINDS = new Set(["variable", "parameter", "local var", "let", "var"]);
+/** Symbol kinds whose body makes the names declared inside it local. */
+const CALLABLE_SCOPES = new Set(["function", "method", "constructor", "accessor"]);
 
 interface Lookup {
   file: string;
@@ -258,7 +262,25 @@ export async function resolveNavigation(
     }
     return true;
   };
-  const isLocal = (d: DefinitionTarget): boolean => LOCAL_KINDS.has(d.kind);
+  // A "variable" is local only when it is declared inside a function; a
+  // module-level `settings = Settings()` has the same kind and deserves a
+  // panel and a callers list like any constant. Decided from the file's
+  // symbol tree, fetched once per file.
+  const symbolsByFile = new Map<string, Promise<SymbolRange[]>>();
+  const symbolsOf = (file: string): Promise<SymbolRange[]> => {
+    let pending = symbolsByFile.get(file);
+    if (!pending) {
+      pending = backends.for(file)?.fileInfo(file).then((i) => i?.symbols ?? []).catch(() => []) ?? Promise.resolve([]);
+      symbolsByFile.set(file, pending);
+    }
+    return pending;
+  };
+  const isLocal = async (d: DefinitionTarget): Promise<boolean> => {
+    if (!LOCAL_KINDS.has(d.kind)) return false;
+    if (d.kind === "parameter") return true;
+    if (d.external) return false;
+    return scopeChainFor(await symbolsOf(d.file), d.nameLine).some((s) => CALLABLE_SCOPES.has(s.kind));
+  };
 
   // Who calls each repo-internal, named definition — for the callers
   // menu. Call hierarchy for callables; plain references for classes and
@@ -322,9 +344,13 @@ export async function resolveNavigation(
     // then the functions that call them (so every menu row can walk up),
     // then locals — a loop variable's declaration is usually on screen anyway.
     const firstPass = Object.values(definitions).filter((d) => !d.nodeId);
-    for (const def of firstPass) if (!isLocal(def)) await attachPanel(def);
+    const locality = new Map<DefinitionId, boolean>();
+    for (const def of firstPass) locality.set(def.id, await isLocal(def));
+    for (const def of firstPass) if (!locality.get(def.id)) await attachPanel(def);
 
-    const candidates = Object.values(definitions).filter((d) => d.panel && !d.external && !isLocal(d));
+    const candidates = Object.values(definitions).filter(
+      (d) => d.panel && !d.external && !locality.get(d.id),
+    );
     log(`navigation: collecting callers of ${candidates.length} definitions…`);
     for (let i = 0; i < candidates.length; ) {
       const backend = backends.for(candidates[i]!.file);
@@ -334,7 +360,7 @@ export async function resolveNavigation(
       i += group.length;
     }
 
-    for (const def of firstPass) if (isLocal(def)) await attachPanel(def);
+    for (const def of firstPass) if (locality.get(def.id)) await attachPanel(def);
 
     // Second pass: link the synthesized panels' own bodies, one level deep.
     // Named declarations found here get panels too (within the budget);
@@ -344,7 +370,7 @@ export async function resolveNavigation(
     const before = new Set(Object.keys(definitions));
     await resolveLines(new Map(panelLines));
     for (const def of Object.values(definitions)) {
-      if (!before.has(def.id) && !def.nodeId && !isLocal(def)) await attachPanel(def);
+      if (!before.has(def.id) && !def.nodeId && !(await isLocal(def))) await attachPanel(def);
     }
 
     const unopenable = Object.values(definitions).filter((d) => !d.panel).length;

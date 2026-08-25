@@ -168,12 +168,14 @@ describe("resolveNavigation", () => {
     expect(nav.references![helper.id]!.sites[0]!.enclosingName).toBe("use");
   }, 30_000);
 
-  it("spends the panel budget on named declarations before locals", async () => {
+  it("spends the panel budget on module-level declarations before locals", async () => {
     const nav = await resolveNavigation(dir, input, { maxPanels: 1 });
     const withPanel = Object.values(nav.definitions).filter((d) => d.panel && !d.nodeId);
     expect(withPanel.map((d) => d.name)).toEqual(["LIMIT"]);
+    // `total` is a const inside `use`: local by position, whatever its kind.
     // Locals keep their links (for in-place highlighting) but open nothing.
     const total = Object.values(nav.definitions).find((d) => d.name === "total")!;
+    expect(total.kind).toBe("const");
     expect(total.panel).toBe(false);
     expect(nav.links["use.ts"]!.some((l) => l.def === total.id)).toBe(true);
   }, 30_000);

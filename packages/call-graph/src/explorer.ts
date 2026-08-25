@@ -258,6 +258,7 @@ export const EXPLORER_CSS = `
   .panel {
     flex: none; width: calc((100cqw - 2 * var(--rail) - var(--gap)) / 2);
     height: 100%; overflow: auto; box-sizing: border-box;
+    position: relative; /* the callers menu is placed within the pane */
     border: 1px solid var(--line-c); border-radius: 8px; padding: 0.7rem 0.9rem;
     background: var(--panel);
   }
@@ -557,9 +558,13 @@ function initExplorer(root, NAMES, onNavigate) {
     }
     menu.innerHTML = html;
     var rect = panel.getBoundingClientRect();
-    menu.style.left = (e.clientX - rect.left + panel.scrollLeft) + "px";
-    menu.style.top = (e.clientY - rect.top + panel.scrollTop) + "px";
     panel.appendChild(menu);
+    /* Just under the cursor, pulled back inside the pane if it would spill out. */
+    var left = e.clientX - rect.left + panel.scrollLeft;
+    var top = e.clientY - rect.top + panel.scrollTop + 6;
+    left = Math.max(0, Math.min(left, panel.scrollLeft + panel.clientWidth - menu.offsetWidth - 8));
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
   }
   /* External restore point for a history entry: rebuild the track from a
      saved list of node ids and re-settle the viewport at the saved slot. */
