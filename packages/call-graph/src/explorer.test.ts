@@ -138,10 +138,31 @@ describe("renderCallPathExplorerHtml", () => {
     expect(html).toContain('data-target="leaf.ts#leaf"');
   });
 
-  it("renders tappable called-by rows pointing at caller node ids", () => {
-    const midPanel = html.slice(html.indexOf('data-node="mid.ts#mid"'));
+  it("folds the called-by rows into a collapsed list with a count", () => {
+    const midPanel = html.slice(html.indexOf('data-node="mid.ts#mid"'), html.indexOf('data-node="leaf.ts#leaf"'));
     expect(midPanel).toContain('caller-row" data-target="top.ts#top"');
-    expect(midPanel).toContain("called by");
+    expect(midPanel).toContain('<details class="fn called-by"><summary title="tap a row to walk up">called by (1)</summary>');
+    expect(midPanel).not.toContain("<details open");
+  });
+
+  it("lists every call site, not just the first few", () => {
+    const many: CallPathResult = {
+      ...result,
+      edges: [
+        ...result.edges,
+        {
+          from: "top.ts#top",
+          to: "leaf.ts#leaf",
+          before: [],
+          after: [3, 4, 5, 6, 7].map((line) => ({ line, snippet: `leaf(${line})`, startColumn: 0, endColumn: 4 })),
+        },
+      ],
+    };
+    const page = renderCallPathExplorerHtml(many);
+    const leafPanel = page.slice(page.lastIndexOf('data-node="leaf.ts#leaf"'), page.lastIndexOf('data-node="top.ts#top"'));
+    // mid's one call plus top's five.
+    expect(leafPanel).toContain("called by (6)");
+    expect(leafPanel.match(/class="caller-row"/g)).toHaveLength(6);
   });
 
   it("labels boundary nodes", () => {

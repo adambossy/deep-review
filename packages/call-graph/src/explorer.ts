@@ -158,27 +158,31 @@ export function renderPanel(
     addNavMarks(decorations, nav, snapshot.file, from, to);
   }
 
-  // Incoming edges become tappable "called by" rows.
+  // Incoming edges become tappable "called by" rows, one per call site,
+  // folded away by default: a widely used function has dozens, and the
+  // code is what the panel is for.
   const nodeName = new Map(result.nodes.map((n) => [n.id, n.name]));
   const callerRows = result.edges
     .filter((edge) => edge.to === node.id)
     .flatMap((edge) => {
       const sites = sitesFor(side, edge).length ? sitesFor(side, edge) : sitesFor(side === "after" ? "before" : "after", edge);
-      return sites.slice(0, 3).map(
+      return sites.map(
         (site) =>
           `<button class="caller-row" data-target="${esc(edge.from)}">↖ <code class="fn-name">${esc(
             nodeName.get(edge.from) ?? edge.from,
           )}</code> <span class="loc">L${site.line}</span> <code>${esc(site.snippet)}</code></button>`,
       );
-    })
-    .join("");
+    });
+  const calledBy = callerRows.length
+    ? `<details class="fn called-by"><summary title="tap a row to walk up">called by (${callerRows.length})</summary><div class="caller-rows">${callerRows.join("")}</div></details>`
+    : "";
 
   return `<article class="panel" data-node="${esc(node.id)}">
     <h3><code class="fn-name">${esc(node.name)}</code> ${presenceBadge(node)}</h3>
     <div class="side-loc"><code>${esc(snapshot.file)}:${snapshot.startLine}–${snapshot.endLine}</code> <span class="badge">${side}</span>${
       node.expanded ? "" : ' <span class="badge">boundary</span>'
     }</div>
-    ${callerRows ? `<div class="call-sites-label">called by — tap to walk up</div><div class="caller-rows">${callerRows}</div>` : ""}
+    ${calledBy}
     ${renderDiffBlock(rows, {
       width: rowsWidth(rows, entry),
       lang: languageOf(snapshot.file),
@@ -245,6 +249,9 @@ export const EXPLORER_CSS = `
     background: var(--panel);
   }
   .panel > h3 { margin: 0 0 0.3rem; }
+  .panel details.called-by { margin: 0.3rem 0 0.6rem; }
+  .panel details.called-by summary { font-size: 0.8rem; }
+  .panel details.called-by .caller-rows { margin: 0; padding: 0 0.6rem 0.6rem; }
   .caller-rows { display: flex; flex-direction: column; gap: 2px; margin: 0.2rem 0 0.5rem; }
   .caller-row {
     text-align: left; padding: 0.25rem 0.5rem; cursor: pointer;
