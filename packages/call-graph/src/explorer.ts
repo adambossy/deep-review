@@ -12,7 +12,8 @@ import {
   type Decorations,
   type FileIndex,
 } from "./html.js";
-import type { CallPathResult, CallSite, PathNode } from "./types.js";
+import { NavIndex, definitionPanelId } from "./navLinks.js";
+import type { CallPathResult, CallSite, DefinitionTarget, PathNode } from "./types.js";
 
 function sitesFor(side: "before" | "after", edge: { before: CallSite[]; after: CallSite[] }): CallSite[] {
   return side === "after" ? edge.after : edge.before;
@@ -21,24 +22,52 @@ function sitesFor(side: "before" | "after", edge: { before: CallSite[]; after: C
 /** Lines of surrounding file context shown around a function, like `diff -U10`. */
 const PANEL_CONTEXT = 10;
 
-export function renderPanel(node: PathNode, result: CallPathResult, index: FileIndex): string {
+/**
+ * The head-side lines a panel shows for a declaration spanning
+ * `startLine..endLine` in a file of `lineCount` lines: the declaration
+ * padded with context on both sides. Shared with the navigation resolver so
+ * it asks about exactly the lines that render.
+ */
+export function panelRange(
+  span: { startLine: number; endLine: number },
+  lineCount: number,
+): [number, number] {
+  return [Math.max(1, span.startLine - PANEL_CONTEXT), Math.min(lineCount, span.endLine + PANEL_CONTEXT)];
+}
+
+/** Layer nav link + declaration marks onto every line of a range. */
+function addNavMarks(
+  decorations: Decorations,
+  nav: NavIndex,
+  file: string,
+  from: number,
+  to: number,
+): void {
+  if (nav.empty) return;
+  for (let n = from; n <= to; n++) {
+    const existing = decorations.get(n) ?? {};
+    const marks = nav.marksFor(file, n, existing.marks ?? []);
+    if (marks.length) decorations.set(n, { ...existing, marks: [...(existing.marks ?? []), ...marks] });
+  }
+}
+
+export function renderPanel(
+  node: PathNode,
+  result: CallPathResult,
+  index: FileIndex,
+  nav: NavIndex = new NavIndex(undefined),
+): string {
   const side: "before" | "after" = node.after ? "after" : "before";
   const snapshot = (node.after ?? node.before)!;
   const entry = index.get(`${side}:${snapshot.file}`);
 
   // Pad the visible source with context from the embedded file so tiny
   // functions (one-line arrows, etc.) aren't shown as a lone line.
-  const segments = entry
-    ? [
-        {
-          startLine: Math.max(1, snapshot.startLine - PANEL_CONTEXT),
-          lines: entry.lines.slice(
-            Math.max(1, snapshot.startLine - PANEL_CONTEXT) - 1,
-            Math.min(entry.lines.length, snapshot.endLine + PANEL_CONTEXT),
-          ),
-        },
-      ]
-    : snapshot.source;
+  const range = entry ? panelRange(snapshot, entry.lines.length) : null;
+  const segments =
+    entry && range
+      ? [{ startLine: range[0], lines: entry.lines.slice(range[0] - 1, range[1]) }]
+      : snapshot.source;
 
   // Decorations: PR-added lines tinted, PR-removed lines interleaved in red;
   // each outgoing call tappable. Decorate only within the function itself —
@@ -82,7 +111,13 @@ export function renderPanel(node: PathNode, result: CallPathResult, index: FileI
     const column = lineTextAt(n).indexOf(bareName);
     if (column >= 0) namePos = { line: n, column };
   }
-  if (namePos) {
+  // When the navigation data knows this declaration, its mark (which carries
+  // the definition id) takes the place of the text-search one.
+  const navDeclares =
+    namePos !== null &&
+    side === "after" &&
+    nav.declMarks(snapshot.file, namePos.line).some((m) => m.start === namePos!.column);
+  if (namePos && !navDeclares) {
     const existing = decorations.get(namePos.line) ?? {};
     decorations.set(namePos.line, {
       ...existing,
@@ -91,6 +126,10 @@ export function renderPanel(node: PathNode, result: CallPathResult, index: FileI
         { start: namePos.column, end: namePos.column + bareName.length, cls: "self-sym" },
       ],
     });
+  }
+  if (side === "after") {
+    const [from, to] = range ?? [snapshot.startLine, snapshot.endLine];
+    addNavMarks(decorations, nav, snapshot.file, from, to);
   }
 
   // Incoming edges become tappable "called by" rows.
@@ -116,6 +155,49 @@ export function renderPanel(node: PathNode, result: CallPathResult, index: FileI
     ${callerRows ? `<div class="call-sites-label">called by — tap to walk up</div><div class="caller-rows">${callerRows}</div>` : ""}
     ${node.hunks.length ? `<details class="fn"><summary>diff (${node.hunks.length} hunk${node.hunks.length > 1 ? "s" : ""})</summary><div class="fn-body">${renderHunksBlock(node.hunks, entry, languageOf(node.file))}</div></details>` : ""}
     ${renderCodeBlock(segments, { entry, gaps: true, lang: languageOf(snapshot.file), decorations })}
+  </article>`;
+}
+
+/**
+ * A panel for a definition the call graph did not reach — a class, a
+ * constant, an import, a local, or something in a dependency. Same card as
+ * a function's, minus the call-graph parts (no called-by rows, no diff).
+ */
+export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, nav: NavIndex): string {
+  // A window wins when present: the file is not on the page whole.
+  const entry = def.external || def.source ? undefined : index.get(`after:${def.file}`);
+  const range = entry ? panelRange(def, entry.lines.length) : null;
+  const segments =
+    entry && range
+      ? [{ startLine: range[0], lines: entry.lines.slice(range[0] - 1, range[1]) }]
+      : def.source
+        ? [def.source]
+        : [];
+  if (!segments.length) return "";
+
+  const decorations: Decorations = new Map();
+  decorations.set(def.nameLine, {
+    marks: [
+      { start: def.nameColumn, end: def.nameEndColumn, cls: "self-sym", attrs: `data-decl="${esc(def.id)}"` },
+    ],
+  });
+  if (!def.external) {
+    const [from, to] = range ?? [
+      segments[0]!.startLine,
+      segments[0]!.startLine + segments[0]!.lines.length - 1,
+    ];
+    // The declaration's own mark is already placed above; marksFor dedupes it.
+    addNavMarks(decorations, nav, def.file, from, to);
+  }
+
+  // External paths are absolute and machine-specific: show the basename only.
+  const shownFile = def.external ? def.file.slice(def.file.lastIndexOf("/") + 1) : def.file;
+  return `<article class="panel" data-node="${esc(definitionPanelId(def))}">
+    <h3><code class="fn-name">${esc(def.name)}</code> <span class="badge">${esc(def.kind)}</span>${
+      def.external ? ' <span class="badge">external</span>' : ""
+    }</h3>
+    <div class="side-loc"><code>${esc(shownFile)}:${def.startLine}–${def.endLine}</code> <span class="badge">after</span></div>
+    ${renderCodeBlock(segments, { entry, gaps: true, lang: languageOf(def.file), decorations })}
   </article>`;
 }
 
@@ -168,6 +250,10 @@ export const EXPLORER_CSS = `
   .sym-link { background: var(--accent); border-radius: 3px; padding: 0 2px; transition: opacity 0.7s ease; }
   .sym-link, .sym-link * { color: var(--accent-ink) !important; }
   .sym-link.sym-dim { opacity: 0.45; }
+  /* Any symbol with a known definition: quieter than a call mark, so a
+     panel full of resolvable names does not read as a wall of tint. */
+  .sym { cursor: pointer; border-bottom: 1px dotted var(--ink-faint); }
+  .sym:hover { color: var(--accent); border-bottom-color: var(--accent); }
 `;
 
 /**
@@ -178,6 +264,11 @@ export const EXPLORER_CSS = `
 export const EXPLORER_NAV_JS = `
 function initExplorer(root, NAMES, onNavigate) {
   var defs = root.querySelector(".panel-defs");
+  /* Definition panels are shared by every track on the page (a class is the
+     same class whichever slice you reach it from), so they live once at the
+     page level rather than in each track's own defs. */
+  var sharedDefs = document.getElementById("shared-defs");
+  var DEFNAMES = window.DEFNAMES || {};
   var viewport = root.querySelector(".viewport");
   var track = root.querySelector(".track");
   var railLeft = root.querySelector(".rail-left");
@@ -199,9 +290,11 @@ function initExplorer(root, NAMES, onNavigate) {
   function esc1(id) { return window.CSS && CSS.escape ? CSS.escape(id) : id; }
   function panelFor(id) {
     if (pinnedNode && id === "__slice__") return pinnedNode;
-    var def = defs && defs.querySelector('[data-node="' + esc1(id) + '"]');
+    var def = (defs && defs.querySelector('[data-node="' + esc1(id) + '"]'))
+      || (sharedDefs && sharedDefs.querySelector('[data-node="' + esc1(id) + '"]'));
     return def ? def.cloneNode(true) : null;
   }
+  function nameOf(id) { return NAMES[id] || DEFNAMES[id]; }
   function nodeAt(i) {
     var child = track.children[i];
     return child ? child.dataset.node : null;
@@ -219,8 +312,8 @@ function initExplorer(root, NAMES, onNavigate) {
     var behind = pos > 0 && (nodeAt(pos - 1) !== "__slice__" || !freshCaller);
     viewport.classList.toggle("can-back", behind);
     viewport.classList.toggle("can-fwd", count > pos + 2);
-    if (behind && railLeft) railLeft.textContent = "\\u25c0 " + (NAMES[nodeAt(pos - 1)] || "back");
-    if (count > pos + 2 && railRight) railRight.textContent = (NAMES[nodeAt(pos + 2)] || "forward") + " \\u25b6";
+    if (behind && railLeft) railLeft.textContent = "\\u25c0 " + (nameOf(nodeAt(pos - 1)) || "back");
+    if (count > pos + 2 && railRight) railRight.textContent = (nameOf(nodeAt(pos + 2)) || "forward") + " \\u25b6";
   }
   function setPos(p, animate) {
     if (!animate) track.classList.add("no-anim");
@@ -274,16 +367,41 @@ function initExplorer(root, NAMES, onNavigate) {
       clicked = [link.querySelector(".fn-name") || link];
     } else {
       var scope = link.closest(".panel") || root;
-      clicked = scope.querySelectorAll('.csite[data-target="' + esc1(link.dataset.target) + '"]');
+      var t = esc1(link.dataset.target);
+      clicked = scope.querySelectorAll('.csite[data-target="' + t + '"], .sym[data-target="' + t + '"]');
     }
     for (var j = 0; j < clicked.length; j++) clicked[j].classList.add("sym-link");
-    var dest = destPanel ? destPanel.querySelectorAll(".self-sym") : [];
+    /* The destination mark is the declaration this link resolves to. A
+       function panel has one self-sym; a definition panel may show several
+       declarations, so prefer the one tagged with the link's definition id. */
+    var dest = [];
+    if (destPanel) {
+      var tagged = link.dataset.def && destPanel.querySelector('.self-sym[data-decl="' + esc1(link.dataset.def) + '"]');
+      dest = tagged ? [tagged] : destPanel.querySelectorAll(".self-sym");
+    }
     for (var d = 0; d < dest.length; d++) dest[d].classList.add("sym-link", "sym-dim");
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         for (var k = 0; k < clicked.length; k++) clicked[k].classList.add("sym-dim");
       });
     });
+  }
+  /* Is the element fully inside the panel's scrollport? Panels are their own
+     scroll containers, so the panel's rect is the viewport that matters. */
+  function inView(panel, el) {
+    var p = panel.getBoundingClientRect(), r = el.getBoundingClientRect();
+    return r.top >= p.top && r.bottom <= p.bottom && r.height > 0;
+  }
+  /* A symbol whose declaration is already on screen in the same pane: light
+     up the pair in place rather than opening a panel for what the reader can
+     see. No scroll — moving the pane would defeat the point. */
+  function linkInPlace(link, decl) {
+    var old = root.querySelectorAll(".sym-link");
+    for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
+    var scope = link.closest(".panel") || root;
+    var uses = scope.querySelectorAll('.sym[data-def="' + esc1(link.dataset.def) + '"]');
+    for (var u = 0; u < uses.length; u++) uses[u].classList.add("sym-link");
+    decl.classList.add("sym-link");
   }
   /* Every action that lands the viewport on a particular node — walking,
      or just paging the rail to reveal one already on the track — reports
@@ -298,11 +416,16 @@ function initExplorer(root, NAMES, onNavigate) {
     });
   }
   root.addEventListener("click", function (e) {
-    var link = e.target.closest(".csite, .caller-row");
-    if (link && link.dataset.target) {
+    var link = e.target.closest(".csite, .caller-row, .sym");
+    if (link && (link.dataset.target || link.dataset.def)) {
       var panel = link.closest(".panel");
       var i = Array.prototype.indexOf.call(track.children, panel);
       if (i < 0) return;
+      if (link.classList.contains("sym") && link.dataset.def) {
+        var decl = panel.querySelector('.self-sym[data-decl="' + esc1(link.dataset.def) + '"]');
+        if (decl && inView(panel, decl)) { linkInPlace(link, decl); return; }
+        if (!link.dataset.target) return;
+      }
       var dest = link.classList.contains("caller-row")
         ? walkUp(link.dataset.target, i)
         : walkDown(link.dataset.target, i);

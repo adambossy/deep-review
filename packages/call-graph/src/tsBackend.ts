@@ -1,10 +1,12 @@
 import type {
   DeclRef,
+  DefinitionLocation,
   FunctionRelations,
   LanguageBackend,
 } from "./backend.js";
 import {
   createProjectService,
+  definitionAt,
   fileSnapshot,
   findFunction,
   getRelationsAt,
@@ -55,9 +57,15 @@ export class TsBackend implements LanguageBackend {
   }
 
   async fileInfo(
-    relativePath: string,
+    file: string,
   ): Promise<{ lines: string[]; symbols: SymbolRange[] } | null> {
-    return fileSnapshot(this.service(), relativePath);
+    return fileSnapshot(this.service(), file);
+  }
+
+  async definitionAt(ref: DeclRef): Promise<DefinitionLocation | null> {
+    const offset = this.offsetOf(ref);
+    if (offset === null) return null;
+    return definitionAt(this.service(), ref.fileName, offset);
   }
 
   dispose(): void {

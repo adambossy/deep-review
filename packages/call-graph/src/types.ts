@@ -17,6 +17,70 @@ export interface SymbolRange {
   kind: string;
   startLine: number;
   endLine: number;
+  /**
+   * Exact position of the declared name (1-based line, 0-based columns).
+   * Optional: hand-built fixtures and files embedded without a language
+   * service carry ranges only.
+   */
+  nameLine?: number;
+  nameColumn?: number;
+  nameEndColumn?: number;
+}
+
+/**
+ * Page-local id of a definition site (`d1`, `d2`, …). Short on purpose: it
+ * is repeated in every link mark's attributes, thousands of times a page.
+ */
+export type DefinitionId = string;
+
+/** Where a symbol is declared, plus what a panel showing it needs. */
+export interface DefinitionTarget {
+  id: DefinitionId;
+  name: string;
+  /** Language-service kind: "function", "class", "variable", "parameter", … */
+  kind: string;
+  /** Repo-relative path, or the absolute path when `external`. */
+  file: string;
+  external: boolean;
+  nameLine: number;
+  nameColumn: number;
+  nameEndColumn: number;
+  /** Full declaration extent, for the synthesized panel. */
+  startLine: number;
+  endLine: number;
+  /**
+   * Whether the page can open this definition: a call-graph node's panel
+   * (`nodeId`) or a synthesized one. False when the panel budget ran out —
+   * links still carry the id so an on-screen declaration lights up in place.
+   */
+  panel: boolean;
+  /** When this definition is a call-graph node's declaration, that node's id — its panel already exists. */
+  nodeId?: string;
+  /**
+   * Source window for a definition whose file the page does not embed
+   * whole (external, or a repo file nothing else on the page shows).
+   * Definitions in embedded files read from the file instead.
+   */
+  source?: SourceSegment;
+}
+
+/** One occurrence of a symbol on a head-side line, resolved to its definition. */
+export interface SymbolLink {
+  /** 1-based head-side line. */
+  line: number;
+  /** 0-based column range of the identifier. */
+  start: number;
+  end: number;
+  def: DefinitionId;
+}
+
+/**
+ * Everything the page needs to open any symbol's definition without a
+ * server: per-file links and the definitions they point at.
+ */
+export interface NavigationData {
+  links: Record<string, SymbolLink[]>;
+  definitions: Record<DefinitionId, DefinitionTarget>;
 }
 
 /**

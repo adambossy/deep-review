@@ -20,6 +20,24 @@ export interface FunctionRelations {
   callees: RelationEntry[];
 }
 
+/** Where the symbol at a position is declared. */
+export interface DefinitionLocation {
+  /** Absolute path of the declaring file. */
+  fileName: string;
+  name: string;
+  /** Language-service kind: "function", "class", "variable", "parameter", … */
+  kind: string;
+  /** True when the declaration lies outside the checkout (dependency, stdlib). */
+  external: boolean;
+  /** Position of the declared name: 1-based line, 0-based columns. */
+  nameLine: number;
+  nameColumn: number;
+  nameEndColumn: number;
+  /** Full declaration extent, 1-based inclusive. */
+  startLine: number;
+  endLine: number;
+}
+
 /**
  * A language service the analysis can drive: the in-process TypeScript
  * service, or any LSP server that supports call hierarchy.
@@ -32,8 +50,16 @@ export interface LanguageBackend {
   relationsAt(decl: DeclRef): Promise<FunctionRelations | null>;
   /** Full-source snapshot of the function declared at `decl`. */
   snapshotAt(decl: DeclRef): Promise<FunctionSnapshot | null>;
-  /** Full line content + declared symbols of a repo-relative file. */
-  fileInfo(relativePath: string): Promise<{ lines: string[]; symbols: SymbolRange[] } | null>;
+  /**
+   * Full line content + declared symbols of a file: repo-relative, or
+   * absolute for a file outside the checkout (an external definition).
+   */
+  fileInfo(file: string): Promise<{ lines: string[]; symbols: SymbolRange[] } | null>;
+  /**
+   * Where the symbol at `ref` is declared; null when there is none, or when
+   * `ref` is the declaration itself (nothing to navigate to).
+   */
+  definitionAt(ref: DeclRef): Promise<DefinitionLocation | null>;
   dispose(): void;
 }
 

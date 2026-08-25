@@ -3,6 +3,7 @@ import ts from "typescript";
 import {
   extractSource,
   type DeclRef,
+  type DefinitionLocation,
   type FunctionRelations,
 } from "./backend.js";
 import type { CallSite, FunctionSnapshot, SymbolRange } from "./types.js";
@@ -233,27 +234,35 @@ const SYMBOL_KINDS: Array<[check: (n: ts.Node) => boolean, kind: string]> = [
 
 function collectSymbols(sourceFile: ts.SourceFile): SymbolRange[] {
   const symbols: SymbolRange[] = [];
-  const push = (node: ts.Node, name: string, kind: string) => {
-    symbols.push({
+  const push = (node: ts.Node, nameNode: ts.Node | undefined, name: string, kind: string) => {
+    const symbol: SymbolRange = {
       name,
       kind,
       startLine: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
       endLine: sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1,
-    });
+    };
+    if (nameNode) {
+      const start = sourceFile.getLineAndCharacterOfPosition(nameNode.getStart(sourceFile));
+      const end = sourceFile.getLineAndCharacterOfPosition(nameNode.getEnd());
+      symbol.nameLine = start.line + 1;
+      symbol.nameColumn = start.character;
+      symbol.nameEndColumn = end.line === start.line ? end.character : start.character + name.length;
+    }
+    symbols.push(symbol);
   };
   const visit = (node: ts.Node): void => {
     const match = SYMBOL_KINDS.find(([check]) => check(node));
     if (match) {
       const named = node as ts.NamedDeclaration;
-      if (named.name) push(node, named.name.getText(sourceFile), match[1]);
+      if (named.name) push(node, named.name, named.name.getText(sourceFile), match[1]);
     } else if (ts.isConstructorDeclaration(node)) {
-      push(node, "constructor", "constructor");
+      push(node, undefined, "constructor", "constructor");
     } else if (
       (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) &&
       node.initializer &&
       (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
     ) {
-      push(node, node.name.getText(sourceFile), "function");
+      push(node, node.name, node.name.getText(sourceFile), "function");
     }
     ts.forEachChild(node, visit);
   };
@@ -261,14 +270,58 @@ function collectSymbols(sourceFile: ts.SourceFile): SymbolRange[] {
   return symbols;
 }
 
-/** Full line content + declared symbols of one repo-relative file. */
+/**
+ * Full line content + declared symbols of one file. Repo-relative paths are
+ * resolved against the root; an absolute path (an external definition's
+ * `.d.ts`) is used as-is, since the program holds those too.
+ */
 export function fileSnapshot(
   ps: ProjectService,
-  relativeFile: string,
+  file: string,
 ): { lines: string[]; symbols: SymbolRange[] } | null {
-  const sourceFile = ps.program.getSourceFile(path.join(ps.rootDir, relativeFile));
+  const sourceFile = ps.program.getSourceFile(path.resolve(ps.rootDir, file));
   if (!sourceFile) return null;
   return { lines: sourceFile.text.split("\n"), symbols: collectSymbols(sourceFile) };
+}
+
+/**
+ * Where the symbol at `pos` is declared. Null when the language service has
+ * no answer, or when `pos` sits on the declaration itself — the reader is
+ * already looking at it.
+ */
+export function definitionAt(
+  ps: ProjectService,
+  fileName: string,
+  pos: number,
+): DefinitionLocation | null {
+  const defs = ps.service.getDefinitionAtPosition(fileName, pos);
+  const def = defs?.[0];
+  if (!def) return null;
+  const target = ps.program.getSourceFile(def.fileName);
+  if (!target) return null;
+  const isSelf =
+    def.fileName === fileName &&
+    def.textSpan.start <= pos &&
+    pos <= def.textSpan.start + def.textSpan.length;
+  if (isSelf) return null;
+
+  const nameStart = target.getLineAndCharacterOfPosition(def.textSpan.start);
+  const nameEnd = target.getLineAndCharacterOfPosition(def.textSpan.start + def.textSpan.length);
+  const extent = def.contextSpan ?? def.textSpan;
+  const start = target.getLineAndCharacterOfPosition(extent.start);
+  const end = target.getLineAndCharacterOfPosition(extent.start + extent.length);
+  return {
+    fileName: def.fileName,
+    name: def.name,
+    kind: def.kind,
+    external: !isProjectFile(ps.rootDir, def.fileName),
+    nameLine: nameStart.line + 1,
+    nameColumn: nameStart.character,
+    nameEndColumn:
+      nameEnd.line === nameStart.line ? nameEnd.character : nameStart.character + def.name.length,
+    startLine: start.line + 1,
+    endLine: end.line + 1,
+  };
 }
 
 /** Callers (incoming calls) and callees (outgoing calls) of one function. */

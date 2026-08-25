@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   createProjectService,
+  definitionAt,
+  fileSnapshot,
   findFunction,
   getRelations,
 } from "./callHierarchy.js";
@@ -15,7 +17,7 @@ writeFileSync(
   `import { helper } from "./helper.js";
 
 export function target(x: number): number {
-  return helper(x) + 1;
+  return helper(x) + Math.max(x, 1);
 }
 `,
 );
@@ -120,5 +122,46 @@ describe("call hierarchy over a fixture project", () => {
   it("prefers declarations in changed files when ambiguous", () => {
     const preferred = findFunction(ps, "target", new Set(["main.ts"]));
     expect(preferred!.relativeFile).toBe("main.ts");
+  });
+});
+
+describe("definitionAt", () => {
+  const ps = createProjectService(dir);
+  const main = path.join(dir, "main.ts");
+  const mainText = fileSnapshot(ps, "main.ts")!.lines;
+  // Offset of a word's first occurrence on a 1-based line.
+  const offsetOf = (line: number, word: string): number =>
+    mainText.slice(0, line - 1).join("\n").length + (line > 1 ? 1 : 0) + mainText[line - 1]!.indexOf(word);
+
+  it("resolves a cross-file call to the declaring function", () => {
+    const def = definitionAt(ps, main, offsetOf(4, "helper"))!;
+    expect(def.fileName).toBe(path.join(dir, "helper.ts"));
+    expect([def.kind, def.external, def.nameLine, def.nameColumn, def.nameEndColumn]).toEqual([
+      "function", false, 1, 16, 22,
+    ]);
+    expect([def.startLine, def.endLine]).toEqual([1, 3]);
+  });
+
+  it("resolves a parameter use to its declaration in the signature", () => {
+    const def = definitionAt(ps, main, offsetOf(4, "x"))!;
+    expect([def.kind, def.nameLine, def.nameColumn]).toEqual(["parameter", 3, 23]);
+  });
+
+  it("returns null on the declaration itself", () => {
+    expect(definitionAt(ps, main, offsetOf(3, "target"))).toBeNull();
+  });
+
+  it("flags a lib.d.ts definition as external", () => {
+    const def = definitionAt(ps, main, offsetOf(4, "Math"))!;
+    expect(def.external).toBe(true);
+    expect(def.fileName.endsWith(".d.ts")).toBe(true);
+  });
+});
+
+describe("fileSnapshot symbols", () => {
+  it("records where each declared name sits", () => {
+    const ps = createProjectService(dir);
+    const widget = fileSnapshot(ps, "klass.ts")!.symbols.find((s) => s.name === "Widget")!;
+    expect([widget.nameLine, widget.nameColumn, widget.nameEndColumn]).toEqual([1, 13, 19]);
   });
 });

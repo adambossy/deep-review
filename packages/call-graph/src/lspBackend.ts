@@ -6,6 +6,7 @@ import {
   callSitesFromRanges,
   extractSource,
   type DeclRef,
+  type DefinitionLocation,
   type FunctionRelations,
   type LanguageBackend,
   type RelationEntry,
@@ -38,16 +39,56 @@ interface LspDocumentSymbol {
   name: string;
   kind: number;
   range: LspRange;
+  /** The name's own range, inside `range`. */
+  selectionRange: LspRange;
   children?: LspDocumentSymbol[];
 }
+interface LspLocation {
+  uri: string;
+  range: LspRange;
+}
+interface LspLocationLink {
+  targetUri: string;
+  /** Whole declaration. */
+  targetRange: LspRange;
+  /** The declared name. */
+  targetSelectionRange: LspRange;
+}
 
+/** LSP SymbolKind → the kind names the rest of the report uses. */
 const SYMBOL_KIND_NAMES: Record<number, string> = {
+  2: "module",
   5: "class",
   6: "method",
+  7: "property",
+  8: "field",
   9: "constructor",
   11: "interface",
   12: "function",
+  13: "variable",
+  14: "constant",
 };
+
+/** Kinds that name a scope worth a breadcrumb; variables and fields are not. */
+const SCOPE_KINDS = new Set([5, 6, 9, 11, 12]);
+
+function contains(range: LspRange, pos: LspPosition): boolean {
+  return (
+    (range.start.line < pos.line ||
+      (range.start.line === pos.line && range.start.character <= pos.character)) &&
+    (range.end.line > pos.line ||
+      (range.end.line === pos.line && range.end.character >= pos.character))
+  );
+}
+
+/** Innermost document symbol whose range contains `pos`. */
+function deepestSymbol(symbols: LspDocumentSymbol[], pos: LspPosition): LspDocumentSymbol | null {
+  for (const symbol of symbols) {
+    if (!contains(symbol.range, pos)) continue;
+    return (symbol.children && deepestSymbol(symbol.children, pos)) ?? symbol;
+  }
+  return null;
+}
 
 const CALLABLE_KINDS = new Set([6, 9, 12]);
 
@@ -174,21 +215,10 @@ export class LspBackend implements LanguageBackend {
    * ranges cover the whole definition.
    */
   private async fullRangeOf(item: LspCallHierarchyItem): Promise<LspRange> {
-    const contains = (range: LspRange, pos: LspPosition): boolean =>
-      (range.start.line < pos.line ||
-        (range.start.line === pos.line && range.start.character <= pos.character)) &&
-      (range.end.line > pos.line ||
-        (range.end.line === pos.line && range.end.character >= pos.character));
-
-    const pos = item.selectionRange.start;
-    const deepest = (symbols: LspDocumentSymbol[]): LspRange | null => {
-      for (const symbol of symbols) {
-        if (!contains(symbol.range, pos)) continue;
-        return (symbol.children && deepest(symbol.children)) ?? symbol.range;
-      }
-      return null;
-    };
-    const found = deepest(await this.docSymbols(fileURLToPath(item.uri)));
+    const found = deepestSymbol(
+      await this.docSymbols(fileURLToPath(item.uri)),
+      item.selectionRange.start,
+    )?.range;
     return found && found.end.line - found.start.line >= item.range.end.line - item.range.start.line
       ? found
       : item.range;
@@ -348,22 +378,28 @@ export class LspBackend implements LanguageBackend {
   }
 
   async fileInfo(
-    relativePath: string,
+    file: string,
   ): Promise<{ lines: string[]; symbols: SymbolRange[] } | null> {
-    const fileName = path.join(this.rootDir, relativePath);
+    const fileName = path.resolve(this.rootDir, file);
     const lines = this.linesOf(fileName);
     if (!lines.length) return null;
     const documentSymbols = await this.docSymbols(fileName);
     const symbols: SymbolRange[] = [];
     const flatten = (list: LspDocumentSymbol[]): void => {
       for (const symbol of list) {
-        const kind = SYMBOL_KIND_NAMES[symbol.kind];
-        if (kind) {
+        if (SCOPE_KINDS.has(symbol.kind)) {
+          const sel = symbol.selectionRange ?? symbol.range;
           symbols.push({
             name: symbol.name,
-            kind,
+            kind: SYMBOL_KIND_NAMES[symbol.kind]!,
             startLine: symbol.range.start.line + 1,
             endLine: symbol.range.end.line + 1,
+            nameLine: sel.start.line + 1,
+            nameColumn: sel.start.character,
+            nameEndColumn:
+              sel.end.line === sel.start.line
+                ? sel.end.character
+                : sel.start.character + symbol.name.length,
           });
         }
         if (symbol.children) flatten(symbol.children);
@@ -371,6 +407,62 @@ export class LspBackend implements LanguageBackend {
     };
     flatten(documentSymbols);
     return { lines, symbols };
+  }
+
+  async definitionAt(ref: DeclRef): Promise<DefinitionLocation | null> {
+    const client = await this.start();
+    await this.open(client, ref.fileName);
+    const raw = await client.request<LspLocation | LspLocation[] | LspLocationLink[] | null>(
+      "textDocument/definition",
+      {
+        textDocument: { uri: pathToFileURL(ref.fileName).href },
+        position: { line: ref.line - 1, character: ref.column },
+      },
+    );
+    const first = Array.isArray(raw) ? raw[0] : raw;
+    if (!first) return null;
+
+    // Normalise Location vs LocationLink. A plain Location only names the
+    // identifier; the declaration's extent then comes from document symbols.
+    const uri = "targetUri" in first ? first.targetUri : first.uri;
+    const nameRange = "targetSelectionRange" in first ? first.targetSelectionRange : first.range;
+    const fileName = fileURLToPath(uri);
+    const isSelf =
+      fileName === ref.fileName &&
+      nameRange.start.line === ref.line - 1 &&
+      nameRange.start.character <= ref.column &&
+      ref.column <= nameRange.end.character;
+    if (isSelf) return null;
+
+    const symbol = deepestSymbol(await this.docSymbols(fileName), nameRange.start);
+    const extent =
+      "targetRange" in first ? first.targetRange : (symbol?.range ?? nameRange);
+    const lineText = this.linesOf(fileName)[nameRange.start.line] ?? "";
+    const name =
+      nameRange.end.line === nameRange.start.line
+        ? lineText.slice(nameRange.start.character, nameRange.end.character)
+        : (symbol?.name ?? "");
+    // The deepest enclosing symbol names the declaration only when its own
+    // name sits at the target; otherwise the target is a variable or
+    // parameter inside that symbol.
+    const kind =
+      symbol && contains(symbol.selectionRange ?? symbol.range, nameRange.start)
+        ? SYMBOL_KIND_NAMES[symbol.kind] ?? "variable"
+        : "variable";
+    return {
+      fileName,
+      name,
+      kind,
+      external: !this.isProjectFile(fileName),
+      nameLine: nameRange.start.line + 1,
+      nameColumn: nameRange.start.character,
+      nameEndColumn:
+        nameRange.end.line === nameRange.start.line
+          ? nameRange.end.character
+          : nameRange.start.character + name.length,
+      startLine: extent.start.line + 1,
+      endLine: extent.end.line + 1,
+    };
   }
 
   dispose(): void {

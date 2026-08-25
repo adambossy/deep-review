@@ -13,6 +13,7 @@ export {
 } from "./report.js";
 export { renderCallGraphHtml, renderCallGraphColumnsHtml } from "./html.js";
 export { renderCallPathExplorerHtml } from "./explorer.js";
+export { resolveNavigation, type NavigationOptions } from "./navigation.js";
 export {
   renderSliceExplorerHtml,
   type SliceExplorerInput,

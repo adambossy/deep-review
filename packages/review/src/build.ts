@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
   analyzePrCallPath,
+  resolveNavigation,
   type CallPathResult,
   type EmbeddedFile,
   type SliceExplorerInput,
@@ -19,6 +20,13 @@ export interface BuildOptions {
   headDir?: string;
   /** Analyze at most this many slices' call graphs. */
   maxGraphs?: number;
+  /**
+   * Resolve every visible symbol to its definition so any of them can be
+   * tapped (default true; needs `headDir`). `navBudget` caps the language
+   * service lookups.
+   */
+  navigation?: boolean;
+  navBudget?: number;
   onProgress?: (message: string) => void;
 }
 
@@ -173,7 +181,7 @@ export async function buildSliceExplorerInput(
     );
   }
 
-  return {
+  const input: SliceExplorerInput = {
     prUrl: report.pr.url,
     prTitle: report.pr.title,
     repo: `${report.pr.owner}/${report.pr.repo}`,
@@ -184,4 +192,18 @@ export async function buildSliceExplorerInput(
       ? readChangedFiles(report, options.headDir, log)
       : [],
   };
+
+  // Symbol navigation needs the head checkout to ask the language services
+  // about; without one (offline tests) the page keeps only call-graph links.
+  if (options.headDir && options.navigation !== false) {
+    try {
+      input.nav = await resolveNavigation(options.headDir, input, {
+        onProgress: log,
+        ...(options.navBudget !== undefined ? { maxLookups: options.navBudget } : {}),
+      });
+    } catch (error) {
+      log(`symbol navigation unavailable (${error instanceof Error ? error.message : error}).`);
+    }
+  }
+  return input;
 }

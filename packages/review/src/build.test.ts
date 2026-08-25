@@ -1,7 +1,10 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { parseUnifiedDiff } from "@deep-review/pr";
 import { indexDiff } from "@deep-review/slicer";
 import type { SliceReport } from "@deep-review/slicer";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { buildSliceExplorerInput } from "./build.js";
 
 const DIFF = `diff --git a/src/new.ts b/src/new.ts
@@ -77,5 +80,33 @@ describe("buildSliceExplorerInput", () => {
     broken.slices[0]!.fragments[0]!.hunkId = "src/gone.ts#0";
     const input = await buildSliceExplorerInput({ report: broken, index });
     expect(input.slices[0]!.fragments).toEqual([]);
+  });
+
+  it("leaves navigation off without a head checkout", async () => {
+    const input = await buildSliceExplorerInput({ report: report(1, 4), index });
+    expect(input.nav).toBeUndefined();
+  });
+});
+
+describe("buildSliceExplorerInput with a head checkout", () => {
+  const headDir = mkdtempSync(path.join(os.tmpdir(), "build-test-head-"));
+  mkdirSync(path.join(headDir, "src"));
+  writeFileSync(
+    path.join(headDir, "src", "new.ts"),
+    "export const a = 1;\nexport const b = a + 1;\nexport const c = b;\nexport const d = 4;\n",
+  );
+  afterAll(() => rmSync(headDir, { recursive: true, force: true }));
+
+  it("resolves symbols on the changed lines to their definitions", async () => {
+    const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir });
+    const links = input.nav?.links["src/new.ts"] ?? [];
+    // `a` on line 2 and `b` on line 3 point back at lines 1 and 2.
+    const targets = links.map((l) => [l.line, input.nav!.definitions[l.def]!.nameLine]);
+    expect(targets).toEqual(expect.arrayContaining([[2, 1], [3, 2]]));
+  }, 30_000);
+
+  it("can be switched off", async () => {
+    const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir, navigation: false });
+    expect(input.nav).toBeUndefined();
   });
 });

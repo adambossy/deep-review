@@ -12,7 +12,7 @@ const dir = mkdtempSync(path.join(os.tmpdir(), "py-graph-test-"));
 writeFileSync(path.join(dir, "leaf.py"), "def leaf(n):\n    return n + 1\n");
 writeFileSync(
   path.join(dir, "target.py"),
-  "from leaf import leaf\n\n\ndef target(n):\n    return leaf(n) * 2\n",
+  "import os\nfrom leaf import leaf\n\n\ndef target(n):\n    return leaf(n) * 2 + len(os.sep)\n",
 );
 writeFileSync(
   path.join(dir, "mid.py"),
@@ -73,9 +73,28 @@ describe("pyright backend", () => {
     },
   );
 
-  it("collects Python file symbols for breadcrumbs", { timeout: 30_000 }, async () => {
+  it("collects Python file symbols for breadcrumbs, with name positions", { timeout: 30_000 }, async () => {
     const info = await backend.fileInfo("target.py");
     expect(info).not.toBeNull();
-    expect(info!.symbols.map((s) => `${s.kind}:${s.name}`)).toContain("function:target");
+    const target = info!.symbols.find((s) => s.name === "target")!;
+    expect([target.kind, target.nameLine, target.nameColumn, target.nameEndColumn]).toEqual([
+      "function", 5, 4, 10,
+    ]);
+  });
+
+  it("resolves a call to its definition in another file", { timeout: 30_000 }, async () => {
+    const def = await backend.definitionAt({ fileName: path.join(dir, "target.py"), line: 6, column: 11 });
+    expect(def).not.toBeNull();
+    expect(def!.fileName).toBe(path.join(dir, "leaf.py"));
+    expect([def!.kind, def!.external, def!.nameLine, def!.nameColumn]).toEqual(["function", false, 1, 4]);
+    expect([def!.startLine, def!.endLine]).toEqual([1, 2]);
+  });
+
+  it("flags a stdlib definition as external and returns null on a declaration", { timeout: 30_000 }, async () => {
+    const os = await backend.definitionAt({ fileName: path.join(dir, "target.py"), line: 6, column: 30 });
+    expect(os).not.toBeNull();
+    expect(os!.external).toBe(true);
+    const self = await backend.definitionAt({ fileName: path.join(dir, "target.py"), line: 5, column: 4 });
+    expect(self).toBeNull();
   });
 });

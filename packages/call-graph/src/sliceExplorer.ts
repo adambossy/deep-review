@@ -1,8 +1,10 @@
 import {
   EXPLORER_CSS,
   EXPLORER_NAV_JS,
+  renderDefinitionPanel,
   renderPanel,
 } from "./explorer.js";
+import { NavIndex, definitionPanelId } from "./navLinks.js";
 import {
   escapeHtml as esc,
   languageOf,
@@ -19,7 +21,7 @@ import {
   renderDataBlob,
   type FileIndex,
 } from "./html.js";
-import type { CallPathResult, EmbeddedFile } from "./types.js";
+import type { CallPathResult, EmbeddedFile, NavigationData } from "./types.js";
 
 /**
  * One fragment of a slice: a contiguous run of diff lines. Given
@@ -77,6 +79,11 @@ export interface SliceExplorerInput {
    * fragment rendering.
    */
   files: EmbeddedFile[];
+  /**
+   * Precomputed symbol → definition links, when the build resolved them.
+   * Without it only call-graph symbols are tappable.
+   */
+  nav?: NavigationData | undefined;
 }
 
 interface GraphSymbol {
@@ -134,11 +141,38 @@ function symbolMarks(
 /** Lines of the head-side file shown either side of a fragment. */
 const FRAGMENT_CONTEXT = 5;
 
+/**
+ * The head-side line ranges a file block shows for its fragments: each
+ * fragment padded with context, overlapping or touching pads merged. Shared
+ * with the navigation resolver so it asks about exactly the lines that
+ * render. A deletion-only fragment (empty head extent) still earns context
+ * around the point it sits at.
+ */
+export function fileBlockRanges(
+  fragments: readonly SliceFragmentInput[],
+  lineCount: number,
+): Array<[number, number]> {
+  const ordered = [...fragments].sort(
+    (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
+  );
+  const ranges: Array<[number, number]> = [];
+  for (const fragment of ordered) {
+    const from = Math.max(1, fragment.headStart - FRAGMENT_CONTEXT);
+    const to = Math.min(lineCount, Math.max(fragment.headEnd, fragment.headStart - 1) + FRAGMENT_CONTEXT);
+    if (to < from) continue;
+    const last = ranges[ranges.length - 1];
+    if (last && from <= last[1] + 1) last[1] = Math.max(last[1], to);
+    else ranges.push([from, to]);
+  }
+  return ranges;
+}
+
 /** The fragment's own diff rows: additions tinted, removals kept in place. */
 function fragmentRows(
   fragment: SliceFragmentInput,
   width: number,
   symbols: Symbols,
+  nav: NavIndex,
 ): string[] {
   const lang = languageOf(fragment.file);
   const contents = fragment.lines.map((l) => l.slice(1));
@@ -148,13 +182,14 @@ function fragmentRows(
     if (line.startsWith("\\")) {
       return lineRow("", width, esc(line));
     }
-    const html = renderLine(
-      contents[i]!,
-      tokens[i]!,
-      // A removed line has no head-side number, so it can never be the
-      // declaration site the head-side check compares against.
-      symbolMarks(contents[i]!, symbols, fragment.file, fragment.newLineNumbers[i] ?? null),
-    );
+    // A removed line has no head-side number, so it can never be the
+    // declaration site the head-side check compares against — and has no
+    // navigation links either.
+    const headLine = fragment.newLineNumbers[i] ?? null;
+    const graphMarks = symbolMarks(contents[i]!, symbols, fragment.file, headLine);
+    const marks =
+      headLine === null ? graphMarks : [...graphMarks, ...nav.marksFor(fragment.file, headLine, graphMarks)];
+    const html = renderLine(contents[i]!, tokens[i]!, marks);
     if (line.startsWith("-")) return lineRow("−", width, html, ["diff-del"]);
     return lineRow(
       fragment.newLineNumbers[i] ?? "",
@@ -198,6 +233,7 @@ function renderFileBlock(
   fragments: SliceFragmentInput[],
   entry: ReturnType<FileIndex["get"]>,
   symbols: Symbols,
+  nav: NavIndex,
 ): string {
   // Without the file's text there is no context to show and nothing to
   // expand into, so each fragment stands alone.
@@ -205,7 +241,7 @@ function renderFileBlock(
     const width = 4;
     const rows = fragments.flatMap((f) => [
       `<span class="line hunk-header">${esc(f.hunkHeader)}</span>`,
-      ...fragmentRows(f, width, symbols),
+      ...fragmentRows(f, width, symbols, nav),
     ]);
     return `<div class="file-block">${fileHead(file, fragments)}<pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
   }
@@ -215,39 +251,38 @@ function renderFileBlock(
     (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
   );
   const rows: string[] = [];
-  /** Last head-side line already emitted; nothing may be emitted twice. */
-  let cursor = 0;
 
-  const contextRows = (from: number, to: number): void => {
-    for (let n = Math.max(from, 1); n <= Math.min(to, entry.lines.length); n++) {
-      const marks = symbolMarks(entry.lines[n - 1] ?? "", symbols, file, n);
-      const html = marks.length
-        ? renderLine(entry.lines[n - 1] ?? "", entry.tokens[n - 1] ?? [], marks)
-        : (entry.html[n - 1] ?? "");
-      rows.push(lineRow(n, width, html));
-      cursor = Math.max(cursor, n);
-    }
+  const contextRow = (n: number): void => {
+    const text = entry.lines[n - 1] ?? "";
+    const graphMarks = symbolMarks(text, symbols, file, n);
+    const marks = [...graphMarks, ...nav.marksFor(file, n, graphMarks)];
+    const html = marks.length
+      ? renderLine(text, entry.tokens[n - 1] ?? [], marks)
+      : (entry.html[n - 1] ?? "");
+    rows.push(lineRow(n, width, html));
   };
 
-  ordered.forEach((fragment, i) => {
-    const wanted = Math.max(1, fragment.headStart - FRAGMENT_CONTEXT);
-    if (wanted > cursor + 1) {
-      rows.push(gapRow(entry, cursor + 1, wanted - 1));
-      cursor = wanted - 1;
+  // Walk the visible ranges; within each, a fragment's own rows stand in
+  // for the head lines it covers (a deletion-only fragment covers none, so
+  // its rows go in just before the line it sits at).
+  let cursor = 0;
+  let next = 0;
+  for (const [from, to] of fileBlockRanges(ordered, entry.lines.length)) {
+    if (from > cursor + 1) rows.push(gapRow(entry, cursor + 1, from - 1));
+    let n = from;
+    while (n <= to) {
+      const fragment = ordered[next];
+      if (fragment && fragment.headStart === n) {
+        rows.push(...fragmentRows(fragment, width, symbols, nav));
+        next++;
+        n = Math.max(n, fragment.headEnd + 1);
+        continue;
+      }
+      contextRow(n);
+      n++;
     }
-    contextRows(cursor + 1, fragment.headStart - 1);
-    rows.push(...fragmentRows(fragment, width, symbols));
-    cursor = Math.max(cursor, fragment.headEnd);
-
-    // Trailing context, stopping short of the next fragment's own leading
-    // context so the two never render the same line twice.
-    const next = ordered[i + 1];
-    const limit = Math.min(
-      cursor + FRAGMENT_CONTEXT,
-      next ? next.headStart - 1 : entry.lines.length,
-    );
-    contextRows(cursor + 1, limit);
-  });
+    cursor = to;
+  }
 
   if (cursor < entry.lines.length) {
     rows.push(gapRow(entry, cursor + 1, entry.lines.length));
@@ -265,6 +300,7 @@ function renderSlicePanel(
   rank: number,
   total: number,
   index: FileIndex,
+  nav: NavIndex,
 ): string {
   const symbols: Symbols = (slice.graph?.nodes ?? []).map((n) => ({
     name: n.name.split(".").pop() ?? n.name,
@@ -303,7 +339,7 @@ function renderSlicePanel(
           : ""
       }
     </div>
-    ${[...byFile].map(([file, group]) => renderFileBlock(file, group, index.get(`after:${file}`), symbols)).join("")}
+    ${[...byFile].map(([file, group]) => renderFileBlock(file, group, index.get(`after:${file}`), symbols, nav)).join("")}
   </article>`;
 }
 
@@ -568,7 +604,7 @@ const HISTORY_JS = `
       }
       trails[sliceIndex] = foundIdx >= 0
         ? trail.slice(0, foundIdx + 1)
-        : trail.concat([{ id: step.id, ids: step.ids, pos: step.pos, label: names[step.id] || step.id }]);
+        : trail.concat([{ id: step.id, ids: step.ids, pos: step.pos, label: names[step.id] || (window.DEFNAMES || {})[step.id] || step.id }]);
       render(sliceIndex);
     });
   });
@@ -613,12 +649,13 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
     ...input.files,
     ...input.slices.flatMap((s) => s.graph?.files ?? []),
   ]);
+  const nav = new NavIndex(input.nav);
 
   const views = input.slices
     .map((slice, i) => {
       const graph = slice.graph;
       const panels = graph
-        ? graph.nodes.map((n) => renderPanel(n, graph, index)).join("\n")
+        ? graph.nodes.map((n) => renderPanel(n, graph, index, nav)).join("\n")
         : "";
       const names = Object.fromEntries(
         (graph?.nodes ?? []).map((n) => [n.id, n.name]),
@@ -633,7 +670,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
         <div class="viewport">
           <button class="rail rail-left"></button>
           <button class="rail rail-right"></button>
-          <div class="track">${renderSlicePanel(slice, i + 1, input.slices.length, index)}</div>
+          <div class="track">${renderSlicePanel(slice, i + 1, input.slices.length, index, nav)}</div>
         </div>
         <div class="panel-defs" hidden>${panels}</div>
       </section>`;
@@ -647,6 +684,15 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
     )
     .join("");
   const titles = input.slices.map((s) => s.title);
+
+  // Definition panels are shared across slices — emitted once, page-wide.
+  const definitionPanels = nav
+    .panelsNeeded()
+    .map((def) => renderDefinitionPanel(def, index, nav))
+    .join("\n");
+  const defNames = Object.fromEntries(
+    nav.panelsNeeded().map((def) => [definitionPanelId(def), def.name]),
+  );
 
   return `<!doctype html>
 <html lang="en">
@@ -686,9 +732,13 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 </div>
 </div>
 
+<div id="shared-defs" class="panel-defs" hidden>${definitionPanels}</div>
+
 <script type="application/json" id="slice-titles">${JSON.stringify(titles).replaceAll("</", "<\\/")}</script>
+<script type="application/json" id="def-names">${JSON.stringify(defNames).replaceAll("</", "<\\/")}</script>
 <script type="application/json" id="render-data">${renderDataBlob(index)}</script>
 <script>
+window.DEFNAMES = JSON.parse(document.getElementById("def-names").textContent);
 ${GAP_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}

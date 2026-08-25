@@ -175,6 +175,41 @@ export function tokenizeLines(lines: readonly string[], lang: Language = "ts"): 
   });
 }
 
+/** A word that could name something: not a keyword, literal, string, or comment. */
+export interface IdentifierToken {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Every identifier on each line, with columns — the candidates a language
+ * service is asked to resolve. Runs the same scanner as `tokenizeLines`, so
+ * words inside strings and comments are never reported; unlike the
+ * highlighter it keeps plain identifiers rather than dropping them.
+ */
+export function identifiersOf(lines: readonly string[], lang: Language = "ts"): IdentifierToken[][] {
+  const rules = RULES[lang];
+  let state: LineState = { kind: "code" };
+  return lines.map((line) => {
+    const { tokens, next } = tokenizeLine(line, state, rules);
+    state = next;
+    const covered = tokens.filter((t) => t.cls === "str" || t.cls === "com" || t.cls === "num");
+    const ids: IdentifierToken[] = [];
+    const re = /[A-Za-z_$#][\w$]*/g;
+    for (const m of line.matchAll(re)) {
+      const start = m.index;
+      const end = start + m[0].length;
+      if (covered.some((t) => t.start <= start && t.end >= end)) continue;
+      if (rules.keywords.has(m[0]) || rules.literals.has(m[0])) continue;
+      // `#` alone is a Python comment (already covered); a TS `#name` is a private member.
+      if (m[0] === "#") continue;
+      ids.push({ start, end, text: m[0] });
+    }
+    return ids;
+  });
+}
+
 export function escapeHtml(text: string): string {
   return text
     .replaceAll("&", "&amp;")

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { renderCallPathExplorerHtml } from "./explorer.js";
-import type { CallPathResult, FunctionSnapshot, PathNode } from "./types.js";
+import { panelRange, renderCallPathExplorerHtml, renderDefinitionPanel } from "./explorer.js";
+import { buildFileIndex } from "./html.js";
+import { NavIndex } from "./navLinks.js";
+import type { CallPathResult, DefinitionTarget, FunctionSnapshot, PathNode } from "./types.js";
 
 function snapshot(file: string, lines: string[]): FunctionSnapshot {
   return {
@@ -215,5 +217,67 @@ describe("renderCallPathExplorerHtml", () => {
   it("marks the name on unchanged boundary panels, even below a JSDoc block", () => {
     const topPanel = html.slice(html.lastIndexOf('data-node="top.ts#top"'));
     expect(topPanel).toContain('self-sym">top</span>');
+  });
+});
+
+describe("panelRange", () => {
+  it("pads the declaration by ten lines each side, clamped to the file", () => {
+    expect(panelRange({ startLine: 20, endLine: 21 }, 40)).toEqual([10, 31]);
+    expect(panelRange({ startLine: 3, endLine: 35 }, 40)).toEqual([1, 40]);
+  });
+});
+
+describe("renderDefinitionPanel", () => {
+  const index = buildFileIndex(result.files);
+  const internal: DefinitionTarget = {
+    id: "leaf.ts:20:9",
+    name: "leaf",
+    kind: "function",
+    file: "leaf.ts",
+    external: false,
+    nameLine: 20,
+    nameColumn: 9,
+    nameEndColumn: 13,
+    startLine: 20,
+    endLine: 21,
+    panel: true,
+  };
+  const external: DefinitionTarget = {
+    id: "ext:/abs/lib.d.ts:5:4",
+    name: "Thing",
+    kind: "interface",
+    file: "/abs/lib.d.ts",
+    external: true,
+    nameLine: 5,
+    nameColumn: 10,
+    nameEndColumn: 15,
+    startLine: 5,
+    endLine: 7,
+    panel: true,
+    source: { startLine: 1, lines: ["// a", "// b", "// c", "// d", "interface Thing {", "  x: 1;", "}"] },
+  };
+  const nav = new NavIndex({
+    links: {},
+    definitions: { [internal.id]: internal, [external.id]: external },
+  });
+
+  it("renders a repo-internal definition from the embedded file with context and gaps", () => {
+    const panel = renderDefinitionPanel(internal, index, nav);
+    expect(panel).toContain('data-node="def:leaf.ts:20:9"');
+    expect(panel).toContain('self-sym" data-decl="leaf.ts:20:9">leaf</span>');
+    expect(panel).toContain("filler 10");
+    expect(panel).toContain('data-from="1" data-to="9"');
+    expect(panel).toContain('<span class="badge">function</span>');
+  });
+
+  it("renders an external definition from its window only, by basename", () => {
+    const panel = renderDefinitionPanel(external, index, nav);
+    expect(panel).toContain('<span class="badge">external</span>');
+    // The machine-specific path stays out of the visible location (it
+    // remains in the id attributes, which are what the page matches on).
+    expect(panel).toContain("<code>lib.d.ts:5–7</code>");
+    expect(/<h3>[\s\S]*?<\/div>/.exec(panel)![0]).not.toContain("/abs/");
+    expect(panel).toContain('self-sym" data-decl="ext:/abs/lib.d.ts:5:4">Thing</span>');
+    expect(panel).not.toContain('class="gap"');
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { renderSliceExplorerHtml, type SliceInput } from "./sliceExplorer.js";
-import type { CallPathResult, FunctionSnapshot, PathNode } from "./types.js";
+import { fileBlockRanges, renderSliceExplorerHtml, type SliceInput } from "./sliceExplorer.js";
+import type { CallPathResult, FunctionSnapshot, NavigationData, PathNode } from "./types.js";
 
 function snapshot(file: string, lines: string[]): FunctionSnapshot {
   return {
@@ -127,7 +127,9 @@ describe("renderSliceExplorerHtml", () => {
 
   it("gives each slice its own track so the two axes are independent", () => {
     expect([...html.matchAll(/class="track"/g)]).toHaveLength(2);
-    expect([...html.matchAll(/class="panel-defs"/g)]).toHaveLength(2);
+    // Per-slice defs; the page-level shared-defs is a third, separate block.
+    expect([...html.matchAll(/<div class="panel-defs"/g)]).toHaveLength(2);
+    expect([...html.matchAll(/id="shared-defs"/g)]).toHaveLength(1);
   });
 
   it("makes graph symbols in the diff tappable", () => {
@@ -200,5 +202,162 @@ describe("renderSliceExplorerHtml", () => {
     expect(panel).not.toContain('<span class="lineno"> 9</span>');
     expect(panel).toContain('<span class="lineno">35</span>');
     expect(panel).toContain('data-from="46" data-to="60"');
+  });
+});
+
+describe("fileBlockRanges", () => {
+  it("pads each fragment with context and merges touching pads", () => {
+    expect(fileBlockRanges([fragment, farFragment], 60)).toEqual([
+      [1, 8],
+      [35, 45],
+    ]);
+    const near = { ...farFragment, headStart: 12, headEnd: 12 };
+    expect(fileBlockRanges([fragment, near], 60)).toEqual([[1, 17]]);
+  });
+
+  it("gives a deletion-only fragment context around the point it sits at", () => {
+    const deletion = { ...farFragment, headStart: 40, headEnd: 39, newLineNumbers: [null] };
+    expect(fileBlockRanges([deletion], 60)).toEqual([[35, 44]]);
+  });
+});
+
+describe("renderSliceExplorerHtml with navigation data", () => {
+  // `retry()` at line 2 resolves to a definition in b.ts; `x` at line 1 is a
+  // local whose declaration is the same line (a self-reference is not linked
+  // by the resolver, so the fixture has none for it).
+  const nav: NavigationData = {
+    links: {
+      "a.ts": [
+        { line: 1, start: 6, end: 7, def: "a.ts:60:6" },
+        { line: 40, start: 6, end: 7, def: "a.ts:60:6" },
+        { line: 41, start: 0, end: 4, def: "d-nopanel" },
+      ],
+    },
+    definitions: {
+      "a.ts:60:6": {
+        id: "a.ts:60:6",
+        name: "y",
+        kind: "const",
+        file: "a.ts",
+        external: false,
+        nameLine: 60,
+        nameColumn: 6,
+        nameEndColumn: 7,
+        startLine: 60,
+        endLine: 60,
+        panel: true,
+      },
+      "a.ts#retry": {
+        id: "a.ts#retry",
+        name: "retry",
+        kind: "function",
+        file: "a.ts",
+        external: false,
+        nameLine: 3,
+        nameColumn: 9,
+        nameEndColumn: 14,
+        startLine: 3,
+        endLine: 3,
+        panel: true,
+        nodeId: "a.ts#retry",
+      },
+      "d-nopanel": {
+        id: "d-nopanel",
+        name: "z",
+        kind: "variable",
+        file: "a.ts",
+        external: false,
+        nameLine: 55,
+        nameColumn: 6,
+        nameEndColumn: 7,
+        startLine: 55,
+        endLine: 55,
+        panel: false,
+      },
+      "ext:/usr/lib/node_modules/typescript/lib/lib.es5.d.ts:100:14": {
+        id: "ext:/usr/lib/node_modules/typescript/lib/lib.es5.d.ts:100:14",
+        name: "Math",
+        kind: "var",
+        file: "/usr/lib/node_modules/typescript/lib/lib.es5.d.ts",
+        external: true,
+        nameLine: 100,
+        nameColumn: 14,
+        nameEndColumn: 18,
+        startLine: 100,
+        endLine: 100,
+        panel: true,
+        source: { startLine: 95, lines: Array.from({ length: 11 }, (_, i) => `// lib line ${95 + i}`) },
+      },
+    },
+  };
+
+  const html = renderSliceExplorerHtml({
+    prUrl: "https://github.com/a/b/pull/1",
+    prTitle: "A PR",
+    repo: "a/b",
+    number: 1,
+    overview: "does a thing",
+    files,
+    nav,
+    slices: [
+      {
+        id: "slice-1",
+        title: "First",
+        summary: "s",
+        rationale: "r",
+        target: { file: "a.ts", name: "retry" },
+        fragments: [fragment, farFragment],
+        graph,
+      },
+      {
+        id: "slice-2",
+        title: "Second",
+        summary: "s2",
+        rationale: "r2",
+        fragments: [fragment],
+      },
+    ],
+  });
+
+  it("marks resolved symbols as tappable with their definition panel id", () => {
+    expect(html).toContain('class="sym" data-target="def:a.ts:60:6" data-def="a.ts:60:6"');
+  });
+
+  it("marks a definition without a panel by id only, with no target", () => {
+    expect(html).toContain('class="sym" data-def="d-nopanel"');
+    expect(html).not.toContain('data-node="def:d-nopanel"');
+  });
+
+  it("emits each synthesized definition panel once, page-wide", () => {
+    const shared = /<div id="shared-defs"[\s\S]*?<\/div>\s*<script/.exec(html)![0];
+    expect([...shared.matchAll(/data-node="def:a\.ts:60:6"/g)]).toHaveLength(1);
+    expect([...html.matchAll(/data-node="def:a\.ts:60:6"/g)]).toHaveLength(1);
+  });
+
+  it("tags the declaration line with the definition id", () => {
+    expect(html).toContain('self-sym" data-decl="a.ts:60:6"');
+  });
+
+  it("does not synthesize a panel for a definition that is a graph node", () => {
+    expect(html).not.toContain('data-node="def:a.ts#retry"');
+  });
+
+  it("renders an external definition from its window, labelled external", () => {
+    const panel = /<article class="panel" data-node="def:ext:[\s\S]*?<\/article>/.exec(html)![0];
+    expect(panel).toContain("external");
+    expect(panel).toContain("<code>lib.es5.d.ts:100–100</code>");
+    expect(/<h3>[\s\S]*?<\/div>/.exec(panel)![0]).not.toContain("/usr/lib/node_modules");
+    expect(panel).toContain("lib line 95");
+    expect(panel).not.toContain('class="gap"');
+  });
+
+  it("names definition panels for the rails and history", () => {
+    expect(html).toContain('id="def-names"');
+    expect(html).toContain('"def:a.ts:60:6":"y"');
+  });
+
+  it("ships the in-place highlight shortcut", () => {
+    expect(html).toContain("inView");
+    expect(html).toContain("linkInPlace");
   });
 });

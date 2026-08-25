@@ -26,6 +26,8 @@ Options:
   --slices <file>   Reuse a saved slice JSON instead of running the agent
   --save <file>     Also write the slice JSON from this run
   --max-graphs <n>  Analyze at most n slices' call graphs (default: all)
+  --no-nav          Skip resolving symbols to definitions (only call-graph symbols tappable)
+  --nav-budget <n>  Cap language-service lookups for symbol navigation (default: 20000)
   --work-dir <d>    Cache the clone/worktrees here instead of the tmp dir
   --model <id>      Model to use for slicing (default: gpt-5.6-sol)
   --no-open         Don't open the report in a browser
@@ -63,6 +65,8 @@ async function main(): Promise<void> {
       slices: { type: "string" },
       save: { type: "string" },
       "max-graphs": { type: "string" },
+      "no-nav": { type: "boolean", default: false },
+      "nav-budget": { type: "string" },
       "work-dir": { type: "string" },
       model: { type: "string" },
       "no-open": { type: "boolean", default: false },
@@ -84,6 +88,11 @@ async function main(): Promise<void> {
     : undefined;
   if (maxGraphs !== undefined && (!Number.isInteger(maxGraphs) || maxGraphs < 0)) {
     console.error("--max-graphs must be a non-negative integer.");
+    process.exit(1);
+  }
+  const navBudget = values["nav-budget"] ? Number(values["nav-budget"]) : undefined;
+  if (navBudget !== undefined && (!Number.isInteger(navBudget) || navBudget < 0)) {
+    console.error("--nav-budget must be a non-negative integer.");
     process.exit(1);
   }
 
@@ -122,6 +131,8 @@ async function main(): Promise<void> {
     headDir,
     ...(workDir ? { workDir } : {}),
     ...(maxGraphs !== undefined ? { maxGraphs } : {}),
+    navigation: !values["no-nav"],
+    ...(navBudget !== undefined ? { navBudget } : {}),
     ...(values.quiet ? {} : { onProgress: log }),
   });
 
