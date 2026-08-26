@@ -452,9 +452,14 @@ export const CSS = `
      own corners. */
   .code-pane { position: relative; margin: 0.5rem 0 0.9rem; }
   .scope-bar {
-    position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 0.15rem;
-    padding: 0.4rem 0.9rem; background: var(--panel-2);
-    border: 1px solid var(--line-c); border-bottom: none; border-radius: 8px 8px 0 0;
+    /* .panel's own padding (0.7rem 0.9rem) would otherwise leave a gap
+       above the bar once it sticks. Breaking out with a matching negative
+       margin/top pins it flush to the panel edge instead; the padding
+       below restores the usual text inset. Square on top since it now
+       sits at the panel's true edge, not floating mid-content. */
+    position: sticky; top: -0.7rem; z-index: 2; display: flex; align-items: baseline; gap: 0.15rem;
+    margin: -0.7rem -0.9rem 0; padding: 0.4rem 0.9rem; background: var(--panel-2);
+    border: 1px solid var(--line-c); border-bottom: none; border-radius: 0;
     font-family: var(--mono); font-size: 0.72rem; white-space: nowrap; overflow: hidden;
   }
   .scope-bar .scope-path { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; }

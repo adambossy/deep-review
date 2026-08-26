@@ -123,6 +123,11 @@ function symbolMarks(
       // Whole-word only: `retry` must not light up inside `retryDelay`.
       if (/[A-Za-z0-9_$]/.test(before) || /[A-Za-z0-9_$]/.test(after)) continue;
       if (DECLARES.test(content.slice(0, at))) continue;
+      // Graph nodes are functions: only mark occurrences that are actually
+      // called here. Without this, a local variable that merely shares a
+      // name with some other node in the graph (e.g. `now`, `active`) lights
+      // up as a bogus call site even though it's never invoked on this line.
+      if (!/^\s*\(/.test(content.slice(from))) continue;
       marks.push({
         start: at,
         end: from,
