@@ -79,5 +79,5 @@ export function renderCodePane(input: CodePaneInput): string {
     : "";
   return `<div class="code-pane"${paneAttrs}><div class="scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><span class="scope-path">${pathHtml(
     file,
-  )}</span><span class="scope-sym">${label}</span>${statHtml(rows)}</div><pre class="source" data-w="${width}">${body}</pre></div>`;
+  )}</span><span class="scope-sym">${label}</span>${statHtml(rows)}</div><pre class="source" data-w="${width}"><span class="lines">${body}</span></pre></div>`;
 }

@@ -383,7 +383,7 @@ export function renderDiffRows(rows: readonly DiffRow[], options: DiffRenderOpti
 }
 
 export function renderDiffBlock(rows: readonly DiffRow[], options: DiffRenderOptions): string {
-  return `<pre class="source" data-w="${options.width}">${renderDiffRows(rows, options)}</pre>`;
+  return `<pre class="source" data-w="${options.width}"><span class="lines">${renderDiffRows(rows, options)}</span></pre>`;
 }
 
 /** Head line the rows start at: the first row's line, or a leading gap's first hidden line. */
