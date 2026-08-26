@@ -101,9 +101,12 @@ user signed off; Stage 2 may start.
    panels; delete only the text-heuristic `symbolMarks` in the slice panel.
    The client still has one handler: a span with `data-target` opens directly,
    anything else asks the server.
-3. **A reload must not kill the server.** `beforeunload` fires on reload as
-   well as on close. → The shutdown beacon starts a 3 s grace timer that any
-   incoming request cancels.
+3. **A reload must not kill the server.** `pagehide` fires on reload as
+   well as on close — and the browser fetches the new document *before*
+   the old one fires it, so the reload's own `GET /` cannot be the thing
+   that cancels the goodbye. → The shutdown beacon starts a 3 s grace timer
+   that any incoming request cancels, and every page sends `GET /alive` as
+   it loads; after a reload that hello lands after the goodbye.
 4. **`rerender.sh` needs a non-serving mode.** → `--no-serve` writes `--out`
    and exits (static page, navigation inert); the script passes it.
 5. `NavIndex` has nothing left to do: `renderDefinitionPanel` writes its own
@@ -157,8 +160,10 @@ are deleted; `ReferenceList` is `{ kind, sites }`.
 - `GET /definition?file&line&col` → `DefinitionAnswer` JSON.
 - `GET /references?id` → `ReferenceList` JSON (404 for an unknown id).
 - `GET /panel?id` → `{ id, name, html }` JSON (404 when unavailable).
+- `GET /alive`, `GET /favicon.ico` → 204.
 - `POST /shutdown` → exits after a 3 s grace period unless another request
-  arrives (a reload). Also exits on SIGINT and when stdin closes.
+  arrives (the reloaded page's `/alive`). Also exits on SIGINT/SIGTERM and,
+  when started over a pipe, when stdin closes.
   `NavSession.dispose()` (→ `Backends.dispose()`) on the way out.
 
 The checkout under `os.tmpdir()/deep-review/<owner>-<repo>-pr<n>` stays put;
@@ -245,3 +250,9 @@ more"), click a row (walks up, site highlighted), reload (server survives;
 history restores through async `panelFor`), close the tab or Ctrl-C (server
 and pyright exit). Generation time and page size drop noticeably versus the
 precomputed report (note both numbers).
+
+Stage 2 (done, on sindresorhus/ky#874 with a hand-written 3-slice report):
+every step above passed in a scripted browser, including the static `--out`
+copy with no server behind it (an `.id` click stamps `unresolved · no
+navigation server` and opens nothing; graph-edge marks and caller rows still
+walk). Precomputed report: 7.3 s, 5.77 MB. On-demand: 3.8 s, 0.93 MB.
