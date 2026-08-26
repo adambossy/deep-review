@@ -4,15 +4,16 @@
 #   scripts/rerender.sh [--out-dir DIR] [pr-review flags...] slices-*.json...
 #
 # Each slices-<repo>-pr<n>.json becomes <out-dir>/review-<repo>-pr<n>.html
-# (default out-dir: pane-preview/). Extra flags go straight to pr-review;
-# --debug-marks is on by default so the page can explain its marks (hold
-# Shift). The PR's checkout is cached under $TMPDIR/deep-review, so the
-# first run per PR needs GitHub access.
+# (default out-dir: pane-preview/), written as a static copy — no server is
+# started, so symbol clicks are inert; the layout is what this is for. Extra
+# flags go straight to pr-review; --debug-marks is on by default so the page
+# can explain its marks (hold Shift). The PR's checkout is cached under
+# $TMPDIR/deep-review, so the first run per PR needs GitHub access.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 out_dir="pane-preview"
-flags=(--debug-marks --no-open)
+flags=(--debug-marks --no-serve)
 inputs=()
 while [ $# -gt 0 ]; do
   case "$1" in
