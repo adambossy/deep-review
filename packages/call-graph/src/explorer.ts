@@ -530,13 +530,21 @@ function initExplorer(root, NAMES, onNavigate) {
       var pin = nodeAt(0) === "__slice__" ? 1 : 0;
       var oldSlot = fromIndex - pos;
       while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
+      /* Normally the tapped panel is still sitting at pin, ready to be
+         pushed right as the new caller's pair partner. The one time nothing
+         is there — walking up for the very first time, straight from the
+         pinned slice — there's nothing to its right yet; pair it with the
+         slice on the left instead of leaving the other half of the deck
+         blank. */
+      var hasPartner = !!track.children[pin];
       track.insertBefore(panel, track.children[pin] || null);
       freshCaller = true;
+      var showAt = hasPartner ? pin : Math.max(0, pin - 1);
       if (oldSlot <= 0) {
-        setPos(pin + 1, false);
-        setPos(pin, true);
+        setPos(showAt + 1, false);
+        setPos(showAt, true);
       } else {
-        setPos(pin, false);
+        setPos(showAt, false);
       }
       return panel;
     });
