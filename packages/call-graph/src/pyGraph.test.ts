@@ -110,11 +110,11 @@ describe("pyright backend", () => {
     expect(refs.map((r) => [r.enclosing?.name, r.line, r.startColumn, r.endColumn])).toEqual([["leaf", 5, 15, 19]]);
   });
 
-  it("flags a stdlib definition as external and returns null on a declaration", { timeout: 30_000 }, async () => {
+  it("flags a stdlib definition as external and a declaration as itself", { timeout: 30_000 }, async () => {
     const os = await backend.definitionAt({ fileName: path.join(dir, "target.py"), line: 6, column: 30 });
     expect(os).not.toBeNull();
-    expect(os!.external).toBe(true);
+    expect([os!.external, os!.self]).toEqual([true, false]);
     const self = await backend.definitionAt({ fileName: path.join(dir, "target.py"), line: 5, column: 4 });
-    expect(self).toBeNull();
+    expect([self!.self, self!.name, self!.kind, self!.nameLine]).toEqual([true, "target", "function", 5]);
   });
 });

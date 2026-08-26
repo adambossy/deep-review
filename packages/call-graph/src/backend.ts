@@ -29,6 +29,11 @@ export interface DefinitionLocation {
   kind: string;
   /** True when the declaration lies outside the checkout (dependency, stdlib). */
   external: boolean;
+  /**
+   * True when the position asked about is this declaration's own name:
+   * nothing to navigate to, but still the symbol whose callers to list.
+   */
+  self: boolean;
   /** Position of the declared name: 1-based line, 0-based columns. */
   nameLine: number;
   nameColumn: number;
@@ -75,8 +80,9 @@ export interface LanguageBackend {
    */
   fileInfo(file: string): Promise<{ lines: string[]; symbols: SymbolRange[] } | null>;
   /**
-   * Where the symbol at `ref` is declared; null when there is none, or when
-   * `ref` is the declaration itself (nothing to navigate to).
+   * Where the symbol at `ref` is declared; null when there is none. When
+   * `ref` is the declaration itself the answer is that declaration, flagged
+   * `self`.
    */
   definitionAt(ref: DeclRef): Promise<DefinitionLocation | null>;
   /**

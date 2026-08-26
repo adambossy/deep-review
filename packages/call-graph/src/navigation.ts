@@ -179,11 +179,14 @@ export async function resolveNavigation(
         column: lookup.start,
       };
       let failure: string | undefined;
-      const def = await backend.definitionAt(ref).catch((e: unknown) => {
+      const found = await backend.definitionAt(ref).catch((e: unknown) => {
         failure = e instanceof Error ? e.message : String(e);
         return null;
       });
+      // The declaration itself is not a link; the panel renderer marks it.
+      const def = found?.self ? null : found;
       if (failure !== undefined) memoWhy.set(key, `not resolved: language service error (${failure})`);
+      else if (found?.self) memoWhy.set(key, "not resolved: this is the declaration");
       else if (!def) memoWhy.set(key, "not resolved: language service found no definition");
       if (def) {
         const site = `${def.fileName}:${def.nameLine}:${def.nameColumn}`;

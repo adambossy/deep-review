@@ -151,8 +151,10 @@ describe("definitionAt", () => {
     expect([def.kind, def.nameLine, def.nameColumn]).toEqual(["parameter", 3, 23]);
   });
 
-  it("returns null on the declaration itself", () => {
-    expect(definitionAt(ps, main, offsetOf(3, "target"))).toBeNull();
+  it("answers the declaration itself, flagged self, so its callers can still be asked for", () => {
+    const def = definitionAt(ps, main, offsetOf(3, "target"))!;
+    expect([def.self, def.name, def.nameLine]).toEqual([true, "target", 3]);
+    expect(definitionAt(ps, main, offsetOf(4, "helper"))!.self).toBe(false);
   });
 
   it("flags a lib.d.ts definition as external", () => {

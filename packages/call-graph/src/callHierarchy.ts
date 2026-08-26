@@ -414,11 +414,10 @@ export function definitionAt(
   if (!def) return null;
   const target = ps.program.getSourceFile(def.fileName);
   if (!target) return null;
-  const isSelf =
+  const self =
     def.fileName === fileName &&
     def.textSpan.start <= pos &&
     pos <= def.textSpan.start + def.textSpan.length;
-  if (isSelf) return null;
 
   const nameStart = target.getLineAndCharacterOfPosition(def.textSpan.start);
   const nameEnd = target.getLineAndCharacterOfPosition(def.textSpan.start + def.textSpan.length);
@@ -430,6 +429,7 @@ export function definitionAt(
     name: def.name,
     kind: def.kind,
     external: !isProjectFile(ps.rootDir, def.fileName),
+    self,
     nameLine: nameStart.line + 1,
     nameColumn: nameStart.character,
     nameEndColumn:

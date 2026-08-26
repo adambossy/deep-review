@@ -448,12 +448,11 @@ export class LspBackend implements LanguageBackend {
     const uri = "targetUri" in first ? first.targetUri : first.uri;
     const nameRange = "targetSelectionRange" in first ? first.targetSelectionRange : first.range;
     const fileName = fileURLToPath(uri);
-    const isSelf =
+    const self =
       fileName === ref.fileName &&
       nameRange.start.line === ref.line - 1 &&
       nameRange.start.character <= ref.column &&
       ref.column <= nameRange.end.character;
-    if (isSelf) return null;
 
     const symbol = deepestSymbol(await this.docSymbols(fileName), nameRange.start);
     const extent =
@@ -475,6 +474,7 @@ export class LspBackend implements LanguageBackend {
       name,
       kind,
       external: !this.isProjectFile(fileName),
+      self,
       nameLine: nameRange.start.line + 1,
       nameColumn: nameRange.start.character,
       nameEndColumn:
