@@ -311,25 +311,30 @@ export interface DiffRenderOptions {
   /** Head span outlined as the focused declaration. */
   focus?: LineSpan | undefined;
   /**
-   * Debug builds: every identifier no mark accounts for gets a `data-why`
-   * of its own, so a name that is not tappable can say so when asked.
+   * Wrap every identifier on a head-side line that no other mark covers in
+   * a bare `.id` span, so the page can ask the navigation server about it
+   * when it is clicked.
    */
+  identifiers?: boolean | undefined;
+  /** Debug builds: `.id` spans say they have not been asked about yet. */
   debug?: boolean | undefined;
 }
 
-/** Debug builds: hint marks over the identifiers of a line that no other mark covers. */
-function unexplainedMarks(text: string, lang: Language, marks: readonly Mark[]): Mark[] {
+/** Identifier spans over the names of a line that no other mark covers. */
+function identifierMarks(text: string, lang: Language, marks: readonly Mark[], debug: boolean): Mark[] {
   const ids = identifiersOf([text], lang)[0] ?? [];
   return ids
     .filter((id) => !marks.some((m) => m.start < id.end && id.start < m.end))
-    .map((id) => ({ start: id.start, end: id.end, cls: "id-dbg", why: "not visited by the resolver" }));
+    .map((id) => ({ start: id.start, end: id.end, cls: "id", ...(debug ? { why: "id · not asked yet" } : {}) }));
 }
 
 /** Render rows to `<span class="line">`s; the caller wraps them in a `<pre>`. */
 export function renderDiffRows(rows: readonly DiffRow[], options: DiffRenderOptions): string {
-  const { width, lang, entry, decorations, marksFor, focus, debug } = options;
-  const explained = (text: string, marks: Mark[]): Mark[] =>
-    debug ? [...marks, ...unexplainedMarks(text, lang, marks)] : marks;
+  const { width, lang, entry, decorations, marksFor, focus, identifiers } = options;
+  const debug = options.debug ?? false;
+  // Removed lines have no head-side position, so nothing can be asked about them.
+  const withIds = (text: string, marks: Mark[]): Mark[] =>
+    identifiers ? [...marks, ...identifierMarks(text, lang, marks, debug)] : marks;
   // Rows without an embedded file are tokenized together so multi-line
   // strings and comments carry across them; removed rows always are, since
   // the embedded file (head side) has no tokens for them.
@@ -347,13 +352,13 @@ export function renderDiffRows(rows: readonly DiffRow[], options: DiffRenderOpti
         out.push(lineRow("", width, esc(row.text)));
         return;
       case "del": {
-        const marks = explained(row.text, [...(row.marks ?? []), ...(marksFor?.(row.text, null) ?? [])]);
+        const marks = [...(row.marks ?? []), ...(marksFor?.(row.text, null) ?? [])];
         out.push(lineRow("−", width, renderLine(row.text, localTokens[i]!, marks), ["diff-del"]));
         return;
       }
       default: {
         const deco = decorations?.get(row.n);
-        const marks = explained(row.text, [
+        const marks = withIds(row.text, [
           ...(row.kind === "add" ? row.marks ?? [] : []),
           ...(deco?.marks ?? []),
           ...(marksFor?.(row.text, row.n) ?? []),

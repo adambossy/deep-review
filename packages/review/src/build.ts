@@ -1,7 +1,6 @@
 import {
   analyzePrCallPath,
   embedHeadFiles,
-  resolveNavigation,
   type CallPathResult,
   type EmbeddedFile,
   type SliceExplorerInput,
@@ -19,13 +18,6 @@ export interface BuildOptions {
   headDir?: string;
   /** Analyze at most this many slices' call graphs. */
   maxGraphs?: number;
-  /**
-   * Resolve every visible symbol to its definition so any of them can be
-   * tapped (default true; needs `headDir`). `navBudget` caps the language
-   * service lookups.
-   */
-  navigation?: boolean;
-  navBudget?: number;
   /** Debug builds: every symbol on the page explains its marking while Shift is held. */
   debugMarks?: boolean;
   onProgress?: (message: string) => void;
@@ -166,7 +158,9 @@ export async function buildSliceExplorerInput(
     );
   }
 
-  const input: SliceExplorerInput = {
+  // Symbol navigation is not part of the input: the page asks the local
+  // navigation server about a symbol when it is clicked (see serve.ts).
+  return {
     prUrl: report.pr.url,
     prTitle: report.pr.title,
     repo: `${report.pr.owner}/${report.pr.repo}`,
@@ -178,19 +172,4 @@ export async function buildSliceExplorerInput(
       : [],
     ...(options.debugMarks ? { debugMarks: true } : {}),
   };
-
-  // Symbol navigation needs the head checkout to ask the language services
-  // about; without one (offline tests) the page keeps only call-graph links.
-  if (options.headDir && options.navigation !== false) {
-    try {
-      input.nav = await resolveNavigation(options.headDir, input, {
-        onProgress: log,
-        ...(options.navBudget !== undefined ? { maxLookups: options.navBudget } : {}),
-        ...(options.debugMarks ? { debugMarks: true } : {}),
-      });
-    } catch (error) {
-      log(`symbol navigation unavailable (${error instanceof Error ? error.message : error}).`);
-    }
-  }
-  return input;
 }

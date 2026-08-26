@@ -30,7 +30,13 @@ export interface CodePaneInput {
   marksFor?: ((text: string, headLine: number | null) => Mark[]) | undefined;
   /** Head span outlined as the focused declaration. */
   focus?: LineSpan | undefined;
-  /** Debug builds: explain every identifier's marking (or lack of one). */
+  /**
+   * Make the pane answerable: every identifier gets an `.id` span, and the
+   * pane says which file (by default `file`) and side it shows, so a click
+   * can be turned into a position the navigation server understands.
+   */
+  navigable?: { side: "before" | "after"; file?: string } | undefined;
+  /** Debug builds: explain every mark (`data-why`). */
   debug?: boolean | undefined;
 }
 
@@ -55,7 +61,7 @@ function statHtml(rows: readonly DiffRow[]): string {
 }
 
 export function renderCodePane(input: CodePaneInput): string {
-  const { file, entry, rows } = input;
+  const { file, entry, rows, navigable } = input;
   const width = rowsWidth(rows, entry);
   const label = entry ? esc(scopeLabelFor(entry.symbols, firstHeadLine(rows))) : "";
   const body = renderDiffRows(rows, {
@@ -65,9 +71,13 @@ export function renderCodePane(input: CodePaneInput): string {
     decorations: input.decorations,
     marksFor: input.marksFor,
     focus: input.focus,
+    identifiers: Boolean(navigable),
     debug: input.debug,
   });
-  return `<div class="code-pane"><div class="scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><span class="scope-path">${pathHtml(
+  const paneAttrs = navigable
+    ? ` data-file="${esc(navigable.file ?? file)}" data-side="${navigable.side}"`
+    : "";
+  return `<div class="code-pane"${paneAttrs}><div class="scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><span class="scope-path">${pathHtml(
     file,
   )}</span><span class="scope-sym">${label}</span>${statHtml(rows)}</div><pre class="source" data-w="${width}">${body}</pre></div>`;
 }

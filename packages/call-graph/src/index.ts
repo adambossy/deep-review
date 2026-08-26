@@ -14,8 +14,16 @@ export {
 } from "./report.js";
 export { renderCallGraphHtml, renderCallGraphColumnsHtml } from "./html.js";
 export { renderCallPathExplorerHtml } from "./explorer.js";
-export { resolveNavigation, type NavigationOptions } from "./navigation.js";
 export {
+  NavSession,
+  type DefinitionAnswer,
+  type DefinitionMiss,
+  type DefinitionResult,
+  type NavSessionOptions,
+  type PanelAnswer,
+} from "./navSession.js";
+export {
+  explorerFileIndex,
   renderSliceExplorerHtml,
   type SliceExplorerInput,
   type SliceInput,

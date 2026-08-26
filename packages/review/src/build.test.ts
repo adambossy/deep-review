@@ -81,11 +81,6 @@ describe("buildSliceExplorerInput", () => {
     const input = await buildSliceExplorerInput({ report: broken, index });
     expect(input.slices[0]!.fragments).toEqual([]);
   });
-
-  it("leaves navigation off without a head checkout", async () => {
-    const input = await buildSliceExplorerInput({ report: report(1, 4), index });
-    expect(input.nav).toBeUndefined();
-  });
 });
 
 describe("buildSliceExplorerInput with a head checkout", () => {
@@ -97,21 +92,10 @@ describe("buildSliceExplorerInput with a head checkout", () => {
   );
   afterAll(() => rmSync(headDir, { recursive: true, force: true }));
 
-  it("resolves symbols on the changed lines to their definitions", async () => {
-    const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir });
-    const links = input.nav?.links["src/new.ts"] ?? [];
-    // `a` on line 2 and `b` on line 3 point back at lines 1 and 2.
-    const targets = links.map((l) => [l.line, input.nav!.definitions[l.def]!.nameLine]);
-    expect(targets).toEqual(expect.arrayContaining([[2, 1], [3, 2]]));
-  }, 30_000);
-
-  it("can be switched off", async () => {
-    const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir, navigation: false });
-    expect(input.nav).toBeUndefined();
-  });
-
   it("embeds the changed files with their text so the page has context and scopes", async () => {
-    const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir, navigation: false });
+    const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir });
     expect(input.files.map((f) => [f.path, f.lines.length])).toEqual([["src/new.ts", 5]]);
+    // Symbol navigation is the server's job, answered per click, not built in.
+    expect(input).not.toHaveProperty("nav");
   });
 });

@@ -13,7 +13,6 @@ import {
   type FileEntry,
   type FileIndex,
 } from "./html.js";
-import { NavIndex, definitionPanelId } from "./navLinks.js";
 import type {
   CallPathResult,
   CallSite,
@@ -33,8 +32,7 @@ const PANEL_CONTEXT = 10;
 /**
  * The head-side lines a panel shows for a declaration spanning
  * `startLine..endLine` in a file of `lineCount` lines: the declaration
- * padded with context on both sides. Shared with the navigation resolver so
- * it asks about exactly the lines that render.
+ * padded with context on both sides.
  */
 export function panelRange(
   span: { startLine: number; endLine: number },
@@ -43,20 +41,14 @@ export function panelRange(
   return [Math.max(1, span.startLine - PANEL_CONTEXT), Math.min(lineCount, span.endLine + PANEL_CONTEXT)];
 }
 
-/** Layer nav link + declaration marks onto every line of a range. */
-function addNavMarks(
-  decorations: Decorations,
-  nav: NavIndex,
-  file: string,
-  from: number,
-  to: number,
-): void {
-  if (nav.empty) return;
-  for (let n = from; n <= to; n++) {
-    const existing = decorations.get(n) ?? {};
-    const marks = nav.marksFor(file, n, existing.marks ?? []);
-    if (marks.length) decorations.set(n, { ...existing, marks: [...(existing.marks ?? []), ...marks] });
-  }
+/** Panel id of a definition: a graph node keeps its own; anything else is `def:<id>`. */
+export function definitionPanelId(def: DefinitionTarget): string {
+  return def.nodeId ?? `def:${def.id}`;
+}
+
+export interface PanelOptions {
+  /** Debug builds: every mark says where it came from (`data-why`). */
+  debug?: boolean | undefined;
 }
 
 /**
@@ -86,17 +78,21 @@ export function renderPanel(
   node: PathNode,
   result: CallPathResult,
   index: FileIndex,
-  nav: NavIndex = new NavIndex(undefined),
+  options: PanelOptions = {},
 ): string {
+  const debug = options.debug ?? false;
   const side: "before" | "after" = node.after ? "after" : "before";
   const snapshot = (node.after ?? node.before)!;
   const entry = index.get(`${side}:${snapshot.file}`);
-  const range = entry ? panelRange(snapshot, entry.lines.length) : null;
 
   // Hunks are in head coordinates; a before-only function shows plain source.
   const rows = panelRows(snapshot, side === "after" ? node.hunks : [], entry);
 
-  // Overlays on the diff: each outgoing call tappable, the declared name marked.
+  // Overlays on the diff: each outgoing call tappable, the declared name
+  // marked. The call marks come from the language service's own call
+  // hierarchy, exact and free — and for a before-side panel, which the
+  // navigation server (head checkout only) cannot answer about, they are
+  // the only way to walk down.
   const decorations: Decorations = new Map();
   for (const edge of result.edges) {
     if (edge.from !== node.id) continue;
@@ -108,7 +104,7 @@ export function renderPanel(
         end: site.endColumn,
         cls: "csite",
         attrs: `data-target="${esc(edge.to)}" role="button" tabindex="0"`,
-        ...(nav.debug ? { why: `csite · call-graph edge ${node.id} → ${edge.to}` } : {}),
+        ...(debug ? { why: `csite · call-graph edge ${node.id} → ${edge.to}` } : {}),
       };
       decorations.set(site.line, { ...existing, marks: [...(existing.marks ?? []), mark] });
     }
@@ -134,13 +130,7 @@ export function renderPanel(
     const column = lineTextAt(n).indexOf(bareName);
     if (column >= 0) namePos = { line: n, column };
   }
-  // When the navigation data knows this declaration, its mark (which carries
-  // the definition id) takes the place of the text-search one.
-  const navDeclares =
-    namePos !== null &&
-    side === "after" &&
-    nav.declMarks(snapshot.file, namePos.line).some((m) => m.start === namePos!.column);
-  if (namePos && !navDeclares) {
+  if (namePos) {
     const existing = decorations.get(namePos.line) ?? {};
     decorations.set(namePos.line, {
       ...existing,
@@ -150,16 +140,12 @@ export function renderPanel(
           start: namePos.column,
           end: namePos.column + bareName.length,
           cls: "self-sym",
-          ...(nav.debug
+          ...(debug
             ? { why: `decl · ${node.name}, graph node ${node.id} (${nameFromService ? "language service" : "text search"})` }
             : {}),
         },
       ],
     });
-  }
-  if (side === "after") {
-    const [from, to] = range ?? [snapshot.startLine, snapshot.endLine];
-    addNavMarks(decorations, nav, snapshot.file, from, to);
   }
 
   // Incoming edges become tappable "called by" rows, one per call site,
@@ -194,7 +180,8 @@ export function renderPanel(
       lang: languageOf(snapshot.file),
       decorations,
       focus: snapshot,
-      debug: nav.debug,
+      navigable: { side },
+      debug,
     })}
   </article>`;
 }
@@ -203,8 +190,10 @@ export function renderPanel(
  * A panel for a definition the call graph did not reach — a class, a
  * constant, an import, a local, or something in a dependency. Same card as
  * a function's, minus the call-graph parts (no called-by rows, no diff).
+ * Rendered by the navigation server when a reader first opens it.
  */
-export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, nav: NavIndex): string {
+export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, options: PanelOptions = {}): string {
+  const debug = options.debug ?? false;
   // A window wins when present: the file is not on the page whole.
   const entry = def.external || def.source ? undefined : index.get(`after:${def.file}`);
   if (!entry && !def.source) return "";
@@ -218,17 +207,10 @@ export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, n
         end: def.nameEndColumn,
         cls: "self-sym",
         attrs: `data-decl="${esc(def.id)}"`,
-        ...(nav.debug ? { why: `decl · ${def.name} (${def.kind}) ${def.id}` } : {}),
+        ...(debug ? { why: `decl · ${def.name} (${def.kind}) ${def.id}` } : {}),
       },
     ],
   });
-  if (!def.external) {
-    const [from, to] = entry
-      ? panelRange(def, entry.lines.length)
-      : [def.source!.startLine, def.source!.startLine + def.source!.lines.length - 1];
-    // The declaration's own mark is already placed above; marksFor dedupes it.
-    addNavMarks(decorations, nav, def.file, from, to);
-  }
 
   // External paths are absolute and machine-specific: show the basename only.
   const shownFile = def.external ? def.file.slice(def.file.lastIndexOf("/") + 1) : def.file;
@@ -244,7 +226,9 @@ export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, n
       lang: languageOf(def.file),
       decorations,
       focus: def,
-      debug: nav.debug,
+      // The pane answers clicks by the path the language service knows.
+      navigable: { side: "after", file: def.file },
+      debug,
     })}
   </article>`;
 }
@@ -281,6 +265,7 @@ export const EXPLORER_CSS = `
     overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
   .caller-row:hover { background: var(--accent-soft); border-color: var(--accent); }
+  .caller-row[disabled] { cursor: default; opacity: 0.6; }
   .rail {
     position: absolute; top: 0; bottom: 0; width: var(--rail); z-index: 2;
     display: none; align-items: center; justify-content: center;
@@ -302,26 +287,38 @@ export const EXPLORER_CSS = `
   .sym-link { background: var(--accent); border-radius: 3px; padding: 0 2px; transition: opacity 0.7s ease; }
   .sym-link, .sym-link * { color: var(--accent-ink) !important; }
   .sym-link.sym-dim { opacity: 0.45; }
-  /* Any symbol with a known definition: quieter than a call mark, so a
-     panel full of resolvable names does not read as a wall of tint. */
+  /* Any identifier can be asked about; it only shows as a link once hovered
+     — every name underlined would read as a wall of links. One the server
+     has already answered for keeps a quiet dotted underline. */
+  .id { cursor: pointer; }
+  .id:hover, .sym:hover { color: var(--accent); border-bottom: 1px dotted var(--accent); }
   .sym { cursor: pointer; border-bottom: 1px dotted var(--ink-faint); }
-  .sym:hover { color: var(--accent); border-bottom-color: var(--accent); }
+  /* Briefly, an identifier the server could not resolve. */
+  .id.miss { border-bottom: 1px dashed var(--ink-faint); opacity: 0.6; }
   /* Cmd-click menu of callers; lives inside the panel so it scrolls with it. */
   .ref-menu {
     position: absolute; z-index: 5; min-width: 18rem; max-width: 34rem;
     display: flex; flex-direction: column; gap: 2px; padding: 0.4rem;
     border: 1px solid var(--line-c); border-radius: 8px; background: var(--panel);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    max-height: 60vh; overflow: auto;
   }
   .ref-menu .call-sites-label { margin: 0 0.5rem 0.2rem; }
   .ref-menu .ref-more { padding: 0.2rem 0.5rem; font-size: 0.72rem; color: var(--ink-faint); }
-  .ref-site.sym-link { background: var(--accent); }
 `;
 
 /**
  * Horizontal navigation, scoped to a root element rather than the document,
  * so a page can host several independent tracks — one per slice in the
  * slice explorer, which stacks these vertically.
+ *
+ * Every question about a symbol goes to the local navigation server when it
+ * is first asked: where is this defined (\`/definition\`), who calls it
+ * (\`/references\`), what does its panel look like (\`/panel\`). Answers are
+ * kept on the spans and in \`#shared-defs\`, so the page learns as it is
+ * read. Without a server — a static copy — every question comes back empty
+ * and the page still reads; the call-graph marks baked into function panels
+ * still walk.
  */
 export const EXPLORER_NAV_JS = `
 function escText(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
@@ -334,14 +331,95 @@ function closeRefMenu() {
    a menu that drifts away from its symbol is worse than none. */
 document.addEventListener("click", function (e) { if (!e.target.closest(".ref-menu")) closeRefMenu(); });
 document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeRefMenu(); });
-document.addEventListener("wheel", closeRefMenu, { passive: true });
+document.addEventListener("wheel", function (e) { if (!e.target.closest(".ref-menu")) closeRefMenu(); }, { passive: true });
+/* Names of panels opened through the server, for the rails and history. */
+window.DEFNAMES = window.DEFNAMES || {};
+/* One round trip to the navigation server; null when there is none. */
+function navFetch(url) {
+  if (location.protocol !== "http:" && location.protocol !== "https:") return Promise.resolve(null);
+  return fetch(url, { cache: "no-store" })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .catch(function () { return null; });
+}
+/* Let the server go when the page does. A reload fires this too — and the
+   browser fetches the new page *before* the old one hears it is leaving, so
+   the server waits a moment for the new page to say hello before taking the
+   goodbye at its word. */
+window.addEventListener("pagehide", function () {
+  try { if (navigator.sendBeacon && location.protocol.indexOf("http") === 0) navigator.sendBeacon("/shutdown"); } catch (err) { /* nothing to tell */ }
+});
+if (location.protocol.indexOf("http") === 0) fetch("/alive", { cache: "no-store" }).catch(function () { /* no server */ });
+/* Column of a span within its row's text: everything between the gutter
+   and the span, counted as characters. */
+function columnOf(row, span) {
+  var lineno = row.querySelector(".lineno");
+  if (!lineno) return -1;
+  var range = document.createRange();
+  range.setStartAfter(lineno);
+  range.setEndBefore(span);
+  return range.toString().length;
+}
+/* Where an identifier sits in the file its pane shows. */
+function positionOf(span) {
+  var pane = span.closest(".code-pane");
+  var row = span.closest(".line");
+  if (!pane || !row || !pane.dataset.file) return null;
+  var lineno = row.querySelector(".lineno");
+  var line = lineno ? parseInt(lineno.textContent, 10) : NaN;
+  if (!(line > 0)) return null;
+  return { file: pane.dataset.file, side: pane.dataset.side || "after", line: line, column: columnOf(row, span) };
+}
+/* The span at a line and column of a pane showing \`file\`, if it is rendered. */
+function spanAt(scope, file, line, column) {
+  var panes = scope.querySelectorAll(".code-pane");
+  for (var p = 0; p < panes.length; p++) {
+    if (panes[p].dataset.file !== file) continue;
+    var rows = panes[p].querySelectorAll(".line");
+    for (var r = 0; r < rows.length; r++) {
+      var lineno = rows[r].querySelector(".lineno");
+      if (!lineno || parseInt(lineno.textContent, 10) !== line) continue;
+      var spans = rows[r].querySelectorAll(".id, .self-sym, .csite, .sym");
+      for (var s = 0; s < spans.length; s++) if (columnOf(rows[r], spans[s]) === column) return spans[s];
+      return null;
+    }
+  }
+  return null;
+}
+/* What the server says a span is, asked once and remembered on the span
+   (as data, so a cloned panel keeps the answer). Null for a miss, for a
+   before-side pane the head checkout cannot answer for, or with no server. */
+function resolveSpan(span) {
+  if ("nav" in span.dataset) return Promise.resolve(span.dataset.nav ? JSON.parse(span.dataset.nav) : null);
+  var at = positionOf(span);
+  if (!at || at.side !== "after") return Promise.resolve(null);
+  var url = "/definition?file=" + encodeURIComponent(at.file) + "&line=" + at.line + "&col=" + at.column;
+  return navFetch(url).then(function (answer) {
+    var hit = answer && answer.id ? answer : null;
+    span.dataset.nav = hit ? JSON.stringify(hit) : "";
+    if (hit) {
+      span.classList.add("sym");
+      span.dataset.def = hit.id;
+      if (!hit.self) span.dataset.target = hit.panelId;
+      window.DEFNAMES[hit.panelId] = hit.name;
+      if (window.DEBUG_MARKS) {
+        span.dataset.why = "sym · " + hit.name + " (" + hit.kind + ") " + hit.id + " in " + hit.decl.file +
+          (hit.self ? " · this is the declaration" : " · opens " + hit.panelId);
+      }
+    } else {
+      span.classList.add("miss");
+      setTimeout(function () { span.classList.remove("miss"); }, 900);
+      if (window.DEBUG_MARKS) span.dataset.why = "unresolved · " + (answer && answer.why ? answer.why : "no navigation server");
+    }
+    return hit;
+  });
+}
 function initExplorer(root, NAMES, onNavigate) {
   var defs = root.querySelector(".panel-defs");
   /* Definition panels are shared by every track on the page (a class is the
      same class whichever slice you reach it from), so they live once at the
-     page level rather than in each track's own defs. */
+     page level rather than in each track's own defs — arriving from the
+     server the first time any track asks for them. */
   var sharedDefs = document.getElementById("shared-defs");
-  var DEFNAMES = window.DEFNAMES || {};
   var viewport = root.querySelector(".viewport");
   var track = root.querySelector(".track");
   var railLeft = root.querySelector(".rail-left");
@@ -361,21 +439,30 @@ function initExplorer(root, NAMES, onNavigate) {
      restore can move it back in without needing a def to clone. */
   var pinnedNode = track.children[0] && track.children[0].dataset.node === "__slice__" ? track.children[0] : null;
   function esc1(id) { return window.CSS && CSS.escape ? CSS.escape(id) : id; }
+  /* This track's own graph panels, then page-wide definition panels, then —
+     a graph node walked only in another slice, e.g. a function reached by
+     that slice's own call path but not this one's — every other track's
+     panel-defs. All tracks render their panels into the DOM up front (just
+     hidden), so a cross-slice node is still right there. Only a definition
+     the page has never shown goes to the server, and it is kept in
+     #shared-defs for next time. */
   function panelFor(id) {
-    if (pinnedNode && id === "__slice__") return pinnedNode;
+    if (pinnedNode && id === "__slice__") return Promise.resolve(pinnedNode);
     var sel = '[data-node="' + esc1(id) + '"]';
-    /* This track's own graph panels, then page-wide synthesized definition
-       panels, then — a graph node walked only in another slice, e.g. a
-       function reached by that slice's own call path but not this one's —
-       every other track's panel-defs. All tracks render their panels into
-       the DOM up front (just hidden), so a cross-slice node is still right
-       there; without this a tap on such a symbol would silently do nothing. */
     var def = (defs && defs.querySelector(sel))
       || (sharedDefs && sharedDefs.querySelector(sel))
       || document.querySelector(".panel-defs " + sel);
-    return def ? def.cloneNode(true) : null;
+    if (def) return Promise.resolve(def.cloneNode(true));
+    if (!sharedDefs) return Promise.resolve(null);
+    return navFetch("/panel?id=" + encodeURIComponent(id)).then(function (answer) {
+      if (!answer || !answer.html) return null;
+      if (!sharedDefs.querySelector(sel)) sharedDefs.insertAdjacentHTML("beforeend", answer.html);
+      window.DEFNAMES[id] = answer.name;
+      var got = sharedDefs.querySelector(sel);
+      return got ? got.cloneNode(true) : null;
+    });
   }
-  function nameOf(id) { return NAMES[id] || DEFNAMES[id]; }
+  function nameOf(id) { return NAMES[id] || window.DEFNAMES[id]; }
   function nodeAt(i) {
     var child = track.children[i];
     return child ? child.dataset.node : null;
@@ -404,13 +491,14 @@ function initExplorer(root, NAMES, onNavigate) {
   }
   /* Callee direction: append to the right of the tapped panel and slide left. */
   function walkDown(id, fromIndex) {
-    var panel = panelFor(id);
-    if (!panel) return null;
-    while (track.children.length > fromIndex + 1) track.removeChild(track.lastChild);
-    track.appendChild(panel);
-    freshCaller = false;
-    setPos(Math.max(0, track.children.length - 2), true);
-    return panel;
+    return panelFor(id).then(function (panel) {
+      if (!panel) return null;
+      while (track.children.length > fromIndex + 1) track.removeChild(track.lastChild);
+      track.appendChild(panel);
+      freshCaller = false;
+      setPos(Math.max(0, track.children.length - 2), true);
+      return panel;
+    });
   }
   /* Caller direction: reveal the caller on the LEFT and slide right, so the
      track always reads caller → callee. The slice panel is pinned at the
@@ -421,28 +509,32 @@ function initExplorer(root, NAMES, onNavigate) {
   function walkUp(id, fromIndex) {
     if (fromIndex > 0 && nodeAt(fromIndex - 1) === id) {
       setPos(fromIndex - 1, true);
-      return track.children[fromIndex - 1];
+      return Promise.resolve(track.children[fromIndex - 1]);
     }
-    var panel = panelFor(id);
-    if (!panel) return null;
-    var pin = nodeAt(0) === "__slice__" ? 1 : 0;
-    var oldSlot = fromIndex - pos;
-    while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
-    track.insertBefore(panel, track.children[pin] || null);
-    freshCaller = true;
-    if (oldSlot <= 0) {
-      setPos(pin + 1, false);
-      setPos(pin, true);
-    } else {
-      setPos(pin, false);
-    }
-    return panel;
+    return panelFor(id).then(function (panel) {
+      if (!panel) return null;
+      var pin = nodeAt(0) === "__slice__" ? 1 : 0;
+      var oldSlot = fromIndex - pos;
+      while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
+      track.insertBefore(panel, track.children[pin] || null);
+      freshCaller = true;
+      if (oldSlot <= 0) {
+        setPos(pin + 1, false);
+        setPos(pin, true);
+      } else {
+        setPos(pin, false);
+      }
+      return panel;
+    });
+  }
+  function clearLinks() {
+    var old = root.querySelectorAll(".sym-link");
+    for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
   }
   /* Tie the clicked symbol to the panel it opened: both turn accent blue;
      the clicked one fades partially as the panes slide. */
   function linkSymbols(link, destPanel) {
-    var old = root.querySelectorAll(".sym-link");
-    for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
+    clearLinks();
     var clicked;
     if (link.classList.contains("caller-row")) {
       clicked = [link.querySelector(".fn-name") || link];
@@ -477,8 +569,7 @@ function initExplorer(root, NAMES, onNavigate) {
      up the pair in place rather than opening a panel for what the reader can
      see. No scroll — moving the pane would defeat the point. */
   function linkInPlace(link, decl) {
-    var old = root.querySelectorAll(".sym-link");
-    for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
+    clearLinks();
     var scope = link.closest(".panel") || root;
     var uses = scope.querySelectorAll('.sym[data-def="' + esc1(link.dataset.def) + '"]');
     for (var u = 0; u < uses.length; u++) uses[u].classList.add("sym-link");
@@ -496,42 +587,65 @@ function initExplorer(root, NAMES, onNavigate) {
       pos: pos,
     });
   }
+  /* A resolved identifier: its declaration in view in the same pane lights
+     up in place; otherwise its panel slides in. A click on the declaration
+     itself has nowhere to go. */
+  function openDefinition(link, panel, i, answer) {
+    var decl = spanAt(panel, answer.decl.file, answer.decl.line, answer.decl.column);
+    if (decl && inView(panel, decl)) { linkInPlace(link, decl); return; }
+    if (answer.self) return;
+    walkDown(answer.panelId, i).then(function (dest) {
+      if (!dest) return;
+      linkSymbols(link, dest);
+      report(answer.panelId);
+    });
+  }
   root.addEventListener("click", function (e) {
     /* Cmd-click (Ctrl-click elsewhere) on a symbol opens its callers menu;
        a right-click would fight the browser's own menu. */
-    if ((e.metaKey || e.ctrlKey) && e.target.closest(".sym, .self-sym")) {
-      openRefMenu(e, e.target.closest(".sym, .self-sym"));
+    var sym = e.target.closest(".id, .self-sym, .csite");
+    if ((e.metaKey || e.ctrlKey) && sym) {
+      openRefMenu(e, sym);
       return;
     }
-    var link = e.target.closest(".csite, .caller-row, .sym");
-    if (link && (link.dataset.target || link.dataset.def)) {
+    var link = e.target.closest(".csite, .caller-row, .id");
+    if (link) {
       var panel = link.closest(".panel");
       var i = Array.prototype.indexOf.call(track.children, panel);
       if (i < 0) return;
-      if (link.classList.contains("sym") && link.dataset.def) {
-        var decl = panel.querySelector('.self-sym[data-decl="' + esc1(link.dataset.def) + '"]');
-        if (decl && inView(panel, decl)) { linkInPlace(link, decl); return; }
+      if (link.classList.contains("caller-row")) {
         if (!link.dataset.target) return;
+        walkUp(link.dataset.target, i).then(function (dest) {
+          if (!dest) return;
+          linkSymbols(link, dest);
+          /* A row from the callers menu: the menu is gone once the caller
+             slides in, so the trail marker is the symbol the menu was opened
+             on, and the destination is the call site inside the caller. */
+          if (link.dataset.refDef) {
+            var origin = panel.querySelectorAll('.sym[data-def="' + esc1(link.dataset.refDef) + '"], .self-sym[data-decl="' + esc1(link.dataset.refDef) + '"]');
+            for (var o = 0; o < origin.length; o++) origin[o].classList.add("sym-link", "sym-dim");
+            var site = spanAt(dest, link.dataset.refFile, Number(link.dataset.refLine), Number(link.dataset.refCol));
+            if (site) {
+              site.classList.add("sym-link");
+              site.scrollIntoView({ block: "center" });
+            }
+            closeRefMenu();
+          }
+          report(link.dataset.target);
+        });
+        return;
       }
-      var dest = link.classList.contains("caller-row")
-        ? walkUp(link.dataset.target, i)
-        : walkDown(link.dataset.target, i);
-      if (dest) {
-        linkSymbols(link, dest);
-        /* A row from the callers menu: the menu is gone once the caller
-           slides in, so the trail marker is the symbol the menu was opened
-           on, and the destination is the call site inside the caller. */
-        if (link.dataset.refDef) {
-          var origin = panel.querySelectorAll('.sym[data-def="' + esc1(link.dataset.refDef) + '"], .self-sym[data-decl="' + esc1(link.dataset.refDef) + '"]');
-          for (var o = 0; o < origin.length; o++) origin[o].classList.add("sym-link", "sym-dim");
-          var sites = dest.querySelectorAll('.ref-site[data-ref-of="' + esc1(link.dataset.refDef) + '"]');
-          for (var s = 0; s < sites.length; s++) sites[s].classList.add("sym-link");
-          var row = dest.querySelector('.ref-site[data-ref-of="' + esc1(link.dataset.refDef) + '"]');
-          if (row) row.scrollIntoView({ block: "center" });
-          closeRefMenu();
-        }
-        report(link.dataset.target);
+      if (link.classList.contains("csite")) {
+        walkDown(link.dataset.target, i).then(function (dest) {
+          if (!dest) return;
+          linkSymbols(link, dest);
+          report(link.dataset.target);
+        });
+        return;
       }
+      resolveSpan(link).then(function (answer) {
+        if (answer) openDefinition(link, panel, i, answer);
+      });
       return;
     }
     if (e.target.closest(".rail-left")) {
@@ -545,33 +659,17 @@ function initExplorer(root, NAMES, onNavigate) {
     }
   });
   /* A menu of who calls (or, for a class or constant, who references) a
-     symbol's definition. Rows are caller-rows, so the click handler above
-     walks up into the caller exactly as a panel's own called-by rows do. */
+     symbol's definition, fetched when asked. Rows are caller-rows, so the
+     click handler above walks up into the caller exactly as a panel's own
+     called-by rows do. */
   function openRefMenu(e, sym) {
-    var id = sym.dataset.def || sym.dataset.decl;
-    if (!id) return;
     e.preventDefault();
     e.stopPropagation();
     closeRefMenu();
     var panel = sym.closest(".panel");
     var menu = document.createElement("div");
     menu.className = "ref-menu";
-    /* Always answer the gesture: a local or an unresolved symbol has no
-       callers to list, and silence reads as a broken shortcut. */
-    var refs = (window.REFS && window.REFS[id]) || { kind: "calls", total: 0, sites: [] };
-    var html = '<div class="call-sites-label">' + (refs.kind === "calls" ? "called by" : "referenced by") + "</div>";
-    if (!refs.sites.length) html += '<div class="ref-more">no callers found</div>';
-    for (var r = 0; r < refs.sites.length; r++) {
-      var site = refs.sites[r];
-      html += '<button class="caller-row"' +
-        (site.panelId ? ' data-target="' + escAttr(site.panelId) + '"' : " disabled") +
-        ' data-ref-def="' + escAttr(id) + '">\\u2196 <code class="fn-name">' + escText(site.enclosingName) +
-        '</code> <span class="loc">L' + site.line + "</span> <code>" + escText(site.snippet) + "</code></button>";
-    }
-    if (refs.total > refs.sites.length) {
-      html += '<div class="ref-more">+' + (refs.total - refs.sites.length) + " more</div>";
-    }
-    menu.innerHTML = html;
+    menu.innerHTML = '<div class="call-sites-label">callers</div><div class="ref-more">resolving\\u2026</div>';
     var rect = panel.getBoundingClientRect();
     panel.appendChild(menu);
     /* Just under the cursor, pulled back inside the pane if it would spill out. */
@@ -580,16 +678,48 @@ function initExplorer(root, NAMES, onNavigate) {
     left = Math.max(0, Math.min(left, panel.scrollLeft + panel.clientWidth - menu.offsetWidth - 8));
     menu.style.left = left + "px";
     menu.style.top = top + "px";
+    /* Always answer the gesture: a local or an unresolved symbol has no
+       callers to list, and silence reads as a broken shortcut. */
+    var known = sym.dataset.decl || sym.dataset.def;
+    var idOf = known ? Promise.resolve({ id: known }) : resolveSpan(sym);
+    idOf.then(function (answer) {
+      if (!answer || !answer.id) return null;
+      return navFetch("/references?id=" + encodeURIComponent(answer.id)).then(function (refs) {
+        return refs ? { id: answer.id, refs: refs } : null;
+      });
+    }).then(function (found) {
+      if (!menu.isConnected) return;
+      var refs = found ? found.refs : { kind: "calls", sites: [] };
+      var html = '<div class="call-sites-label">' + (refs.kind === "calls" ? "called by" : "referenced by") + "</div>";
+      if (!refs.sites.length) html += '<div class="ref-more">no callers found</div>';
+      for (var r = 0; r < refs.sites.length; r++) {
+        var site = refs.sites[r];
+        html += '<button class="caller-row"' +
+          (site.panelId ? ' data-target="' + escAttr(site.panelId) + '"' : " disabled") +
+          ' data-ref-def="' + escAttr(found.id) + '" data-ref-file="' + escAttr(site.file) + '"' +
+          ' data-ref-line="' + site.line + '" data-ref-col="' + site.startColumn + '">\\u2196 <code class="fn-name">' + escText(site.enclosingName) +
+          '</code> <span class="loc">L' + site.line + "</span> <code>" + escText(site.snippet) + "</code></button>";
+      }
+      menu.innerHTML = html;
+      left = Math.max(0, Math.min(left, panel.scrollLeft + panel.clientWidth - menu.offsetWidth - 8));
+      menu.style.left = left + "px";
+    });
   }
   /* External restore point for a history entry: rebuild the track from a
-     saved list of node ids and re-settle the viewport at the saved slot. */
+     saved list of node ids and re-settle the viewport at the saved slot.
+     Panels come back through the same lookup a walk uses, so one the server
+     rendered earlier is still there (or fetched again). */
   root.__restore = function (ids, newPos) {
-    track.innerHTML = "";
-    for (var r = 0; r < ids.length; r++) {
-      var restored = panelFor(ids[r]);
-      if (restored) track.appendChild(restored);
-    }
-    setPos(Math.max(0, Math.min(newPos, track.children.length - 2)), true);
+    var panels = [];
+    return ids.reduce(function (chain, id) {
+      return chain.then(function () {
+        return panelFor(id).then(function (panel) { if (panel) panels.push(panel); });
+      });
+    }, Promise.resolve()).then(function () {
+      track.innerHTML = "";
+      for (var r = 0; r < panels.length; r++) track.appendChild(panels[r]);
+      setPos(Math.max(0, Math.min(newPos, track.children.length - 2)), true);
+    });
   };
   updateRails();
 }

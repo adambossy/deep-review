@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fileBlockRanges, renderSliceExplorerHtml, type SliceInput } from "./sliceExplorer.js";
-import type { CallPathResult, FunctionSnapshot, NavigationData, PathNode } from "./types.js";
+import type { CallPathResult, FunctionSnapshot, PathNode } from "./types.js";
 
 function snapshot(file: string, lines: string[]): FunctionSnapshot {
   return {
@@ -140,8 +140,16 @@ describe("renderSliceExplorerHtml", () => {
     expect([...html.matchAll(/id="shared-defs"/g)]).toHaveLength(1);
   });
 
-  it("makes graph symbols in the diff tappable", () => {
-    expect(html).toContain('data-target="a.ts#retry"');
+  it("leaves the diff's symbols to the navigation server: every identifier is an .id span, none pre-targeted", () => {
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
+    expect(panel).toContain('<div class="code-pane" data-file="a.ts" data-side="after">');
+    expect(panel).toContain('id">retry</span>');
+    expect(panel).not.toContain("data-target");
+    // A removed line has no head-side position: nothing to ask about.
+    const at = panel.indexOf('<span class="line diff-del">');
+    const removed = panel.slice(at, panel.slice(at + 1).search(/<span class="line[ "]/) + at + 1);
+    expect(removed).toContain("retryDelayed");
+    expect(removed).not.toContain('class="id"');
   });
 
   it("falls back to any track's panel-defs, so a symbol resolved to another slice's call-graph node still opens", () => {
@@ -149,24 +157,6 @@ describe("renderSliceExplorerHtml", () => {
     // graph finds nothing in the current track or #shared-defs and does
     // nothing — see panelFor's own lookup order just above.
     expect(html).toContain('document.querySelector(".panel-defs " + sel)');
-  });
-
-  it("matches whole words only, so retryDelayed is not a call to retry", () => {
-    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
-    expect([...panel.matchAll(/data-target="a\.ts#retry"/g)]).toHaveLength(1);
-  });
-
-  it("does not make a function's own declaration tappable", () => {
-    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
-    const rows = panel.split('<span class="line').slice(1);
-    const declRows = rows.filter((r) => r.includes("function"));
-    const markedRows = rows.filter((r) => r.includes('data-target="a.ts#retry"'));
-    // The call to retry is tappable...
-    expect(markedRows).toHaveLength(1);
-    // ...and the line declaring it is not, though the name is right there.
-    expect(declRows).toHaveLength(1);
-    expect(declRows[0]).toContain("retry");
-    expect(declRows[0]).not.toContain("data-target");
   });
 
   it("emits one render-data blob for the whole page", () => {
@@ -262,201 +252,55 @@ describe("fileBlockRanges", () => {
   });
 });
 
-describe("renderSliceExplorerHtml with navigation data", () => {
-  // `retry()` at line 2 resolves to a definition in b.ts; `x` at line 1 is a
-  // local whose declaration is the same line (a self-reference is not linked
-  // by the resolver, so the fixture has none for it).
-  const nav: NavigationData = {
-    links: {
-      "a.ts": [
-        { line: 1, start: 6, end: 7, def: "a.ts:60:6" },
-        { line: 40, start: 6, end: 7, def: "a.ts:60:6" },
-        { line: 41, start: 0, end: 4, def: "d-nopanel" },
-      ],
-    },
-    definitions: {
-      "a.ts:60:6": {
-        id: "a.ts:60:6",
-        name: "y",
-        kind: "const",
-        file: "a.ts",
-        external: false,
-        nameLine: 60,
-        nameColumn: 6,
-        nameEndColumn: 7,
-        startLine: 60,
-        endLine: 60,
-        panel: true,
-      },
-      "a.ts#retry": {
-        id: "a.ts#retry",
-        name: "retry",
-        kind: "function",
-        file: "a.ts",
-        external: false,
-        nameLine: 3,
-        nameColumn: 9,
-        nameEndColumn: 14,
-        startLine: 3,
-        endLine: 3,
-        panel: true,
-        nodeId: "a.ts#retry",
-      },
-      "d-nopanel": {
-        id: "d-nopanel",
-        name: "z",
-        kind: "variable",
-        file: "a.ts",
-        external: false,
-        nameLine: 55,
-        nameColumn: 6,
-        nameEndColumn: 7,
-        startLine: 55,
-        endLine: 55,
-        panel: false,
-      },
-      "ext:/usr/lib/node_modules/typescript/lib/lib.es5.d.ts:100:14": {
-        id: "ext:/usr/lib/node_modules/typescript/lib/lib.es5.d.ts:100:14",
-        name: "Math",
-        kind: "var",
-        file: "/usr/lib/node_modules/typescript/lib/lib.es5.d.ts",
-        external: true,
-        nameLine: 100,
-        nameColumn: 14,
-        nameEndColumn: 18,
-        startLine: 100,
-        endLine: 100,
-        panel: true,
-        source: { startLine: 95, lines: Array.from({ length: 11 }, (_, i) => `// lib line ${95 + i}`) },
-      },
-    },
-    references: {
-      "a.ts:60:6": {
-        kind: "references",
-        total: 12,
-        sites: [
-          {
-            file: "a.ts",
-            line: 40,
-            startColumn: 6,
-            endColumn: 7,
-            snippet: "const y = 2;",
-            enclosingName: "retry",
-            panelId: "a.ts#retry",
-          },
-        ],
-      },
-    },
-  };
+describe("renderSliceExplorerHtml navigation hooks", () => {
+  const html = render();
 
-  const page = (debugMarks: boolean, extra: Partial<NavigationData> = {}) => renderSliceExplorerHtml({
-    prUrl: "https://github.com/a/b/pull/1",
-    prTitle: "A PR",
-    repo: "a/b",
-    number: 1,
-    overview: "does a thing",
-    files,
-    nav: { ...nav, ...extra },
-    ...(debugMarks ? { debugMarks } : {}),
-    slices: [
-      {
-        id: "slice-1",
-        title: "First",
-        summary: "s",
-        rationale: "r",
-        target: { file: "a.ts", name: "retry" },
-        fragments: [fragment, farFragment],
-        graph,
-      },
-      {
-        id: "slice-2",
-        title: "Second",
-        summary: "s2",
-        rationale: "r2",
-        fragments: [fragment],
-      },
-    ],
-  });
-  const html = page(false);
-
-  it("marks resolved symbols as tappable with their definition panel id", () => {
-    expect(html).toContain('class="sym" data-target="def:a.ts:60:6" data-def="a.ts:60:6"');
+  it("ships nothing precomputed: no reference or name blobs, an empty shared-defs", () => {
+    expect(html).not.toContain('id="ref-data"');
+    expect(html).not.toContain('id="def-names"');
+    expect(html).not.toContain("window.REFS");
+    expect(html).toContain('<div id="shared-defs" class="panel-defs" hidden></div>');
   });
 
-  it("marks a definition without a panel by id only, with no target", () => {
-    expect(html).toContain('class="sym" data-def="d-nopanel"');
-    expect(html).not.toContain('data-node="def:d-nopanel"');
-  });
-
-  it("emits each synthesized definition panel once, page-wide", () => {
-    const shared = /<div id="shared-defs"[\s\S]*?<\/div>\s*<script/.exec(html)![0];
-    expect([...shared.matchAll(/data-node="def:a\.ts:60:6"/g)]).toHaveLength(1);
-    expect([...html.matchAll(/data-node="def:a\.ts:60:6"/g)]).toHaveLength(1);
-  });
-
-  it("tags the declaration line with the definition id", () => {
-    expect(html).toContain('self-sym" data-decl="a.ts:60:6"');
-  });
-
-  it("does not synthesize a panel for a definition that is a graph node", () => {
-    expect(html).not.toContain('data-node="def:a.ts#retry"');
-  });
-
-  it("renders an external definition from its window, labelled external", () => {
-    const panel = /<article class="panel" data-node="def:ext:[\s\S]*?<\/article>/.exec(html)![0];
-    expect(panel).toContain("external");
-    expect(panel).toContain("<code>lib.es5.d.ts:100–100</code>");
-    expect(/<h3>[\s\S]*?<\/div>/.exec(panel)![0]).not.toContain("/usr/lib/node_modules");
-    expect(panel).toContain("lib line 95");
-    expect(panel).not.toContain('class="gap"');
-  });
-
-  it("names definition panels for the rails and history", () => {
-    expect(html).toContain('id="def-names"');
-    expect(html).toContain('"def:a.ts:60:6":"y"');
-  });
-
-  it("ships the in-place highlight shortcut", () => {
-    expect(html).toContain("inView");
-    expect(html).toContain("linkInPlace");
-  });
-
-  it("embeds the caller lists and marks each listed call site in its caller's code", () => {
-    expect(html).toContain('id="ref-data"');
-    expect(html).toContain('"total":12');
-    // The site is also a link to the same definition, so one span carries both marks.
-    expect(html).toMatch(/class="[^"]*sym ref-site"[^>]*data-ref-of="a\.ts:60:6"/);
+  it("asks the local server about a symbol, its callers, and its panel when clicked", () => {
+    expect(html).toContain('"/definition?file="');
+    expect(html).toContain('"/references?id="');
+    expect(html).toContain('"/panel?id="');
     expect(html).toContain("e.metaKey || e.ctrlKey");
     expect(html).not.toContain("contextmenu");
-    expect(html).toContain("ref-menu");
+    expect(html).toContain("resolving");
+    expect(html).not.toContain("more</div>");
+  });
+
+  it("keeps the in-place shortcut and lets the server go when the page does", () => {
+    expect(html).toContain("inView");
+    expect(html).toContain("linkInPlace");
+    expect(html).toContain('sendBeacon("/shutdown")');
+    expect(html).toContain('fetch("/alive"');
   });
 
   it("ships no debug hints unless asked", () => {
     expect(html).not.toContain("data-why");
-    expect(html).not.toContain("id-dbg");
     expect(html).not.toContain("debug-legend");
+    expect(html).not.toContain("DEBUG_MARKS = true");
+    expect(html).not.toContain("body.debug-marks");
   });
 
-  it("with --debug-marks, every mark says why it is there and unlinked identifiers say why not", () => {
-    const debug = page(true, {
-      debug: { "a.ts": [{ line: 4, start: 0, end: 4, why: "not resolved: language service found no definition" }] },
+  it("with --debug-marks, identifiers say they have not been asked yet and the overlay ships", () => {
+    const debug = renderSliceExplorerHtml({
+      prUrl: "https://github.com/a/b/pull/1",
+      prTitle: "A PR",
+      repo: "a/b",
+      number: 1,
+      overview: "does a thing",
+      files,
+      debugMarks: true,
+      slices: [{ id: "slice-1", title: "First", summary: "s", rationale: "r", fragments: [fragment], graph }],
     });
-    // Graph symbol found by text match on the slice panel.
-    expect(debug).toContain('data-why="csite · text match of graph symbol retry → a.ts#retry"');
-    // A resolved symbol names its definition and what it opens.
-    expect(debug).toContain('data-why="sym · y (const) a.ts:60:6 in a.ts · opens panel"');
-    expect(debug).toContain('data-why="sym · z (variable) d-nopanel in a.ts · no panel: unknown"');
-    // Declarations, call sites, and the resolver's own explanations.
-    expect(debug).toContain('data-why="decl · retry (function) a.ts#retry"');
-    // A span two marks share lists both reasons.
-    expect(debug).toContain('data-why="sym · y (const) a.ts:60:6 in a.ts · opens panel | ref-site · reference of a.ts:60:6"');
-    expect(debug).toContain('<span class="id-dbg" data-why="not resolved: language service found no definition">line</span>');
-    // Identifiers the resolver never saw are pointed out too (line 5 has no entry).
-    expect(debug).toContain('<span class="id-dbg" data-why="not visited by the resolver">line</span>');
-    // The overlay itself: legend, Shift toggle, per-kind colours.
+    expect(debug).toContain('<span class="tok-fn id" data-why="id · not asked yet">retry</span>');
     expect(debug).toContain('id="debug-legend"');
+    expect(debug).toContain("window.DEBUG_MARKS = true");
     expect(debug).toContain('e.key === "Shift"');
     expect(debug).toContain("body.debug-marks [data-why]:hover::after");
   });
-
 });

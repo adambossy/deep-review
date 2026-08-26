@@ -29,10 +29,7 @@ export interface SymbolRange {
   children?: SymbolRange[];
 }
 
-/**
- * Page-local id of a definition site (`d1`, `d2`, …). Short on purpose: it
- * is repeated in every link mark's attributes, thousands of times a page.
- */
+/** Session-local id of a definition site (`d1`, `d2`, …), handed out as symbols are clicked. */
 export type DefinitionId = string;
 
 /** Where a symbol is declared, plus what a panel showing it needs. */
@@ -50,12 +47,6 @@ export interface DefinitionTarget {
   /** Full declaration extent, for the synthesized panel. */
   startLine: number;
   endLine: number;
-  /**
-   * Whether the page can open this definition: a call-graph node's panel
-   * (`nodeId`) or a synthesized one. False when the panel budget ran out —
-   * links still carry the id so an on-screen declaration lights up in place.
-   */
-  panel: boolean;
   /** When this definition is a call-graph node's declaration, that node's id — its panel already exists. */
   nodeId?: string;
   /**
@@ -64,18 +55,6 @@ export interface DefinitionTarget {
    * Definitions in embedded files read from the file instead.
    */
   source?: SourceSegment;
-  /** Debug builds only: why this definition has no panel. */
-  why?: string;
-}
-
-/** One occurrence of a symbol on a head-side line, resolved to its definition. */
-export interface SymbolLink {
-  /** 1-based head-side line. */
-  line: number;
-  /** 0-based column range of the identifier. */
-  start: number;
-  end: number;
-  def: DefinitionId;
 }
 
 /** One place a definition is called from (or, for non-callables, referenced). */
@@ -90,41 +69,16 @@ export interface ReferenceSite {
   enclosingName: string;
   /**
    * Panel to open for this site — the enclosing declaration's graph-node or
-   * synthesized panel. Absent when the panel budget left it without one.
+   * synthesized panel. Absent for a site at module level.
    */
   panelId?: string;
 }
 
+/** Every place a definition is used, for the callers menu. */
 export interface ReferenceList {
   /** "calls" from call hierarchy; "references" when the symbol is not callable. */
   kind: "calls" | "references";
-  /** How many sites exist in total; `sites` holds the first few. */
-  total: number;
   sites: ReferenceSite[];
-}
-
-/**
- * Everything the page needs to open any symbol's definition without a
- * server: per-file links, the definitions they point at, and who calls them.
- */
-export interface NavigationData {
-  links: Record<string, SymbolLink[]>;
-  definitions: Record<DefinitionId, DefinitionTarget>;
-  references?: Record<DefinitionId, ReferenceList>;
-  /**
-   * Debug builds only: identifiers the resolver visited but did not link,
-   * by repo-relative file, each with the reason. Rendered as hints the
-   * reader can reveal (hold Shift) to see why a name is not tappable.
-   */
-  debug?: Record<string, UnlinkedIdentifier[]>;
-}
-
-/** Debug builds only: one identifier the resolver looked at and left unlinked. */
-export interface UnlinkedIdentifier {
-  line: number;
-  start: number;
-  end: number;
-  why: string;
 }
 
 /**
