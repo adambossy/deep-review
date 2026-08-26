@@ -126,7 +126,15 @@ const result: CallGraphResult = {
       side: "after",
       path: "src/big.ts",
       lines: bigFileLines,
-      symbols: [{ name: "bigCaller", kind: "function", startLine: 10, endLine: 110 }],
+      symbols: [
+        {
+          name: "Outer",
+          kind: "class",
+          startLine: 5,
+          endLine: 120,
+          children: [{ name: "bigCaller", kind: "function", startLine: 10, endLine: 110 }],
+        },
+      ],
     },
   ],
 };
@@ -149,9 +157,14 @@ describe("renderCallGraphHtml", () => {
     // Hidden lines 11–39 between bigCaller's signature and the call window.
     expect(html).toContain('data-key="after:src/big.ts" data-from="11" data-to="39"');
     expect(html).toContain("29 hidden lines");
-    expect(html).toContain('<span class="gap-crumb">bigCaller()</span>');
+    expect(html).toContain('<span class="gap-crumb">class Outer › bigCaller()</span>');
     // Trailing gap runs to the end of the file, not the end of the function.
     expect(html).toContain('data-from="61" data-to="130"');
+  });
+
+  it("ships the symbol tree and the sticky scope header script", () => {
+    expect(html).toContain('"symbols":[{"l":"class Outer","n":"Outer","s":5,"e":120,"c":[{"l":"bigCaller()"');
+    expect(html).toContain("updateScopeBars");
   });
 
   it("marks the call to the target inside the caller's source", () => {
@@ -224,7 +237,8 @@ describe("renderCallGraphColumnsHtml", () => {
       html.indexOf('<article class="callee-panel" data-idx="0"'),
       html.indexOf('<article class="callee-panel" data-idx="1"'),
     );
-    expect(panel).toContain("@@ -0,0 +1,2 @@");
+    expect(panel).toContain('class="line diff-add"');
+    expect(panel).not.toContain("@@");
     expect(panel).not.toContain('class="side side-');
     expect(panel).not.toContain("not present before the PR");
   });
@@ -232,6 +246,13 @@ describe("renderCallGraphColumnsHtml", () => {
   it("keeps the source block for unchanged callees (no diff to show)", () => {
     const panel = html.slice(html.indexOf('<article class="callee-panel" data-idx="1"'));
     expect(panel).toContain('class="source"');
+  });
+
+  it("puts a scope header over the target's code", () => {
+    // The target is not in an embedded file: path only, nothing to follow.
+    expect(html).toContain(
+      '<div class="scope-bar"><span class="scope-path"><span class="dir">src/</span><span class="name">x.ts</span></span><span class="scope-sym"></span></div>',
+    );
   });
 
   it("renders clickable rails for the two-pane slide", () => {

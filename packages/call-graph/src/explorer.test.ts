@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { renderCallPathExplorerHtml } from "./explorer.js";
-import type { CallPathResult, FunctionSnapshot, PathNode } from "./types.js";
+import { panelRange, renderCallPathExplorerHtml, renderDefinitionPanel } from "./explorer.js";
+import { buildFileIndex } from "./html.js";
+import type { CallPathResult, DefinitionTarget, FunctionSnapshot, PathNode } from "./types.js";
 
 function snapshot(file: string, lines: string[]): FunctionSnapshot {
   return {
@@ -69,16 +70,15 @@ const result: CallPathResult = {
         source: [{ startLine: 20, lines: ["function leaf(n) {", "}"] }],
         truncated: false,
       },
-      // Whole file added by the PR — but only the function's own lines
-      // should be tinted green in the panel, not the surrounding context.
+      // The PR added exactly these two lines to an existing file.
       hunks: [
         {
-          header: "@@ -0,0 +1,40 @@",
-          oldStart: 0,
+          header: "@@ -19,0 +20,2 @@",
+          oldStart: 19,
           oldLines: 0,
-          newStart: 1,
-          newLines: 40,
-          lines: Array.from({ length: 40 }, (_, i) => `+line ${i + 1}`),
+          newStart: 20,
+          newLines: 2,
+          lines: ["+function leaf(n) {", "+}"],
         },
       ],
       changedInPr: true,
@@ -119,7 +119,15 @@ const result: CallPathResult = {
       lines: Array.from({ length: 40 }, (_, i) =>
         i === 19 ? "function leaf(n) {" : i === 20 ? "}" : `// filler ${i + 1}`,
       ),
-      symbols: [{ name: "leaf", kind: "function", startLine: 20, endLine: 21 }],
+      symbols: [
+        {
+          name: "Mod",
+          kind: "namespace",
+          startLine: 1,
+          endLine: 40,
+          children: [{ name: "leaf", kind: "function", startLine: 20, endLine: 21 }],
+        },
+      ],
     },
   ],
 };
@@ -134,13 +142,46 @@ describe("renderCallPathExplorerHtml", () => {
   });
 
   it("marks outgoing calls as tappable with the callee's node id", () => {
-    expect(html).toContain('data-target="leaf.ts#leaf"');
+    // The call graph's own call marks stay: exact, and the only way down
+    // from a before-side panel the navigation server cannot answer for.
+    expect(html).toContain('csite" data-target="leaf.ts#leaf"');
   });
 
-  it("renders tappable called-by rows pointing at caller node ids", () => {
-    const midPanel = html.slice(html.indexOf('data-node="mid.ts#mid"'));
+  it("wraps every other identifier in an .id span and says which file and side the pane shows", () => {
+    const midPanel = html.slice(html.indexOf('data-node="mid.ts#mid"'), html.indexOf('data-node="leaf.ts#leaf"'));
+    expect(midPanel).toContain('<div class="code-pane" data-file="mid.ts" data-side="after">');
+    expect(midPanel).toContain('<span class="id">n</span>');
+    // The call mark already covers `leaf`; it does not get a second span.
+    expect(midPanel).not.toContain('id">leaf</span>');
+    // Nothing explains itself unless asked.
+    expect(html).not.toContain("data-why");
+  });
+
+  it("folds the called-by rows into a collapsed list with a count", () => {
+    const midPanel = html.slice(html.indexOf('data-node="mid.ts#mid"'), html.indexOf('data-node="leaf.ts#leaf"'));
     expect(midPanel).toContain('caller-row" data-target="top.ts#top"');
-    expect(midPanel).toContain("called by");
+    expect(midPanel).toContain('<details class="fn called-by"><summary title="tap a row to walk up">called by (1)</summary>');
+    expect(midPanel).not.toContain("<details open");
+  });
+
+  it("lists every call site, not just the first few", () => {
+    const many: CallPathResult = {
+      ...result,
+      edges: [
+        ...result.edges,
+        {
+          from: "top.ts#top",
+          to: "leaf.ts#leaf",
+          before: [],
+          after: [3, 4, 5, 6, 7].map((line) => ({ line, snippet: `leaf(${line})`, startColumn: 0, endColumn: 4 })),
+        },
+      ],
+    };
+    const page = renderCallPathExplorerHtml(many);
+    const leafPanel = page.slice(page.lastIndexOf('data-node="leaf.ts#leaf"'), page.lastIndexOf('data-node="top.ts#top"'));
+    // mid's one call plus top's five.
+    expect(leafPanel).toContain("called by (6)");
+    expect(leafPanel.match(/class="caller-row"/g)).toHaveLength(6);
   });
 
   it("labels boundary nodes", () => {
@@ -164,28 +205,34 @@ describe("renderCallPathExplorerHtml", () => {
     expect(leafPanel).toContain('data-from="32" data-to="40"');
   });
 
-  it("tints only the function's own added lines, not surrounding context", () => {
+  it("tints exactly the added lines and outlines the function's own rows", () => {
     const leafPanel = html.slice(
       html.lastIndexOf('data-node="leaf.ts#leaf"'),
       html.lastIndexOf('data-node="top.ts#top"'),
     );
-    // The panel's last <pre> is the source block (the first is the diff).
-    const source = leafPanel.slice(leafPanel.lastIndexOf("<pre"));
-    // Function spans 20–21: exactly two tinted rows in the source block.
-    expect(source.match(/class="line diff-add"/g)).toHaveLength(2);
-    expect(source).toContain('diff-add"><span class="lineno">20</span>');
+    // One pane per panel now: no separate diff block, no hunk headers.
+    expect(leafPanel.match(/<pre/g)).toHaveLength(1);
+    expect(leafPanel).not.toContain('<details class="fn">');
+    expect(leafPanel).not.toContain("@@");
+    // Function spans 20–21: exactly two added rows, both in focus.
+    expect(leafPanel.match(/class="line diff-add in-focus"/g)).toHaveLength(2);
+    expect(leafPanel.match(/in-focus"/g)).toHaveLength(2);
+    expect(leafPanel).toContain('diff-add in-focus"><span class="lineno">20</span>');
   });
 
-  it("interleaves removed lines as red rows above their replacement", () => {
+  it("interleaves removed lines as red rows above their replacement, with the changed words marked", () => {
     const midPanel = html.slice(
       html.lastIndexOf('data-node="mid.ts#mid"'),
       html.lastIndexOf('data-node="leaf.ts#leaf"'),
     );
-    const source = midPanel.slice(midPanel.lastIndexOf("<pre"));
-    const deletedRow = /<span class="line diff-del">[^]*?oldMid/.exec(source);
+    const deletedRow = /<span class="line diff-del">[^]*?oldMid/.exec(midPanel);
     expect(deletedRow).not.toBeNull();
     // The removed row sits above the added declaration line.
-    expect(deletedRow!.index).toBeLessThan(source.indexOf('lineno">1</span>'));
+    expect(deletedRow!.index).toBeLessThan(midPanel.indexOf('lineno">1</span>'));
+    // `function ` and `(n) {` are shared; only the names differ.
+    expect(midPanel).toContain('diff-del-inner">oldMid</span>');
+    expect(midPanel).toContain('diff-add-inner self-sym">mid</span>');
+    expect(midPanel).not.toContain('diff-del-inner">function');
   });
 
   it("includes the sliding rails and navigation script", () => {
@@ -215,5 +262,94 @@ describe("renderCallPathExplorerHtml", () => {
   it("marks the name on unchanged boundary panels, even below a JSDoc block", () => {
     const topPanel = html.slice(html.lastIndexOf('data-node="top.ts#top"'));
     expect(topPanel).toContain('self-sym">top</span>');
+  });
+});
+
+describe("sticky scope header", () => {
+  const html = renderCallPathExplorerHtml(result);
+
+  it("names the file and the scope of the first visible line, keyed to the embedded file", () => {
+    const leafPanel = html.slice(
+      html.lastIndexOf('data-node="leaf.ts#leaf"'),
+      html.lastIndexOf('data-node="top.ts#top"'),
+    );
+    // The pane opens on the gap over lines 1–9, inside Mod.
+    expect(leafPanel).toContain(
+      '<div class="scope-bar" data-key="after:leaf.ts"><span class="scope-path"><span class="name">leaf.ts</span></span><span class="scope-sym">Mod</span>',
+    );
+  });
+
+  it("shows the path alone when the file is not embedded", () => {
+    const midPanel = html.slice(html.lastIndexOf('data-node="mid.ts#mid"'), html.lastIndexOf('data-node="leaf.ts#leaf"'));
+    expect(midPanel).toContain('<div class="scope-bar"><span class="scope-path"><span class="name">mid.ts</span></span><span class="scope-sym"></span>');
+  });
+
+  it("includes the scroll-following script", () => {
+    expect(html).toContain("firstVisibleLine");
+    expect(html).toContain('addEventListener("scroll"');
+  });
+});
+
+describe("panelRange", () => {
+  it("pads the declaration by ten lines each side, clamped to the file", () => {
+    expect(panelRange({ startLine: 20, endLine: 21 }, 40)).toEqual([10, 31]);
+    expect(panelRange({ startLine: 3, endLine: 35 }, 40)).toEqual([1, 40]);
+  });
+});
+
+describe("renderDefinitionPanel", () => {
+  const index = buildFileIndex(result.files);
+  const internal: DefinitionTarget = {
+    id: "leaf.ts:20:9",
+    name: "leaf",
+    kind: "function",
+    file: "leaf.ts",
+    external: false,
+    nameLine: 20,
+    nameColumn: 9,
+    nameEndColumn: 13,
+    startLine: 20,
+    endLine: 21,
+  };
+  const external: DefinitionTarget = {
+    id: "ext:/abs/lib.d.ts:5:4",
+    name: "Thing",
+    kind: "interface",
+    file: "/abs/lib.d.ts",
+    external: true,
+    nameLine: 5,
+    nameColumn: 10,
+    nameEndColumn: 15,
+    startLine: 5,
+    endLine: 7,
+    source: { startLine: 1, lines: ["// a", "// b", "// c", "// d", "interface Thing {", "  x: 1;", "}"] },
+  };
+  it("renders a repo-internal definition from the embedded file with context and gaps", () => {
+    const panel = renderDefinitionPanel(internal, index);
+    expect(panel).toContain('data-node="def:leaf.ts:20:9"');
+    expect(panel).toContain('self-sym" data-decl="leaf.ts:20:9">leaf</span>');
+    expect(panel).toContain("filler 10");
+    expect(panel).toContain('data-from="1" data-to="9"');
+    expect(panel).toContain('<span class="badge">function</span>');
+  });
+
+  it("renders an external definition from its window only, by basename", () => {
+    const panel = renderDefinitionPanel(external, index);
+    expect(panel).toContain('<span class="badge">external</span>');
+    // The machine-specific path stays out of the visible location (it
+    // remains in the id attributes, which are what the page matches on).
+    expect(panel).toContain("<code>lib.d.ts:5–7</code>");
+    expect(/<h3>[\s\S]*?<\/div>/.exec(panel)![0]).not.toContain("/abs/");
+    expect(panel).toContain('self-sym" data-decl="ext:/abs/lib.d.ts:5:4">Thing</span>');
+    expect(panel).not.toContain('class="gap"');
+    // The pane answers clicks by the path the language service knows.
+    expect(panel).toContain('data-file="/abs/lib.d.ts" data-side="after"');
+  });
+
+  it("explains its marks only in a debug build", () => {
+    expect(renderDefinitionPanel(internal, index)).not.toContain("data-why");
+    const debug = renderDefinitionPanel(internal, index, { debug: true });
+    expect(debug).toContain('data-why="decl · leaf (function) leaf.ts:20:9"');
+    expect(debug).toContain('data-why="id · not asked yet"');
   });
 });

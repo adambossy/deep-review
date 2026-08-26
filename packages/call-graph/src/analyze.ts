@@ -1,8 +1,11 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import type {
   DeclRef,
   FunctionRelations,
   LanguageBackend,
 } from "./backend.js";
+import { Backends } from "./backends.js";
 import {
   changedPaths,
   fetchPrInfo,
@@ -210,6 +213,32 @@ async function embedFiles(
   for (const p of new Set(paths)) {
     const file = await backend.fileInfo(p).catch(() => null);
     if (file) embedded.push({ side, path: p, ...file });
+  }
+  return embedded;
+}
+
+/**
+ * Embed head-side files with their symbol tables, running whichever
+ * language service understands each; a file no service covers (Markdown,
+ * config) is embedded as plain lines. Paths that do not exist in the
+ * checkout — deleted by the PR — are skipped.
+ */
+export async function embedHeadFiles(headDir: string, paths: Iterable<string>): Promise<EmbeddedFile[]> {
+  const backends = new Backends(headDir);
+  const embedded: EmbeddedFile[] = [];
+  try {
+    for (const p of new Set(paths)) {
+      const full = path.resolve(headDir, p);
+      if (!full.startsWith(path.resolve(headDir) + path.sep) || !existsSync(full)) continue;
+      const info = await backends.for(p)?.fileInfo(p).catch(() => null);
+      embedded.push({
+        side: "after",
+        path: p,
+        ...(info ?? { lines: readFileSync(full, "utf8").split("\n"), symbols: [] }),
+      });
+    }
+  } finally {
+    backends.dispose();
   }
   return embedded;
 }

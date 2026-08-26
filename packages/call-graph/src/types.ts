@@ -17,6 +17,68 @@ export interface SymbolRange {
   kind: string;
   startLine: number;
   endLine: number;
+  /**
+   * Exact position of the declared name (1-based line, 0-based columns).
+   * Optional: hand-built fixtures and files embedded without a language
+   * service carry ranges only.
+   */
+  nameLine?: number;
+  nameColumn?: number;
+  nameEndColumn?: number;
+  /** Declarations nested inside this one: a class's methods, an inner function. */
+  children?: SymbolRange[];
+}
+
+/** Session-local id of a definition site (`d1`, `d2`, …), handed out as symbols are clicked. */
+export type DefinitionId = string;
+
+/** Where a symbol is declared, plus what a panel showing it needs. */
+export interface DefinitionTarget {
+  id: DefinitionId;
+  name: string;
+  /** Language-service kind: "function", "class", "variable", "parameter", … */
+  kind: string;
+  /** Repo-relative path, or the absolute path when `external`. */
+  file: string;
+  external: boolean;
+  nameLine: number;
+  nameColumn: number;
+  nameEndColumn: number;
+  /** Full declaration extent, for the synthesized panel. */
+  startLine: number;
+  endLine: number;
+  /** When this definition is a call-graph node's declaration, that node's id — its panel already exists. */
+  nodeId?: string;
+  /**
+   * Source window for a definition whose file the page does not embed
+   * whole (external, or a repo file nothing else on the page shows).
+   * Definitions in embedded files read from the file instead.
+   */
+  source?: SourceSegment;
+}
+
+/** One place a definition is called from (or, for non-callables, referenced). */
+export interface ReferenceSite {
+  /** Repo-relative head-side file. */
+  file: string;
+  line: number;
+  startColumn: number;
+  endColumn: number;
+  snippet: string;
+  /** Name of the function (or class) the site sits in; the file's basename at module level. */
+  enclosingName: string;
+  /**
+   * Panel to open for this site — the enclosing declaration's graph-node or
+   * synthesized panel. Absent for a site at module level.
+   */
+  panelId?: string;
+}
+
+/** Every place a definition is used, for the callers menu. */
+export interface ReferenceList {
+  /** "calls" from call hierarchy; "references" when the symbol is not callable. */
+  kind: "calls" | "references";
+  sites: ReferenceSite[];
 }
 
 /**

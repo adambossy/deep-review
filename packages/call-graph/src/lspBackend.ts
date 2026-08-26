@@ -6,7 +6,10 @@ import {
   callSitesFromRanges,
   extractSource,
   type DeclRef,
+  type DefinitionLocation,
+  type EnclosingDeclaration,
   type FunctionRelations,
+  type IncomingReference,
   type LanguageBackend,
   type RelationEntry,
 } from "./backend.js";
@@ -38,16 +41,72 @@ interface LspDocumentSymbol {
   name: string;
   kind: number;
   range: LspRange;
+  /** The name's own range, inside `range`. */
+  selectionRange: LspRange;
   children?: LspDocumentSymbol[];
 }
+interface LspLocation {
+  uri: string;
+  range: LspRange;
+}
+interface LspLocationLink {
+  targetUri: string;
+  /** Whole declaration. */
+  targetRange: LspRange;
+  /** The declared name. */
+  targetSelectionRange: LspRange;
+}
 
+/** LSP SymbolKind → the kind names the rest of the report uses. */
 const SYMBOL_KIND_NAMES: Record<number, string> = {
+  2: "module",
   5: "class",
   6: "method",
+  7: "property",
+  8: "field",
   9: "constructor",
   11: "interface",
   12: "function",
+  13: "variable",
+  14: "constant",
 };
+
+/** Kinds that name a scope worth a breadcrumb; variables and fields are not. */
+const SCOPE_KINDS = new Set([5, 6, 9, 11, 12]);
+
+function contains(range: LspRange, pos: LspPosition): boolean {
+  return (
+    (range.start.line < pos.line ||
+      (range.start.line === pos.line && range.start.character <= pos.character)) &&
+    (range.end.line > pos.line ||
+      (range.end.line === pos.line && range.end.character >= pos.character))
+  );
+}
+
+/** Innermost document symbol whose range contains `pos`. */
+function deepestSymbol(symbols: LspDocumentSymbol[], pos: LspPosition): LspDocumentSymbol | null {
+  for (const symbol of symbols) {
+    if (!contains(symbol.range, pos)) continue;
+    return (symbol.children && deepestSymbol(symbol.children, pos)) ?? symbol;
+  }
+  return null;
+}
+
+/** Innermost callable containing `pos`, else the innermost class, else null. */
+function enclosingScope(symbols: LspDocumentSymbol[], pos: LspPosition): LspDocumentSymbol | null {
+  let cls: LspDocumentSymbol | null = null;
+  let fn: LspDocumentSymbol | null = null;
+  const walk = (list: LspDocumentSymbol[]): void => {
+    for (const symbol of list) {
+      if (!contains(symbol.range, pos)) continue;
+      if (CALLABLE_KINDS.has(symbol.kind)) fn = symbol;
+      else if (symbol.kind === 5) cls = symbol;
+      if (symbol.children) walk(symbol.children);
+    }
+  };
+  walk(symbols);
+  return fn ?? cls;
+}
 
 const CALLABLE_KINDS = new Set([6, 9, 12]);
 
@@ -174,21 +233,10 @@ export class LspBackend implements LanguageBackend {
    * ranges cover the whole definition.
    */
   private async fullRangeOf(item: LspCallHierarchyItem): Promise<LspRange> {
-    const contains = (range: LspRange, pos: LspPosition): boolean =>
-      (range.start.line < pos.line ||
-        (range.start.line === pos.line && range.start.character <= pos.character)) &&
-      (range.end.line > pos.line ||
-        (range.end.line === pos.line && range.end.character >= pos.character));
-
-    const pos = item.selectionRange.start;
-    const deepest = (symbols: LspDocumentSymbol[]): LspRange | null => {
-      for (const symbol of symbols) {
-        if (!contains(symbol.range, pos)) continue;
-        return (symbol.children && deepest(symbol.children)) ?? symbol.range;
-      }
-      return null;
-    };
-    const found = deepest(await this.docSymbols(fileURLToPath(item.uri)));
+    const found = deepestSymbol(
+      await this.docSymbols(fileURLToPath(item.uri)),
+      item.selectionRange.start,
+    )?.range;
     return found && found.end.line - found.start.line >= item.range.end.line - item.range.start.line
       ? found
       : item.range;
@@ -348,29 +396,153 @@ export class LspBackend implements LanguageBackend {
   }
 
   async fileInfo(
-    relativePath: string,
+    file: string,
   ): Promise<{ lines: string[]; symbols: SymbolRange[] } | null> {
-    const fileName = path.join(this.rootDir, relativePath);
+    const fileName = path.resolve(this.rootDir, file);
     const lines = this.linesOf(fileName);
     if (!lines.length) return null;
     const documentSymbols = await this.docSymbols(fileName);
-    const symbols: SymbolRange[] = [];
-    const flatten = (list: LspDocumentSymbol[]): void => {
+    // Keep the server's nesting; a symbol of a kind we do not name (a
+    // variable holding a class, say) hands its children up to its parent.
+    const convert = (list: LspDocumentSymbol[]): SymbolRange[] => {
+      const out: SymbolRange[] = [];
       for (const symbol of list) {
-        const kind = SYMBOL_KIND_NAMES[symbol.kind];
-        if (kind) {
-          symbols.push({
-            name: symbol.name,
-            kind,
-            startLine: symbol.range.start.line + 1,
-            endLine: symbol.range.end.line + 1,
-          });
+        const children = symbol.children ? convert(symbol.children) : [];
+        if (!SCOPE_KINDS.has(symbol.kind)) {
+          out.push(...children);
+          continue;
         }
-        if (symbol.children) flatten(symbol.children);
+        const sel = symbol.selectionRange ?? symbol.range;
+        out.push({
+          name: symbol.name,
+          kind: SYMBOL_KIND_NAMES[symbol.kind]!,
+          startLine: symbol.range.start.line + 1,
+          endLine: symbol.range.end.line + 1,
+          nameLine: sel.start.line + 1,
+          nameColumn: sel.start.character,
+          nameEndColumn:
+            sel.end.line === sel.start.line ? sel.end.character : sel.start.character + symbol.name.length,
+          ...(children.length ? { children } : {}),
+        });
       }
+      return out;
     };
-    flatten(documentSymbols);
-    return { lines, symbols };
+    return { lines, symbols: convert(documentSymbols) };
+  }
+
+  async definitionAt(ref: DeclRef): Promise<DefinitionLocation | null> {
+    const client = await this.start();
+    await this.open(client, ref.fileName);
+    const raw = await client.request<LspLocation | LspLocation[] | LspLocationLink[] | null>(
+      "textDocument/definition",
+      {
+        textDocument: { uri: pathToFileURL(ref.fileName).href },
+        position: { line: ref.line - 1, character: ref.column },
+      },
+    );
+    const first = Array.isArray(raw) ? raw[0] : raw;
+    if (!first) return null;
+
+    // Normalise Location vs LocationLink. A plain Location only names the
+    // identifier; the declaration's extent then comes from document symbols.
+    const uri = "targetUri" in first ? first.targetUri : first.uri;
+    const nameRange = "targetSelectionRange" in first ? first.targetSelectionRange : first.range;
+    const fileName = fileURLToPath(uri);
+    const self =
+      fileName === ref.fileName &&
+      nameRange.start.line === ref.line - 1 &&
+      nameRange.start.character <= ref.column &&
+      ref.column <= nameRange.end.character;
+
+    const symbol = deepestSymbol(await this.docSymbols(fileName), nameRange.start);
+    const extent =
+      "targetRange" in first ? first.targetRange : (symbol?.range ?? nameRange);
+    const lineText = this.linesOf(fileName)[nameRange.start.line] ?? "";
+    const name =
+      nameRange.end.line === nameRange.start.line
+        ? lineText.slice(nameRange.start.character, nameRange.end.character)
+        : (symbol?.name ?? "");
+    // The deepest enclosing symbol names the declaration only when its own
+    // name sits at the target; otherwise the target is a variable or
+    // parameter inside that symbol.
+    const kind =
+      symbol && contains(symbol.selectionRange ?? symbol.range, nameRange.start)
+        ? SYMBOL_KIND_NAMES[symbol.kind] ?? "variable"
+        : "variable";
+    return {
+      fileName,
+      name,
+      kind,
+      external: !this.isProjectFile(fileName),
+      self,
+      nameLine: nameRange.start.line + 1,
+      nameColumn: nameRange.start.character,
+      nameEndColumn:
+        nameRange.end.line === nameRange.start.line
+          ? nameRange.end.character
+          : nameRange.start.character + name.length,
+      startLine: extent.start.line + 1,
+      endLine: extent.end.line + 1,
+    };
+  }
+
+  private async referenceAt(uri: string, range: LspRange): Promise<IncomingReference> {
+    const fileName = fileURLToPath(uri);
+    const lineText = this.linesOf(fileName)[range.start.line] ?? "";
+    const scope = enclosingScope(await this.docSymbols(fileName), range.start);
+    let enclosing: EnclosingDeclaration | null = null;
+    if (scope) {
+      const sel = scope.selectionRange ?? scope.range;
+      enclosing = {
+        fileName,
+        line: sel.start.line + 1,
+        column: sel.start.character,
+        name: scope.name,
+        kind: SYMBOL_KIND_NAMES[scope.kind] ?? "function",
+        startLine: scope.range.start.line + 1,
+        endLine: scope.range.end.line + 1,
+      };
+    }
+    return {
+      fileName,
+      line: range.start.line + 1,
+      startColumn: range.start.character,
+      endColumn: range.end.line === range.start.line ? range.end.character : lineText.length,
+      snippet: lineText.trim(),
+      enclosing,
+    };
+  }
+
+  async incomingCallsAt(ref: DeclRef): Promise<IncomingReference[] | null> {
+    const client = await this.start();
+    const item = await this.prepare(ref);
+    if (!item) return null;
+    const incoming = await client.request<Array<{ from: LspCallHierarchyItem; fromRanges: LspRange[] }> | null>(
+      "callHierarchy/incomingCalls",
+      { item },
+    );
+    const refs: IncomingReference[] = [];
+    for (const call of incoming ?? []) {
+      if (!this.isProjectFile(fileURLToPath(call.from.uri))) continue;
+      for (const range of call.fromRanges) refs.push(await this.referenceAt(call.from.uri, range));
+    }
+    return refs;
+  }
+
+  async referencesAt(ref: DeclRef): Promise<IncomingReference[]> {
+    const client = await this.start();
+    await this.open(client, ref.fileName);
+    const locations = await client.request<LspLocation[] | null>("textDocument/references", {
+      textDocument: { uri: pathToFileURL(ref.fileName).href },
+      position: { line: ref.line - 1, character: ref.column },
+      context: { includeDeclaration: false },
+    });
+    const refs: IncomingReference[] = [];
+    for (const loc of locations ?? []) {
+      if (!this.isProjectFile(fileURLToPath(loc.uri))) continue;
+      refs.push(await this.referenceAt(loc.uri, loc.range));
+    }
+    return refs;
   }
 
   dispose(): void {

@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { existsSync, fstatSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { renderSliceExplorerHtml } from "@deep-review/call-graph";
@@ -14,22 +13,27 @@ import {
   writeSliceReport,
 } from "@deep-review/slicer";
 import { buildSliceExplorerInput } from "./build.js";
+import { serveExplorer } from "./serve.js";
 
 const USAGE = `Usage: pr-review <pr-url> [options]
 
 Slices a PR, then renders it as a two-axis explorer: slices stacked
 vertically in priority order, each slice's call graph walkable horizontally
-from the symbols in its diff.
+from the symbols in its diff. Serves the page from a local server that
+answers symbol clicks from the language services; Ctrl-C stops it.
 
 Options:
-  --out <file>      Write the HTML here (default: review-<repo>-pr<n>.html)
   --slices <file>   Reuse a saved slice JSON instead of running the agent
   --save <file>     Also write the slice JSON from this run
+  --out <file>      Also write the page here as a static copy (navigation inert)
+  --no-serve        Write --out and exit instead of serving the page
+  --port <n>        Serve on this port (default: a free one)
   --max-graphs <n>  Analyze at most n slices' call graphs (default: all)
+  --debug-marks     Hold Shift on the page to see why each symbol is marked as it is
   --work-dir <d>    Cache the clone/worktrees here instead of the tmp dir
   --model <id>      Model to use for slicing (default: gpt-5.6-sol)
-  --no-open         Don't open the report in a browser
-  --quiet           Only print the output path
+  --no-open         Don't open the page in a browser
+  --quiet           Only print the URL (or, with --no-serve, the output path)
 
 Environment:
   OPENAI_API_KEY     Required for the default model, unless --slices is given.
@@ -41,6 +45,15 @@ Environment:
 Examples:
   pr-review https://github.com/vercel/swr/pull/2950
   pr-review https://github.com/vercel/swr/pull/2950 --slices slices.json`;
+
+function stdinIsPipe(): boolean {
+  try {
+    const stat = fstatSync(0);
+    return stat.isFIFO() || stat.isSocket();
+  } catch {
+    return false;
+  }
+}
 
 function loadEnvFile(): void {
   for (const candidate of [".env", "../../.env"]) {
@@ -63,6 +76,9 @@ async function main(): Promise<void> {
       slices: { type: "string" },
       save: { type: "string" },
       "max-graphs": { type: "string" },
+      "no-serve": { type: "boolean", default: false },
+      port: { type: "string" },
+      "debug-marks": { type: "boolean", default: false },
       "work-dir": { type: "string" },
       model: { type: "string" },
       "no-open": { type: "boolean", default: false },
@@ -84,6 +100,15 @@ async function main(): Promise<void> {
     : undefined;
   if (maxGraphs !== undefined && (!Number.isInteger(maxGraphs) || maxGraphs < 0)) {
     console.error("--max-graphs must be a non-negative integer.");
+    process.exit(1);
+  }
+  const port = values.port ? Number(values.port) : undefined;
+  if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
+    console.error("--port must be a port number.");
+    process.exit(1);
+  }
+  if (values["no-serve"] && !values.out) {
+    console.error("--no-serve needs --out: there would be nothing to show.");
     process.exit(1);
   }
 
@@ -122,22 +147,53 @@ async function main(): Promise<void> {
     headDir,
     ...(workDir ? { workDir } : {}),
     ...(maxGraphs !== undefined ? { maxGraphs } : {}),
+    ...(values["debug-marks"] ? { debugMarks: true } : {}),
     ...(values.quiet ? {} : { onProgress: log }),
   });
-
-  const outFile =
-    values.out ?? `review-${report.pr.repo}-pr${report.pr.number}.html`;
-  writeFileSync(outFile, renderSliceExplorerHtml(input), "utf8");
+  const html = renderSliceExplorerHtml(input);
 
   const withGraphs = input.slices.filter((s) => s.graph).length;
   log(
     `${input.slices.length} slices, ${withGraphs} with a walkable call graph.`,
   );
-  console.log(outFile);
 
-  if (!values["no-open"]) {
-    execFile("open", [path.resolve(outFile)], () => {});
+  // A static copy reads fine on its own; only symbol clicks need the server.
+  if (values.out) {
+    writeFileSync(values.out, html, "utf8");
+    log(`Static copy written to ${values.out}`);
   }
+  if (values["no-serve"]) {
+    console.log(values.out);
+    return;
+  }
+
+  const server = await serveExplorer({
+    headDir,
+    input,
+    html,
+    ...(port !== undefined ? { port } : {}),
+    ...(values.quiet ? {} : { onProgress: log }),
+  });
+  log(`Serving ${server.url} — press Ctrl-C to stop.`);
+  console.log(server.url);
+  if (!values["no-open"]) {
+    execFile("open", [server.url], () => {});
+  }
+
+  const stop = (): void => {
+    void server.close().then(() => process.exit(0));
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  // Started by another program over a pipe rather than from a terminal: go
+  // when it does. (Not for a stdin that is simply /dev/null — that ends at
+  // once and says nothing about anyone leaving.)
+  if (stdinIsPipe()) {
+    process.stdin.once("end", stop);
+    process.stdin.resume();
+  }
+  await server.closed;
+  process.exit(0);
 }
 
 main().catch((error: unknown) => {

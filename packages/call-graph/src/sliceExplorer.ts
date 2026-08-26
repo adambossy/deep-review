@@ -1,24 +1,10 @@
-import {
-  EXPLORER_CSS,
-  EXPLORER_NAV_JS,
-  renderPanel,
-} from "./explorer.js";
-import {
-  escapeHtml as esc,
-  languageOf,
-  renderLine,
-  tokenizeLines,
-  type Mark,
-} from "./highlight.js";
-import {
-  buildFileIndex,
-  CSS,
-  GAP_JS,
-  gapRow,
-  lineRow,
-  renderDataBlob,
-  type FileIndex,
-} from "./html.js";
+import { EXPLORER_CSS, EXPLORER_NAV_JS, renderPanel } from "./explorer.js";
+import { renderCodePane } from "./codePane.js";
+import { fragmentDiffRows } from "./diffView.js";
+import { escapeHtml as esc, languageOf } from "./highlight.js";
+import { buildFileIndex, CSS, GAP_JS, renderDataBlob, SCOPE_JS, type FileIndex } from "./html.js";
+
+export { fileBlockRanges } from "./diffView.js";
 import type { CallPathResult, EmbeddedFile } from "./types.js";
 
 /**
@@ -77,186 +63,24 @@ export interface SliceExplorerInput {
    * fragment rendering.
    */
   files: EmbeddedFile[];
-}
-
-interface GraphSymbol {
-  name: string;
-  nodeId: string;
-  /** Where this function is declared at head, when it exists there. */
-  declFile: string | null;
-  declLine: number | null;
-}
-
-type Symbols = GraphSymbol[];
-
-/** `def name`, `class name`, `function name` — the word introduces, not calls. */
-const DECLARES = /(?:^|[^A-Za-z0-9_$])(?:def|class|function|fn|func|struct|interface|type|enum)\s+$/;
-
-/**
- * Occurrences of a graph symbol in one line of source, as tappable marks.
- *
- * A function's own declaration is deliberately not marked: its body is right
- * there on the page, so tapping it would slide in a panel for what the
- * reader is already looking at. The language service tells us where each
- * function is declared; the keyword check catches the rest, including
- * functions the walk reached only on the base side.
- */
-function symbolMarks(
-  content: string,
-  symbols: Symbols,
-  file: string,
-  line: number | null,
-): Mark[] {
-  const marks: Mark[] = [];
-  for (const symbol of symbols) {
-    if (symbol.declFile === file && symbol.declLine === line) continue;
-    let from = 0;
-    for (;;) {
-      const at = content.indexOf(symbol.name, from);
-      if (at < 0) break;
-      from = at + symbol.name.length;
-      const before = content[at - 1] ?? " ";
-      const after = content[from] ?? " ";
-      // Whole-word only: `retry` must not light up inside `retryDelay`.
-      if (/[A-Za-z0-9_$]/.test(before) || /[A-Za-z0-9_$]/.test(after)) continue;
-      if (DECLARES.test(content.slice(0, at))) continue;
-      marks.push({
-        start: at,
-        end: from,
-        cls: "csite",
-        attrs: `data-target="${esc(symbol.nodeId)}" role="button" tabindex="0"`,
-      });
-    }
-  }
-  return marks.sort((a, b) => a.start - b.start);
-}
-
-/** Lines of the head-side file shown either side of a fragment. */
-const FRAGMENT_CONTEXT = 5;
-
-/** The fragment's own diff rows: additions tinted, removals kept in place. */
-function fragmentRows(
-  fragment: SliceFragmentInput,
-  width: number,
-  symbols: Symbols,
-): string[] {
-  const lang = languageOf(fragment.file);
-  const contents = fragment.lines.map((l) => l.slice(1));
-  const tokens = tokenizeLines(contents, lang);
-
-  return fragment.lines.map((line, i) => {
-    if (line.startsWith("\\")) {
-      return lineRow("", width, esc(line));
-    }
-    const html = renderLine(
-      contents[i]!,
-      tokens[i]!,
-      // A removed line has no head-side number, so it can never be the
-      // declaration site the head-side check compares against.
-      symbolMarks(contents[i]!, symbols, fragment.file, fragment.newLineNumbers[i] ?? null),
-    );
-    if (line.startsWith("-")) return lineRow("−", width, html, ["diff-del"]);
-    return lineRow(
-      fragment.newLineNumbers[i] ?? "",
-      width,
-      html,
-      line.startsWith("+") ? ["diff-add"] : [],
-    );
-  });
+  /**
+   * Debug builds: every marked symbol says why it is marked, and every
+   * identifier what the navigation server said about it, in a hint shown
+   * while Shift is held.
+   */
+  debugMarks?: boolean | undefined;
 }
 
 /**
- * Every fragment a slice has in one file, rendered as one continuous stretch
- * of that file: each fragment surrounded by real context, the runs between
- * them collapsed behind expanders. Reading a file's changes should not mean
- * reassembling them from separate boxes.
- *
- * Nothing is interleaved between the fragments — no ids, no summaries. The
- * tinting already says which lines changed, and anything else in the column
- * breaks the listing the reader is trying to follow.
+ * One file index for the whole page: the expander script reads a single
+ * `#render-data` blob, and files shared between slices key identically.
+ * The changed files come first so that a file a call graph also embedded
+ * wins — those entries carry the symbol table the expanders use for
+ * breadcrumbs. The navigation server builds the same index, so a panel it
+ * renders later matches the page.
  */
-/** "packages/webhooks/src/retry.ts" → dimmed directory, bold basename, +/− stats. */
-function fileHead(file: string, fragments: SliceFragmentInput[]): string {
-  const cut = file.lastIndexOf("/") + 1;
-  const adds = fragments.reduce(
-    (n, f) => n + f.lines.filter((l) => l.startsWith("+")).length,
-    0,
-  );
-  const dels = fragments.reduce(
-    (n, f) => n + f.lines.filter((l) => l.startsWith("-")).length,
-    0,
-  );
-  return `<div class="file-head"><code>${
-    cut > 0 ? `<span class="dir">${esc(file.slice(0, cut))}</span>` : ""
-  }<span class="name">${esc(file.slice(cut))}</span></code><span class="stat">${
-    adds ? `<span class="plus">+${adds}</span>` : ""
-  }${dels ? `<span class="minus">−${dels}</span>` : ""}</span></div>`;
-}
-
-function renderFileBlock(
-  file: string,
-  fragments: SliceFragmentInput[],
-  entry: ReturnType<FileIndex["get"]>,
-  symbols: Symbols,
-): string {
-  // Without the file's text there is no context to show and nothing to
-  // expand into, so each fragment stands alone.
-  if (!entry) {
-    const width = 4;
-    const rows = fragments.flatMap((f) => [
-      `<span class="line hunk-header">${esc(f.hunkHeader)}</span>`,
-      ...fragmentRows(f, width, symbols),
-    ]);
-    return `<div class="file-block">${fileHead(file, fragments)}<pre class="source" data-w="${width}">${rows.join("")}</pre></div>`;
-  }
-
-  const width = String(entry.lines.length).length;
-  const ordered = [...fragments].sort(
-    (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
-  );
-  const rows: string[] = [];
-  /** Last head-side line already emitted; nothing may be emitted twice. */
-  let cursor = 0;
-
-  const contextRows = (from: number, to: number): void => {
-    for (let n = Math.max(from, 1); n <= Math.min(to, entry.lines.length); n++) {
-      const marks = symbolMarks(entry.lines[n - 1] ?? "", symbols, file, n);
-      const html = marks.length
-        ? renderLine(entry.lines[n - 1] ?? "", entry.tokens[n - 1] ?? [], marks)
-        : (entry.html[n - 1] ?? "");
-      rows.push(lineRow(n, width, html));
-      cursor = Math.max(cursor, n);
-    }
-  };
-
-  ordered.forEach((fragment, i) => {
-    const wanted = Math.max(1, fragment.headStart - FRAGMENT_CONTEXT);
-    if (wanted > cursor + 1) {
-      rows.push(gapRow(entry, cursor + 1, wanted - 1));
-      cursor = wanted - 1;
-    }
-    contextRows(cursor + 1, fragment.headStart - 1);
-    rows.push(...fragmentRows(fragment, width, symbols));
-    cursor = Math.max(cursor, fragment.headEnd);
-
-    // Trailing context, stopping short of the next fragment's own leading
-    // context so the two never render the same line twice.
-    const next = ordered[i + 1];
-    const limit = Math.min(
-      cursor + FRAGMENT_CONTEXT,
-      next ? next.headStart - 1 : entry.lines.length,
-    );
-    contextRows(cursor + 1, limit);
-  });
-
-  if (cursor < entry.lines.length) {
-    rows.push(gapRow(entry, cursor + 1, entry.lines.length));
-  }
-
-  return `<div class="file-block">
-    ${fileHead(file, fragments)}
-    <pre class="source" data-w="${width}">${rows.join("")}</pre>
-  </div>`;
+export function explorerFileIndex(input: SliceExplorerInput): FileIndex {
+  return buildFileIndex([...input.files, ...input.slices.flatMap((s) => s.graph?.files ?? [])]);
 }
 
 /** The slice's own panel: everything the PR changed for this one purpose. */
@@ -265,16 +89,8 @@ function renderSlicePanel(
   rank: number,
   total: number,
   index: FileIndex,
+  debug: boolean,
 ): string {
-  const symbols: Symbols = (slice.graph?.nodes ?? []).map((n) => ({
-    name: n.name.split(".").pop() ?? n.name,
-    nodeId: n.id,
-    // nameLine is given in the node's preferred revision, so it only locates
-    // a head-side declaration when the function exists after the PR.
-    declFile: n.after ? n.after.file : null,
-    declLine: n.after ? n.nameLine : null,
-  }));
-
   // Group by file, keeping the order the slice listed them in, so the most
   // important file of the slice still leads.
   const byFile = new Map<string, SliceFragmentInput[]>();
@@ -297,13 +113,21 @@ function renderSlicePanel(
       <span class="badge">${files.size} file${files.size === 1 ? "" : "s"}</span>
       ${slice.target ? `<span class="badge target">→ ${esc(slice.target.name)}</span>` : ""}
       ${slice.graph ? "" : '<span class="badge">no call graph</span>'}
-      ${
-        slice.graph
-          ? '<span class="hint">tap a highlighted symbol to walk into its call graph</span>'
-          : ""
-      }
+      <span class="hint">tap a symbol to open its definition · ⌘-click for its callers</span>
     </div>
-    ${[...byFile].map(([file, group]) => renderFileBlock(file, group, index.get(`after:${file}`), symbols)).join("")}
+    ${[...byFile]
+      .map(([file, group]) => {
+        const entry = index.get(`after:${file}`);
+        return renderCodePane({
+          file,
+          entry,
+          rows: fragmentDiffRows(entry?.lines, group),
+          lang: languageOf(file),
+          navigable: { side: "after" },
+          debug,
+        });
+      })
+      .join("")}
   </article>`;
 }
 
@@ -400,22 +224,7 @@ const SLICE_CSS = `
                   font-family: var(--mono); }
   .hint { font-size: 0.7rem; color: var(--ink-faint); margin-left: 0.3rem; }
 
-  .file-block {
-    border: 1px solid var(--line-c); border-radius: 8px; overflow: hidden;
-    margin: 0 0 1.1rem; background: var(--panel);
-  }
-  .file-head {
-    display: flex; align-items: center; gap: 0.6rem;
-    padding: 0.5rem 0.9rem; background: var(--panel-2);
-    border-bottom: 1px solid var(--line-c);
-    font-family: var(--mono); font-size: 0.74rem;
-  }
-  .file-head .dir { color: var(--ink-faint); }
-  .file-head .name { color: var(--ink); font-weight: 600; }
-  .file-head .stat { margin-left: auto; font-size: 0.68rem; font-variant-numeric: tabular-nums; }
-  .file-head .plus { color: var(--add-edge); }
-  .file-head .minus { color: var(--del-edge); margin-left: 0.4rem; }
-  .file-block pre.source { border: none; border-radius: 0; margin: 0; }
+  .slice-panel .code-pane { margin: 0 0 1.1rem; }
 `;
 
 /**
@@ -424,6 +233,56 @@ const SLICE_CSS = `
  * pushing past the end carries you to the next slice, and past the top to
  * the previous one.
  */
+/**
+ * Debug builds: hold Shift and hover a span to see why it is marked, in a
+ * label over it, colour-coded by kind; an identifier says what the
+ * navigation server answered when it was clicked, or that it has not been
+ * asked yet. Only the hovered span speaks — labelling every span at once
+ * buries a dense line. Nothing shows until Shift is down.
+ */
+const DEBUG_MARKS_CSS = `
+  body.debug-marks [data-why]:hover { position: relative; outline: 1px dashed var(--dbg, var(--ink-faint)); outline-offset: 1px; }
+  body.debug-marks [data-why]:hover::after {
+    content: attr(data-why); position: absolute; left: 0; bottom: calc(100% + 3px); z-index: 7;
+    font: 500 0.72rem/1.35 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0;
+    color: var(--ink); background: var(--panel); border: 1px solid var(--dbg, var(--line-c));
+    border-radius: 4px; padding: 2px 6px; width: max-content; max-width: 44ch; white-space: normal; pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  }
+  body.debug-marks .id[data-why] { --dbg: var(--ink-faint); }
+  body.debug-marks .csite[data-why] { --dbg: var(--accent); }
+  body.debug-marks .sym[data-why] { --dbg: var(--add-edge); }
+  body.debug-marks .self-sym[data-why] { --dbg: #a855f7; }
+  #debug-legend {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50; display: none;
+    flex-direction: column; gap: 3px; padding: 0.5rem 0.7rem;
+    border: 1px solid var(--line-c); border-radius: 8px; background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    font: 0.68rem/1.4 ui-sans-serif, system-ui, sans-serif; color: var(--ink-soft);
+  }
+  body.debug-marks #debug-legend { display: flex; }
+  #debug-legend b { color: var(--ink); }
+  #debug-legend .sw { display: inline-block; width: 0.7em; height: 0.7em; border: 1px dashed; margin-right: 0.4em; vertical-align: -1px; }
+`;
+
+const DEBUG_MARKS_LEGEND = `<div id="debug-legend">
+  <b>Hold Shift and hover a symbol to see why it is marked</b>
+  <span><i class="sw" style="border-color: var(--accent)"></i><b>csite</b> — a call-graph edge, marked when the page was built</span>
+  <span><i class="sw" style="border-color: var(--add-edge)"></i><b>sym</b> — the navigation server resolved it when clicked</span>
+  <span><i class="sw" style="border-color: #a855f7"></i><b>decl</b> — a declaration the page knows (lights up in place)</span>
+  <span><i class="sw" style="border-color: var(--ink-faint)"></i><b>id</b> — not asked yet, or unresolved with the reason</span>
+</div>`;
+
+const DEBUG_MARKS_JS = `
+window.DEBUG_MARKS = true;
+(function () {
+  function set(on) { document.body.classList.toggle("debug-marks", on); }
+  document.addEventListener("keydown", function (e) { if (e.key === "Shift") set(true); });
+  document.addEventListener("keyup", function (e) { if (e.key === "Shift") set(false); });
+  window.addEventListener("blur", function () { set(false); });
+})();
+`;
+
 const DECK_JS = `
 (function () {
   var stage = document.querySelector(".stage");
@@ -568,7 +427,7 @@ const HISTORY_JS = `
       }
       trails[sliceIndex] = foundIdx >= 0
         ? trail.slice(0, foundIdx + 1)
-        : trail.concat([{ id: step.id, ids: step.ids, pos: step.pos, label: names[step.id] || step.id }]);
+        : trail.concat([{ id: step.id, ids: step.ids, pos: step.pos, label: names[step.id] || (window.DEFNAMES || {})[step.id] || step.id }]);
       render(sliceIndex);
     });
   });
@@ -604,21 +463,14 @@ const HISTORY_JS = `
  * slice's call graph walkable horizontally from the symbols in its diff.
  */
 export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
-  // One file index for the whole page: the expander script reads a single
-  // `#render-data` blob, and files shared between slices key identically.
-  // The changed files come first so that a file a call graph also embedded
-  // wins — those entries carry the symbol table the expanders use for
-  // breadcrumbs.
-  const index = buildFileIndex([
-    ...input.files,
-    ...input.slices.flatMap((s) => s.graph?.files ?? []),
-  ]);
+  const index = explorerFileIndex(input);
+  const debug = input.debugMarks ?? false;
 
   const views = input.slices
     .map((slice, i) => {
       const graph = slice.graph;
       const panels = graph
-        ? graph.nodes.map((n) => renderPanel(n, graph, index)).join("\n")
+        ? graph.nodes.map((n) => renderPanel(n, graph, index, { debug })).join("\n")
         : "";
       const names = Object.fromEntries(
         (graph?.nodes ?? []).map((n) => [n.id, n.name]),
@@ -633,7 +485,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
         <div class="viewport">
           <button class="rail rail-left"></button>
           <button class="rail rail-right"></button>
-          <div class="track">${renderSlicePanel(slice, i + 1, input.slices.length, index)}</div>
+          <div class="track">${renderSlicePanel(slice, i + 1, input.slices.length, index, debug)}</div>
         </div>
         <div class="panel-defs" hidden>${panels}</div>
       </section>`;
@@ -654,7 +506,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(`${input.repo}#${input.number} — slice explorer`)}</title>
-<style>${CSS}${EXPLORER_CSS}${SLICE_CSS}</style>
+<style>${CSS}${EXPLORER_CSS}${SLICE_CSS}${input.debugMarks ? DEBUG_MARKS_CSS : ""}</style>
 </head>
 <body class="slice-explorer">
 <aside class="side">
@@ -686,13 +538,19 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 </div>
 </div>
 
+${input.debugMarks ? DEBUG_MARKS_LEGEND : ""}
+<!-- Definition panels arrive here from the navigation server as they are first opened. -->
+<div id="shared-defs" class="panel-defs" hidden></div>
+
 <script type="application/json" id="slice-titles">${JSON.stringify(titles).replaceAll("</", "<\\/")}</script>
 <script type="application/json" id="render-data">${renderDataBlob(index)}</script>
 <script>
 ${GAP_JS}
+${SCOPE_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}
 ${DECK_JS}
+${input.debugMarks ? DEBUG_MARKS_JS : ""}
 </script>
 </body>
 </html>

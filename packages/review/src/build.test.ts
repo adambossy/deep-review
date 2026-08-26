@@ -1,7 +1,10 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { parseUnifiedDiff } from "@deep-review/pr";
 import { indexDiff } from "@deep-review/slicer";
 import type { SliceReport } from "@deep-review/slicer";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { buildSliceExplorerInput } from "./build.js";
 
 const DIFF = `diff --git a/src/new.ts b/src/new.ts
@@ -77,5 +80,22 @@ describe("buildSliceExplorerInput", () => {
     broken.slices[0]!.fragments[0]!.hunkId = "src/gone.ts#0";
     const input = await buildSliceExplorerInput({ report: broken, index });
     expect(input.slices[0]!.fragments).toEqual([]);
+  });
+});
+
+describe("buildSliceExplorerInput with a head checkout", () => {
+  const headDir = mkdtempSync(path.join(os.tmpdir(), "build-test-head-"));
+  mkdirSync(path.join(headDir, "src"));
+  writeFileSync(
+    path.join(headDir, "src", "new.ts"),
+    "export const a = 1;\nexport const b = a + 1;\nexport const c = b;\nexport const d = 4;\n",
+  );
+  afterAll(() => rmSync(headDir, { recursive: true, force: true }));
+
+  it("embeds the changed files with their text so the page has context and scopes", async () => {
+    const input = await buildSliceExplorerInput({ report: report(2, 3), index, headDir });
+    expect(input.files.map((f) => [f.path, f.lines.length])).toEqual([["src/new.ts", 5]]);
+    // Symbol navigation is the server's job, answered per click, not built in.
+    expect(input).not.toHaveProperty("nav");
   });
 });

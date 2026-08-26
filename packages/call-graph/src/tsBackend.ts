@@ -1,14 +1,19 @@
 import type {
   DeclRef,
+  DefinitionLocation,
   FunctionRelations,
+  IncomingReference,
   LanguageBackend,
 } from "./backend.js";
 import {
   createProjectService,
+  definitionAt,
   fileSnapshot,
   findFunction,
   getRelationsAt,
+  incomingCallsAt,
   lineColumnAt,
+  referencesAt,
   snapshotAt,
   type ProjectService,
 } from "./callHierarchy.js";
@@ -55,9 +60,27 @@ export class TsBackend implements LanguageBackend {
   }
 
   async fileInfo(
-    relativePath: string,
+    file: string,
   ): Promise<{ lines: string[]; symbols: SymbolRange[] } | null> {
-    return fileSnapshot(this.service(), relativePath);
+    return fileSnapshot(this.service(), file);
+  }
+
+  async definitionAt(ref: DeclRef): Promise<DefinitionLocation | null> {
+    const offset = this.offsetOf(ref);
+    if (offset === null) return null;
+    return definitionAt(this.service(), ref.fileName, offset);
+  }
+
+  async incomingCallsAt(ref: DeclRef): Promise<IncomingReference[] | null> {
+    const offset = this.offsetOf(ref);
+    if (offset === null) return null;
+    return incomingCallsAt(this.service(), ref.fileName, offset);
+  }
+
+  async referencesAt(ref: DeclRef): Promise<IncomingReference[]> {
+    const offset = this.offsetOf(ref);
+    if (offset === null) return [];
+    return referencesAt(this.service(), ref.fileName, offset);
   }
 
   dispose(): void {

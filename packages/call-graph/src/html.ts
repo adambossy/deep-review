@@ -1,3 +1,5 @@
+import { renderCodePane } from "./codePane.js";
+import { fileDiffRows, hunkRows, markIntraLine, renderDiffBlock, rowsWidth, segmentRows } from "./diffView.js";
 import {
   escapeHtml as esc,
   languageOf,
@@ -59,13 +61,30 @@ function symbolLabel(symbol: SymbolRange): string {
     : `${symbol.name}()`;
 }
 
-/** Outermost → innermost symbols containing a line: "class Ky › #retry()". */
-function crumbFor(symbols: SymbolRange[], line: number): string {
-  return symbols
-    .filter((s) => s.startLine <= line && s.endLine >= line)
-    .sort((a, b) => b.endLine - b.startLine - (a.endLine - a.startLine))
+/** Outermost → innermost declarations containing a line, following the symbol tree. */
+export function scopeChainFor(symbols: readonly SymbolRange[], line: number): SymbolRange[] {
+  const chain: SymbolRange[] = [];
+  let level: readonly SymbolRange[] = symbols;
+  for (;;) {
+    const hit = level.find((s) => s.startLine <= line && s.endLine >= line);
+    if (!hit) return chain;
+    chain.push(hit);
+    level = hit.children ?? [];
+  }
+}
+
+/** Breadcrumb on expanders: "class Ky › #retry()". */
+function crumbFor(symbols: readonly SymbolRange[], line: number): string {
+  return scopeChainFor(symbols, line)
     .map((s) => esc(symbolLabel(s)))
     .join(" › ");
+}
+
+/** Sticky-header label: "Ky.#retry" — the chain of names, dotted. */
+export function scopeLabelFor(symbols: readonly SymbolRange[], line: number): string {
+  return scopeChainFor(symbols, line)
+    .map((s) => s.name)
+    .join(".");
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +110,12 @@ export function lineRow(
   return `<span class="${classes}"><span class="lineno">${String(lineNumber).padStart(width)}</span>${contentHtml}</span>`;
 }
 
+/** A gap bar with nothing to expand into: the file's text is not on the page. */
+export function staticGapRow(count: number): string {
+  if (count <= 0) return "";
+  return `<div class="gap static"><span class="gap-count">⋯ ${count} hidden lines</span></div>`;
+}
+
 /** GitHub-style expander: ▲ reveals the gap's bottom, ▼ its top. */
 export function gapRow(entry: FileEntry, from: number, to: number): string {
   const count = to - from + 1;
@@ -104,6 +129,7 @@ export function gapRow(entry: FileEntry, from: number, to: number): string {
     crumb ? `<span class="gap-crumb">${crumb}</span>` : ""
   }</div>`;
 }
+
 
 interface BlockOptions {
   /** Embedded file backing this block; enables expanders when `gaps`. */
@@ -156,61 +182,25 @@ export function renderCodeBlock(segments: SourceSegment[], opts: BlockOptions): 
   if (gaps && entry && previousEnd < entry.lines.length) {
     rows.push(gapRow(entry, previousEnd + 1, entry.lines.length));
   }
-  return `<pre class="source" data-w="${width}">${rows.join("")}</pre>`;
+  return `<pre class="source" data-w="${width}"><span class="lines">${rows.join("")}</span></pre>`;
 }
 
 // ---------------------------------------------------------------------------
-// Diff hunks (target card): hunk header + lines, expander gaps around
+// Diff hunks (target card): unified view with expander gaps around
 
-function renderHunkRows(hunk: DiffHunk, width: number, lang: Language): string[] {
-  const rows: string[] = [];
-  const contents = hunk.lines.map((l) => l.slice(1));
-  const tokens = tokenizeLines(contents, lang);
-  let newN = hunk.newStart;
-  hunk.lines.forEach((line, i) => {
-    const markerCls =
-      line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-del" : "";
-    const html = renderLine(contents[i]!, tokens[i]!, []);
-    if (line.startsWith("-")) {
-      rows.push(lineRow("−", width, html, ["diff-del"]));
-    } else if (line.startsWith("\\")) {
-      rows.push(lineRow("", width, esc(line)));
-    } else {
-      rows.push(lineRow(newN, width, html, markerCls ? [markerCls] : []));
-      newN++;
-    }
-  });
-  return rows;
-}
+/** Context shown around each change in a hunks-only block, like `git diff`. */
+const HUNK_CONTEXT = 3;
 
-/** Hunks with GitHub-style expandable context between and around them. */
+/** A function's hunks as one unified diff, with expandable context when the file is embedded. */
 export function renderHunksBlock(
   hunks: DiffHunk[],
   entry: FileEntry | undefined,
   lang?: Language,
 ): string {
   if (!hunks.length) return "";
-  const hunkLang = lang ?? entry?.lang ?? "ts";
-  const sorted = [...hunks].sort((a, b) => a.newStart - b.newStart);
-  const width = entry
-    ? String(entry.lines.length).length
-    : String(Math.max(...sorted.map((h) => h.newStart + h.newLines))).length;
-
-  const rows: string[] = [];
-  let previousEnd = 0;
-  for (const hunk of sorted) {
-    if (entry) rows.push(gapRow(entry, previousEnd + 1, hunk.newStart - 1));
-    const crumb = entry ? crumbFor(entry.symbols, hunk.newStart) : "";
-    rows.push(
-      `<span class="line hunk-header">${esc(hunk.header)}${crumb ? ` <span class="gap-crumb">${crumb}</span>` : ""}</span>`,
-    );
-    rows.push(...renderHunkRows(hunk, width, hunkLang));
-    previousEnd = hunk.newStart + Math.max(hunk.newLines, 1) - 1;
-  }
-  if (entry && previousEnd < entry.lines.length) {
-    rows.push(gapRow(entry, previousEnd + 1, entry.lines.length));
-  }
-  return `<pre class="source" data-w="${width}">${rows.join("")}</pre>`;
+  const rows = entry ? fileDiffRows(entry.lines, hunks, { context: HUNK_CONTEXT }) : hunkRows(hunks);
+  markIntraLine(rows);
+  return renderDiffBlock(rows, { width: rowsWidth(rows, entry), lang: lang ?? entry?.lang ?? "ts", entry });
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +361,7 @@ export const CSS = `
     --add-bg: rgba(22, 163, 74, 0.09); --add-edge: #16a34a;
     --del-bg: rgba(220, 38, 38, 0.08); --del-edge: #dc2626;
     --callsite-bg: rgba(79, 70, 229, 0.10);
+    --add-inner: rgba(22, 163, 74, 0.28); --del-inner: rgba(220, 38, 38, 0.26);
     --tok-kw: #9333ea; --tok-str: #15803d; --tok-com: #a1a1aa;
     --tok-num: #b45309; --tok-fn: #4f46e5; --tok-type: #0e7490; --tok-lit: #b45309;
   }
@@ -383,6 +374,7 @@ export const CSS = `
       --add-bg: rgba(74, 222, 128, 0.08); --add-edge: #4ade80;
       --del-bg: rgba(248, 113, 113, 0.08); --del-edge: #f87171;
       --callsite-bg: rgba(129, 140, 248, 0.14);
+      --add-inner: rgba(74, 222, 128, 0.28); --del-inner: rgba(248, 113, 113, 0.26);
       --tok-kw: #c084fc; --tok-str: #86efac; --tok-com: #5c5f66;
       --tok-num: #fbbf24; --tok-fn: #a5b4fc; --tok-type: #67e8f9; --tok-lit: #fbbf24;
     }
@@ -428,13 +420,26 @@ export const CSS = `
   .loc { color: var(--ink-faint); font-size: 0.8em; }
   .missing { color: var(--ink-faint); font-style: italic; }
   pre.source { overflow-x: auto; background: var(--panel); border: 1px solid var(--line-c); border-radius: 8px; padding: 0.35rem 0; margin: 0.5rem 0 0.2rem; line-height: 1.65; font-family: var(--mono); font-size: 0.78rem; }
+  /* Row backgrounds (diff tint, highlight, focus edge) must reach past the
+     visible edge into the horizontally-scrolled part of a long line. The
+     pre scrolls its content but stays the pane's width, so a row sized to
+     it (100%) only covers what's on screen at load. .lines shrink-wraps
+     to the widest row instead (inline-block, floored at 100%), and each
+     block-level row then fills that — the true scrollable width. */
+  .source .lines { display: inline-block; min-width: 100%; }
   .source .line { display: block; padding: 0 0.9rem; }
   .source .lineno { display: inline-block; color: var(--ink-faint); margin-right: 1.1rem; user-select: none; white-space: pre; }
   .source .line.hl { background: rgba(230,160,0,0.12); }
   .source .line.diff-add { background: var(--add-bg); }
   .source .line.diff-del { background: var(--del-bg); }
   .source .line.diff-del .lineno { color: var(--del-edge); }
-  .source .line.hunk-header { color: var(--ink-faint); background: var(--panel-2); padding: 0.15rem 0.9rem; }
+  .source .line.diff-add .lineno { color: var(--add-edge); }
+  /* Within a changed pair of lines, the words that actually differ. */
+  .source .diff-add-inner { background: var(--add-inner); border-radius: 2px; }
+  .source .diff-del-inner { background: var(--del-inner); border-radius: 2px; }
+  /* The declaration a panel is about, marked along its left edge so it stands
+     out from the context around it without competing with the diff colors. */
+  .source .line.in-focus { box-shadow: inset 3px 0 0 var(--accent); }
   .source .line.elide { color: var(--ink-faint); font-style: italic; }
   .callsite { background: var(--callsite-bg); border-radius: 4px; padding: 0.05rem 0; }
   .csite { color: var(--accent); background: var(--callsite-bg); border-radius: 4px;
@@ -446,6 +451,32 @@ export const CSS = `
          border-top: 1px solid var(--line-c); border-bottom: 1px solid var(--line-c);
          padding: 0.22rem 0.9rem; font-family: ui-sans-serif, system-ui, sans-serif;
          font-size: 0.68rem; color: var(--ink-faint); }
+  .gap.static { cursor: default; }
+  /* Sticky scope header: the file, and the declaration the first visible
+     line is in, pinned to the top of the pane as it scrolls. */
+  /* No overflow clipping on the pane: it would make the pane the sticky
+     header's scroll root instead of the panel. The bar and pre round their
+     own corners. */
+  .code-pane { position: relative; margin: 0.5rem 0 0.9rem; }
+  .scope-bar {
+    /* .panel's own padding (0.7rem 0.9rem) would otherwise leave a gap
+       above the bar once it sticks. Breaking out with a matching negative
+       margin/top pins it flush to the panel edge instead; the padding
+       below restores the usual text inset. Square on top since it now
+       sits at the panel's true edge, not floating mid-content. */
+    position: sticky; top: -0.7rem; z-index: 2; display: flex; align-items: baseline; gap: 0.15rem;
+    margin: -0.7rem -0.9rem 0; padding: 0.4rem 0.9rem; background: var(--panel-2);
+    border: 1px solid var(--line-c); border-bottom: none; border-radius: 0;
+    font-family: var(--mono); font-size: 0.72rem; white-space: nowrap; overflow: hidden;
+  }
+  .scope-bar .scope-path { color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; }
+  .scope-bar .scope-path .name { color: var(--ink); font-weight: 600; }
+  .scope-bar .scope-sym { color: var(--ink); font-weight: 600; }
+  .scope-bar .scope-sym:not(:empty)::before { content: ":"; color: var(--ink-faint); font-weight: 400; }
+  .scope-bar .stat { margin-left: auto; padding-left: 0.8rem; font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+  .scope-bar .plus { color: var(--add-edge); }
+  .scope-bar .minus { color: var(--del-edge); margin-left: 0.4rem; }
+  .code-pane > pre.source { margin: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
   .gap-btns { display: inline-flex; gap: 2px; }
   .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.7rem; padding: 0.05rem 0.3rem; border-radius: 4px; }
   .gap-btn:hover { background: var(--accent-soft); }
@@ -460,14 +491,24 @@ export const CSS = `
 export const GAP_JS = `
   var RD = JSON.parse(document.getElementById("render-data").textContent);
   var STEP = RD.step;
-  function crumbFor(file, line) {
-    var parts = [];
-    for (var i = 0; i < file.symbols.length; i++) {
-      var s = file.symbols[i];
-      if (s[1] <= line && s[2] >= line) parts.push({ label: s[0], size: s[2] - s[1] });
+  /* Outermost → innermost symbols containing a line, down the symbol tree. */
+  function scopeChain(file, line) {
+    var chain = [], level = file.symbols;
+    for (;;) {
+      var hit = null;
+      for (var i = 0; i < level.length; i++) {
+        if (level[i].s <= line && level[i].e >= line) { hit = level[i]; break; }
+      }
+      if (!hit) return chain;
+      chain.push(hit);
+      level = hit.c || [];
     }
-    parts.sort(function (a, b) { return b.size - a.size; });
-    return parts.map(function (p) { return p.label; }).join(" \\u203a ");
+  }
+  function crumbFor(file, line) {
+    return scopeChain(file, line).map(function (s) { return s.l; }).join(" \\u203a ");
+  }
+  function scopeLabel(file, line) {
+    return scopeChain(file, line).map(function (s) { return s.n; }).join(".");
   }
   function rowHtml(file, n, w) {
     var num = String(n); while (num.length < w) num = " " + num;
@@ -509,8 +550,66 @@ export const GAP_JS = `
     gap.dataset.from = String(from);
     gap.dataset.to = String(to);
     gap.innerHTML = gapInner(file, from, to);
+    if (window.updateScopeBars) updateScopeBars(gap.closest(".panel, .col") || document);
   });
 `;
+
+/**
+ * The sticky scope header over each code pane: as the pane scrolls, it names
+ * the declaration the first visible line sits in, the way GitHub pins the
+ * enclosing hunk header. Panels are cloned at runtime, so the listener is
+ * one capturing document-level scroll handler rather than one per pane.
+ */
+export const SCOPE_JS = `
+  /* Head line of the first row not scrolled under the bar: binary search
+     over the pre's children (rows and gaps, in document order). */
+  function firstVisibleLine(bar, pre) {
+    var limit = bar.getBoundingClientRect().bottom;
+    var kids = pre.children, lo = 0, hi = kids.length - 1, found = -1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (kids[mid].getBoundingClientRect().bottom > limit) { found = mid; hi = mid - 1; }
+      else lo = mid + 1;
+    }
+    for (var i = Math.max(found, 0); i < kids.length; i++) {
+      var el = kids[i];
+      if (el.classList.contains("gap")) return Number(el.dataset.from);
+      var no = el.querySelector(".lineno");
+      var n = no ? Number(no.textContent) : NaN;
+      if (!isNaN(n) && n > 0) return n;
+    }
+    return NaN;
+  }
+  function updateScopeBars(scope) {
+    var bars = (scope || document).querySelectorAll(".scope-bar[data-key]");
+    for (var b = 0; b < bars.length; b++) {
+      var bar = bars[b];
+      var file = RD.files[bar.dataset.key];
+      var pre = bar.parentElement && bar.parentElement.querySelector("pre.source");
+      var sym = bar.querySelector(".scope-sym");
+      if (!file || !pre || !sym) continue;
+      var line = firstVisibleLine(bar, pre);
+      sym.textContent = isNaN(line) ? "" : scopeLabel(file, line);
+    }
+  }
+  window.updateScopeBars = updateScopeBars;
+  document.addEventListener("scroll", function (e) {
+    var pane = e.target instanceof Element ? e.target.closest(".panel, .col") : null;
+    if (!pane) return;
+    requestAnimationFrame(function () { updateScopeBars(pane); });
+  }, true);
+`;
+
+/** A symbol for the page: label, bare name, start, end, children — short keys, it is repeated a lot. */
+function symbolBlob(s: SymbolRange): unknown {
+  return {
+    l: symbolLabel(s),
+    n: s.name,
+    s: s.startLine,
+    e: s.endLine,
+    ...(s.children?.length ? { c: s.children.map(symbolBlob) } : {}),
+  };
+}
 
 export function renderDataBlob(index: FileIndex): string {
   const files: Record<string, unknown> = {};
@@ -518,7 +617,7 @@ export function renderDataBlob(index: FileIndex): string {
     files[key] = {
       html: entry.html,
       count: entry.lines.length,
-      symbols: entry.symbols.map((s) => [symbolLabel(s), s.startLine, s.endLine]),
+      symbols: entry.symbols.map(symbolBlob),
     };
   }
   return JSON.stringify({ step: EXPAND_STEP, files }).replaceAll("</", "<\\/");
@@ -599,6 +698,7 @@ ${renderGroup("Callees", "callees", result.callees, index)}
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
+${SCOPE_JS}
   for (const button of document.querySelectorAll('.controls button[data-view]')) {
     button.addEventListener("click", () => {
       document.body.dataset.view = button.dataset.view;
@@ -729,9 +829,20 @@ export function renderCallGraphColumnsHtml(result: CallGraphResult): string {
     }
   });
 
-  const targetBlock = renderCodeBlock(snapshot.source, {
+  // The target's segments as diff rows (no hunks: plain source), with
+  // expander gaps over the rest of the file when it is embedded.
+  const targetRows = segmentRows(snapshot.source, []);
+  if (entry) {
+    const first = snapshot.source[0]?.startLine ?? 1;
+    const last = snapshot.source.at(-1);
+    const lastLine = last ? last.startLine + last.lines.length - 1 : 0;
+    if (first > 1) targetRows.unshift({ kind: "gap", from: 1, to: first - 1 });
+    if (lastLine < entry.lines.length) targetRows.push({ kind: "gap", from: lastLine + 1, to: entry.lines.length });
+  }
+  const targetPane = renderCodePane({
+    file: snapshot.file,
     entry,
-    gaps: true,
+    rows: targetRows,
     lang: languageOf(snapshot.file),
     decorations,
   });
@@ -800,7 +911,7 @@ ${pageHeader(result)}
     </h2>
     <div class="side-loc"><code>${esc(snapshot.file)}:${snapshot.startLine}–${snapshot.endLine}</code> <span class="badge">${side}</span></div>
     <p class="missing">click a highlighted call to open that callee →</p>
-    ${targetBlock}
+    ${targetPane}
   </section>
 
   <section class="col col-callees">
@@ -813,6 +924,7 @@ ${pageHeader(result)}
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
+${SCOPE_JS}
   var cols = document.querySelector(".cols");
   var railRight = document.querySelector(".rail-right");
   document.addEventListener("click", function (e) {
