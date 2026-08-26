@@ -144,6 +144,13 @@ describe("renderSliceExplorerHtml", () => {
     expect(html).toContain('data-target="a.ts#retry"');
   });
 
+  it("falls back to any track's panel-defs, so a symbol resolved to another slice's call-graph node still opens", () => {
+    // Without this, a tap on a node walked only in a different slice's
+    // graph finds nothing in the current track or #shared-defs and does
+    // nothing — see panelFor's own lookup order just above.
+    expect(html).toContain('document.querySelector(".panel-defs " + sel)');
+  });
+
   it("matches whole words only, so retryDelayed is not a call to retry", () => {
     const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
     expect([...panel.matchAll(/data-target="a\.ts#retry"/g)]).toHaveLength(1);

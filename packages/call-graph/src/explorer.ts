@@ -363,8 +363,16 @@ function initExplorer(root, NAMES, onNavigate) {
   function esc1(id) { return window.CSS && CSS.escape ? CSS.escape(id) : id; }
   function panelFor(id) {
     if (pinnedNode && id === "__slice__") return pinnedNode;
-    var def = (defs && defs.querySelector('[data-node="' + esc1(id) + '"]'))
-      || (sharedDefs && sharedDefs.querySelector('[data-node="' + esc1(id) + '"]'));
+    var sel = '[data-node="' + esc1(id) + '"]';
+    /* This track's own graph panels, then page-wide synthesized definition
+       panels, then — a graph node walked only in another slice, e.g. a
+       function reached by that slice's own call path but not this one's —
+       every other track's panel-defs. All tracks render their panels into
+       the DOM up front (just hidden), so a cross-slice node is still right
+       there; without this a tap on such a symbol would silently do nothing. */
+    var def = (defs && defs.querySelector(sel))
+      || (sharedDefs && sharedDefs.querySelector(sel))
+      || document.querySelector(".panel-defs " + sel);
     return def ? def.cloneNode(true) : null;
   }
   function nameOf(id) { return NAMES[id] || DEFNAMES[id]; }
