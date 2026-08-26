@@ -341,6 +341,18 @@ function navFetch(url) {
     .then(function (r) { return r.ok ? r.json() : null; })
     .catch(function () { return null; });
 }
+/* Like navFetch, but tells the caller whether the round trip actually
+   reached the server: a hiccup (dropped connection, bad status) is not the
+   same as the server answering "no definition here", and a caller that
+   caches its result must not confuse the two — a hiccup should be retried,
+   not remembered as a permanent miss. */
+function navFetchTried(url) {
+  if (location.protocol !== "http:" && location.protocol !== "https:") return Promise.resolve({ ok: true, data: null });
+  return fetch(url, { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error("bad status"); return r.json(); })
+    .then(function (data) { return { ok: true, data: data }; })
+    .catch(function () { return { ok: false, data: null }; });
+}
 /* Let the server go when the page does. A reload fires this too — and the
    browser fetches the new page *before* the old one hears it is leaving, so
    the server waits a moment for the new page to say hello before taking the
@@ -393,7 +405,9 @@ function resolveSpan(span) {
   var at = positionOf(span);
   if (!at || at.side !== "after") return Promise.resolve(null);
   var url = "/definition?file=" + encodeURIComponent(at.file) + "&line=" + at.line + "&col=" + at.column;
-  return navFetch(url).then(function (answer) {
+  return navFetchTried(url).then(function (tried) {
+    if (!tried.ok) return null; /* a hiccup, not an answer — leave the span unresolved so the next click retries */
+    var answer = tried.data;
     var hit = answer && answer.id ? answer : null;
     span.dataset.nav = hit ? JSON.stringify(hit) : "";
     if (hit) {
