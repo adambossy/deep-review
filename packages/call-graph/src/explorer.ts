@@ -527,7 +527,9 @@ function initExplorer(root, NAMES, onNavigate) {
       return panel;
     });
   }
+  var linkGen = 0;
   function clearLinks() {
+    linkGen++;
     var old = root.querySelectorAll(".sym-link");
     for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
   }
@@ -567,13 +569,22 @@ function initExplorer(root, NAMES, onNavigate) {
   }
   /* A symbol whose declaration is already on screen in the same pane: light
      up the pair in place rather than opening a panel for what the reader can
-     see. No scroll — moving the pane would defeat the point. */
-  function linkInPlace(link, decl) {
+     see. No scroll — moving the pane would defeat the point. Sibling uses
+     may still be plain, un-clicked id spans with no resolved position of
+     their own, so the full set comes from the server rather than the DOM. */
+  function linkInPlace(link, decl, defId) {
     clearLinks();
+    var gen = linkGen;
     var scope = link.closest(".panel") || root;
-    var uses = scope.querySelectorAll('.sym[data-def="' + esc1(link.dataset.def) + '"]');
-    for (var u = 0; u < uses.length; u++) uses[u].classList.add("sym-link");
     decl.classList.add("sym-link");
+    navFetch("/references?id=" + encodeURIComponent(defId)).then(function (refs) {
+      if (!refs || gen !== linkGen) return;
+      for (var r = 0; r < refs.sites.length; r++) {
+        var site = refs.sites[r];
+        var span = spanAt(scope, site.file, site.line, site.startColumn);
+        if (span) span.classList.add("sym-link");
+      }
+    });
   }
   /* Every action that lands the viewport on a particular node — walking,
      or just paging the rail to reveal one already on the track — reports
@@ -592,7 +603,7 @@ function initExplorer(root, NAMES, onNavigate) {
      itself has nowhere to go. */
   function openDefinition(link, panel, i, answer) {
     var decl = spanAt(panel, answer.decl.file, answer.decl.line, answer.decl.column);
-    if (decl && inView(panel, decl)) { linkInPlace(link, decl); return; }
+    if (decl && inView(panel, decl)) { linkInPlace(link, decl, answer.id); return; }
     if (answer.self) return;
     walkDown(answer.panelId, i).then(function (dest) {
       if (!dest) return;
