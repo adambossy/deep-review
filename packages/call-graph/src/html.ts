@@ -443,8 +443,9 @@ export const CSS = `
      row by WRAP_JS, since that depends on the pane's rendered width.
      Generated content, so it never ends up in a copy-pasted selection. */
   .wrap-tick {
-    position: absolute; left: 0.9rem; width: 1em; text-indent: 0; color: var(--ink-faint);
-    font-family: var(--mono); line-height: 1; user-select: none; pointer-events: none;
+    position: absolute; left: 0.9rem; width: calc(var(--gutter, 0) * 1ch); text-align: center;
+    text-indent: 0; color: var(--ink-faint); font-family: var(--mono); line-height: 1;
+    user-select: none; pointer-events: none;
   }
   .wrap-tick::before { content: "↳"; }
   .source .line.hl { background: rgba(230,160,0,0.12); }
