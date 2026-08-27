@@ -428,16 +428,25 @@ export const CSS = `
      line-number column) is set per pane since it varies with the file's
      line count. */
   pre.source.wrap { white-space: pre-wrap; overflow-x: hidden; }
-  .source.wrap .line { overflow-wrap: anywhere; padding-left: calc(0.9rem + var(--gutter, 0) * 1ch + 1.1rem); text-indent: calc(-1 * (var(--gutter, 0) * 1ch + 1.1rem)); }
-  /* Marks a wrapped line with how many extra visual rows it took, so a
-     reader scanning the gutter isn't surprised by text that isn't where a
-     line count suggested it would be. Generated content so it never ends
-     up in a copy-pasted selection. */
-  .wrap-badge { display: inline-block; margin-left: 0.4em; user-select: none; }
-  .wrap-badge::before {
-    content: "↳+" attr(data-extra); font-size: 0.68em; color: var(--ink-faint);
-    background: var(--panel-2); border-radius: 999px; padding: 0.05em 0.5em;
+  .source.wrap .line { position: relative; overflow-wrap: anywhere; padding-left: calc(0.9rem + var(--gutter, 0) * 1ch + 1.1rem); text-indent: calc(-1 * (var(--gutter, 0) * 1ch + 1.1rem)); }
+  /* text-indent is inherited, so without a reset here the negative indent
+     above applies a second time inside the lineno's own box — an
+     inline-block starts a new block container, so this is not automatic —
+     pushing its digits past the pane's clipped edge. The explicit width
+     matters too: an auto-width inline-block's shrink-to-fit sizing breaks
+     under a negative ancestor indent and resolves to 0. */
+  .source.wrap .lineno { width: calc(var(--gutter, 0) * 1ch); text-indent: 0; }
+  /* A small glyph in the gutter at the start of each visual row a wrapped
+     line continues onto (not the line's first row) — the same spot a line
+     number sits, so a reader scanning the gutter isn't surprised by text
+     that isn't where the line count suggested it would be. Positioned per
+     row by WRAP_JS, since that depends on the pane's rendered width.
+     Generated content, so it never ends up in a copy-pasted selection. */
+  .wrap-tick {
+    position: absolute; left: 0.9rem; width: 1em; text-indent: 0; color: var(--ink-faint);
+    font-family: var(--mono); line-height: 1; user-select: none; pointer-events: none;
   }
+  .wrap-tick::before { content: "↳"; }
   .source .line.hl { background: rgba(230,160,0,0.12); }
   .source .line.diff-add { background: var(--add-bg); }
   .source .line.diff-del { background: var(--del-bg); }
@@ -565,13 +574,13 @@ export const GAP_JS = `
 `;
 
 /**
- * Marks each wrapped line of a markdown pane with how many extra visual
- * rows it wraps to (.wrap-badge). Wrapping depends on the pane's rendered
- * width, so panes are watched with a ResizeObserver rather than measured
- * once — a window resize or newly expanded gap both change it. Panels are
- * cloned into the page at runtime (nav clicks, restored history), so new
- * panes are picked up via a MutationObserver rather than a one-time
- * querySelectorAll at load.
+ * Marks each visual row a wrapped line of a markdown pane continues onto
+ * with a small tick (.wrap-tick) at its start. Wrapping depends on the
+ * pane's rendered width, so panes are watched with a ResizeObserver rather
+ * than measured once — a window resize or newly expanded gap both change
+ * it. Panels are cloned into the page at runtime (nav clicks, restored
+ * history), so new panes are picked up via a MutationObserver rather than
+ * a one-time querySelectorAll at load.
  */
 export const WRAP_JS = `
   function markWraps(pre) {
@@ -581,14 +590,15 @@ export const WRAP_JS = `
     var lines = pre.querySelectorAll(".line");
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
-      var badge = line.querySelector(".wrap-badge");
-      if (badge) badge.remove();
-      var extra = Math.round(line.getBoundingClientRect().height / lineHeight) - 1;
-      if (extra <= 0) continue;
-      var mark = document.createElement("span");
-      mark.className = "wrap-badge";
-      mark.dataset.extra = String(extra);
-      line.appendChild(mark);
+      var ticks = line.querySelectorAll(".wrap-tick");
+      for (var t = 0; t < ticks.length; t++) ticks[t].remove();
+      var rows = Math.round(line.getBoundingClientRect().height / lineHeight);
+      for (var r = 1; r < rows; r++) {
+        var tick = document.createElement("span");
+        tick.className = "wrap-tick";
+        tick.style.top = (r * lineHeight) + "px";
+        line.appendChild(tick);
+      }
     }
   }
   var wrapObserver = window.ResizeObserver
