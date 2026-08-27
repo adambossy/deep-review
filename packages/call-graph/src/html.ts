@@ -443,7 +443,12 @@ export const CSS = `
      row by WRAP_JS, since that depends on the pane's rendered width.
      Generated content, so it never ends up in a copy-pasted selection. */
   .wrap-tick {
-    position: absolute; left: 0.9rem; width: calc(var(--gutter, 0) * 1ch); text-align: center;
+    /* The line numbers are right-padded (padStart), so a single-digit
+       number sits flush against the gutter's right edge, not centered in
+       it — matching that (rather than centering in the full gutter width)
+       is what actually lines the tick up with the numbers above and
+       below it. */
+    position: absolute; left: 0.9rem; width: calc(var(--gutter, 0) * 1ch); text-align: right;
     text-indent: 0; color: var(--ink-faint); font-family: var(--mono); line-height: 1;
     user-select: none; pointer-events: none;
   }
