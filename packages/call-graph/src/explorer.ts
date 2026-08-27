@@ -9,6 +9,7 @@ import {
   pageHeader,
   presenceBadge,
   SCOPE_JS,
+  WRAP_JS,
   type Decorations,
   type FileEntry,
   type FileIndex,
@@ -755,6 +756,7 @@ ${pageHeader(result)}
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
+${WRAP_JS}
 ${SCOPE_JS}
 ${EXPLORER_NAV_JS}
 initExplorer(document.body, JSON.parse(document.getElementById("node-names").textContent));

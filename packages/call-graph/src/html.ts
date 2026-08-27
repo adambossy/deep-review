@@ -422,6 +422,22 @@ export const CSS = `
   pre.source { overflow-x: auto; background: var(--panel); border: 1px solid var(--line-c); border-radius: 8px; padding: 0.35rem 0; margin: 0.5rem 0 0.2rem; line-height: 1.65; font-family: var(--mono); font-size: 0.78rem; }
   .source .line { display: block; padding: 0 0.9rem; }
   .source .lineno { display: inline-block; color: var(--ink-faint); margin-right: 1.1rem; user-select: none; white-space: pre; }
+  /* Markdown panes: wrap long lines instead of scrolling, with a hanging
+     indent so wrapped text lines up under the content column rather than
+     the gutter — the --gutter custom property (digit width of the
+     line-number column) is set per pane since it varies with the file's
+     line count. */
+  pre.source.wrap { white-space: pre-wrap; overflow-x: hidden; }
+  .source.wrap .line { overflow-wrap: anywhere; padding-left: calc(0.9rem + var(--gutter, 0) * 1ch + 1.1rem); text-indent: calc(-1 * (var(--gutter, 0) * 1ch + 1.1rem)); }
+  /* Marks a wrapped line with how many extra visual rows it took, so a
+     reader scanning the gutter isn't surprised by text that isn't where a
+     line count suggested it would be. Generated content so it never ends
+     up in a copy-pasted selection. */
+  .wrap-badge { display: inline-block; margin-left: 0.4em; user-select: none; }
+  .wrap-badge::before {
+    content: "↳+" attr(data-extra); font-size: 0.68em; color: var(--ink-faint);
+    background: var(--panel-2); border-radius: 999px; padding: 0.05em 0.5em;
+  }
   .source .line.hl { background: rgba(230,160,0,0.12); }
   .source .line.diff-add { background: var(--add-bg); }
   .source .line.diff-del { background: var(--del-bg); }
@@ -544,7 +560,58 @@ export const GAP_JS = `
     gap.dataset.to = String(to);
     gap.innerHTML = gapInner(file, from, to);
     if (window.updateScopeBars) updateScopeBars(gap.closest(".panel, .col") || document);
+    if (window.markWraps) markWraps(gap.closest("pre.source.wrap"));
   });
+`;
+
+/**
+ * Marks each wrapped line of a markdown pane with how many extra visual
+ * rows it wraps to (.wrap-badge). Wrapping depends on the pane's rendered
+ * width, so panes are watched with a ResizeObserver rather than measured
+ * once — a window resize or newly expanded gap both change it. Panels are
+ * cloned into the page at runtime (nav clicks, restored history), so new
+ * panes are picked up via a MutationObserver rather than a one-time
+ * querySelectorAll at load.
+ */
+export const WRAP_JS = `
+  function markWraps(pre) {
+    if (!pre) return;
+    var lineHeight = parseFloat(getComputedStyle(pre).lineHeight);
+    if (!lineHeight) return;
+    var lines = pre.querySelectorAll(".line");
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var badge = line.querySelector(".wrap-badge");
+      if (badge) badge.remove();
+      var extra = Math.round(line.getBoundingClientRect().height / lineHeight) - 1;
+      if (extra <= 0) continue;
+      var mark = document.createElement("span");
+      mark.className = "wrap-badge";
+      mark.dataset.extra = String(extra);
+      line.appendChild(mark);
+    }
+  }
+  var wrapObserver = window.ResizeObserver
+    ? new ResizeObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) markWraps(entries[i].target);
+      })
+    : null;
+  function watchWraps(root) {
+    var pres = root.matches && root.matches("pre.source.wrap") ? [root] : root.querySelectorAll("pre.source.wrap");
+    for (var i = 0; i < pres.length; i++) {
+      if (wrapObserver) wrapObserver.observe(pres[i]);
+      else markWraps(pres[i]);
+    }
+  }
+  watchWraps(document);
+  new MutationObserver(function (mutations) {
+    for (var m = 0; m < mutations.length; m++) {
+      var added = mutations[m].addedNodes;
+      for (var n = 0; n < added.length; n++) {
+        if (added[n].nodeType === 1) watchWraps(added[n]);
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
 `;
 
 /**
@@ -691,6 +758,7 @@ ${renderGroup("Callees", "callees", result.callees, index)}
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
+${WRAP_JS}
 ${SCOPE_JS}
   for (const button of document.querySelectorAll('.controls button[data-view]')) {
     button.addEventListener("click", () => {
@@ -917,6 +985,7 @@ ${pageHeader(result)}
 ${dataScripts(result, index)}
 <script>
 ${GAP_JS}
+${WRAP_JS}
 ${SCOPE_JS}
   var cols = document.querySelector(".cols");
   var railRight = document.querySelector(".rail-right");

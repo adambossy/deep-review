@@ -2,7 +2,7 @@ import { EXPLORER_CSS, EXPLORER_NAV_JS, renderPanel } from "./explorer.js";
 import { renderCodePane } from "./codePane.js";
 import { fragmentDiffRows } from "./diffView.js";
 import { escapeHtml as esc, languageOf } from "./highlight.js";
-import { buildFileIndex, CSS, GAP_JS, renderDataBlob, SCOPE_JS, type FileIndex } from "./html.js";
+import { buildFileIndex, CSS, GAP_JS, renderDataBlob, SCOPE_JS, WRAP_JS, type FileIndex } from "./html.js";
 
 export { fileBlockRanges } from "./diffView.js";
 import type { CallPathResult, EmbeddedFile } from "./types.js";
@@ -546,6 +546,7 @@ ${input.debugMarks ? DEBUG_MARKS_LEGEND : ""}
 <script type="application/json" id="render-data">${renderDataBlob(index)}</script>
 <script>
 ${GAP_JS}
+${WRAP_JS}
 ${SCOPE_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}

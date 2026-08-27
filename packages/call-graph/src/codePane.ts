@@ -40,6 +40,8 @@ export interface CodePaneInput {
   debug?: boolean | undefined;
 }
 
+const MARKDOWN_FILE = /\.mdx?$/i;
+
 /** "packages/x/retry.ts" → dimmed directory, bold basename. */
 function pathHtml(file: string): string {
   const cut = file.lastIndexOf("/") + 1;
@@ -77,7 +79,11 @@ export function renderCodePane(input: CodePaneInput): string {
   const paneAttrs = navigable
     ? ` data-file="${esc(navigable.file ?? file)}" data-side="${navigable.side}"`
     : "";
+  // Code wraps only for prose (markdown): a code line's indentation and
+  // column alignment are meaningful, so it keeps its horizontal scroll.
+  const wrap = MARKDOWN_FILE.test(file);
+  const preAttrs = wrap ? ` data-w="${width}" style="--gutter:${width}"` : ` data-w="${width}"`;
   return `<div class="code-pane"${paneAttrs}><div class="scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><span class="scope-path">${pathHtml(
     file,
-  )}</span><span class="scope-sym">${label}</span>${statHtml(rows)}</div><pre class="source" data-w="${width}">${body}</pre></div>`;
+  )}</span><span class="scope-sym">${label}</span>${statHtml(rows)}</div><pre class="source${wrap ? " wrap" : ""}"${preAttrs}>${body}</pre></div>`;
 }
