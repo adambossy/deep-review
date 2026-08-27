@@ -338,6 +338,7 @@ export class LspBackend implements LanguageBackend {
     const client = await this.start();
     const item = await this.prepare(decl);
     if (!item) return null;
+    await client.whenIdle();
 
     const [incoming, outgoing] = await Promise.all([
       client.request<Array<{ from: LspCallHierarchyItem; fromRanges: LspRange[] }> | null>(
@@ -517,6 +518,9 @@ export class LspBackend implements LanguageBackend {
     const client = await this.start();
     const item = await this.prepare(ref);
     if (!item) return null;
+    // Cross-file: only sees callers in files pyright's background scan has
+    // reached, so a query racing that scan can under-report real callers.
+    await client.whenIdle();
     const incoming = await client.request<Array<{ from: LspCallHierarchyItem; fromRanges: LspRange[] }> | null>(
       "callHierarchy/incomingCalls",
       { item },
@@ -532,6 +536,8 @@ export class LspBackend implements LanguageBackend {
   async referencesAt(ref: DeclRef): Promise<IncomingReference[]> {
     const client = await this.start();
     await this.open(client, ref.fileName);
+    // Cross-file, same as incomingCallsAt above: wait out the background scan.
+    await client.whenIdle();
     const locations = await client.request<LspLocation[] | null>("textDocument/references", {
       textDocument: { uri: pathToFileURL(ref.fileName).href },
       position: { line: ref.line - 1, character: ref.column },
