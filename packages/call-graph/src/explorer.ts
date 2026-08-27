@@ -342,6 +342,18 @@ function navFetch(url) {
     .then(function (r) { return r.ok ? r.json() : null; })
     .catch(function () { return null; });
 }
+/* Like navFetch, but tells the caller whether the round trip actually
+   reached the server: a hiccup (dropped connection, bad status) is not the
+   same as the server answering "no definition here", and a caller that
+   caches its result must not confuse the two — a hiccup should be retried,
+   not remembered as a permanent miss. */
+function navFetchTried(url) {
+  if (location.protocol !== "http:" && location.protocol !== "https:") return Promise.resolve({ ok: true, data: null });
+  return fetch(url, { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error("bad status"); return r.json(); })
+    .then(function (data) { return { ok: true, data: data }; })
+    .catch(function () { return { ok: false, data: null }; });
+}
 /* Let the server go when the page does. A reload fires this too — and the
    browser fetches the new page *before* the old one hears it is leaving, so
    the server waits a moment for the new page to say hello before taking the
@@ -394,7 +406,9 @@ function resolveSpan(span) {
   var at = positionOf(span);
   if (!at || at.side !== "after") return Promise.resolve(null);
   var url = "/definition?file=" + encodeURIComponent(at.file) + "&line=" + at.line + "&col=" + at.column;
-  return navFetch(url).then(function (answer) {
+  return navFetchTried(url).then(function (tried) {
+    if (!tried.ok) return null; /* a hiccup, not an answer — leave the span unresolved so the next click retries */
+    var answer = tried.data;
     var hit = answer && answer.id ? answer : null;
     span.dataset.nav = hit ? JSON.stringify(hit) : "";
     if (hit) {
@@ -517,18 +531,28 @@ function initExplorer(root, NAMES, onNavigate) {
       var pin = nodeAt(0) === "__slice__" ? 1 : 0;
       var oldSlot = fromIndex - pos;
       while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
+      /* Normally the tapped panel is still sitting at pin, ready to be
+         pushed right as the new caller's pair partner. The one time nothing
+         is there — walking up for the very first time, straight from the
+         pinned slice — there's nothing to its right yet; pair it with the
+         slice on the left instead of leaving the other half of the deck
+         blank. */
+      var hasPartner = !!track.children[pin];
       track.insertBefore(panel, track.children[pin] || null);
       freshCaller = true;
+      var showAt = hasPartner ? pin : Math.max(0, pin - 1);
       if (oldSlot <= 0) {
-        setPos(pin + 1, false);
-        setPos(pin, true);
+        setPos(showAt + 1, false);
+        setPos(showAt, true);
       } else {
-        setPos(pin, false);
+        setPos(showAt, false);
       }
       return panel;
     });
   }
+  var linkGen = 0;
   function clearLinks() {
+    linkGen++;
     var old = root.querySelectorAll(".sym-link");
     for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
   }
@@ -568,13 +592,22 @@ function initExplorer(root, NAMES, onNavigate) {
   }
   /* A symbol whose declaration is already on screen in the same pane: light
      up the pair in place rather than opening a panel for what the reader can
-     see. No scroll — moving the pane would defeat the point. */
-  function linkInPlace(link, decl) {
+     see. No scroll — moving the pane would defeat the point. Sibling uses
+     may still be plain, un-clicked id spans with no resolved position of
+     their own, so the full set comes from the server rather than the DOM. */
+  function linkInPlace(link, decl, defId) {
     clearLinks();
+    var gen = linkGen;
     var scope = link.closest(".panel") || root;
-    var uses = scope.querySelectorAll('.sym[data-def="' + esc1(link.dataset.def) + '"]');
-    for (var u = 0; u < uses.length; u++) uses[u].classList.add("sym-link");
     decl.classList.add("sym-link");
+    navFetch("/references?id=" + encodeURIComponent(defId)).then(function (refs) {
+      if (!refs || gen !== linkGen) return;
+      for (var r = 0; r < refs.sites.length; r++) {
+        var site = refs.sites[r];
+        var span = spanAt(scope, site.file, site.line, site.startColumn);
+        if (span) span.classList.add("sym-link");
+      }
+    });
   }
   /* Every action that lands the viewport on a particular node — walking,
      or just paging the rail to reveal one already on the track — reports
@@ -593,7 +626,7 @@ function initExplorer(root, NAMES, onNavigate) {
      itself has nowhere to go. */
   function openDefinition(link, panel, i, answer) {
     var decl = spanAt(panel, answer.decl.file, answer.decl.line, answer.decl.column);
-    if (decl && inView(panel, decl)) { linkInPlace(link, decl); return; }
+    if (decl && inView(panel, decl)) { linkInPlace(link, decl, answer.id); return; }
     if (answer.self) return;
     walkDown(answer.panelId, i).then(function (dest) {
       if (!dest) return;

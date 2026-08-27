@@ -85,5 +85,5 @@ export function renderCodePane(input: CodePaneInput): string {
   const preAttrs = wrap ? ` data-w="${width}" style="--gutter:${width}"` : ` data-w="${width}"`;
   return `<div class="code-pane"${paneAttrs}><div class="scope-bar"${entry ? ` data-key="${esc(entry.key)}"` : ""}><span class="scope-path">${pathHtml(
     file,
-  )}</span><span class="scope-sym">${label}</span>${statHtml(rows)}</div><pre class="source${wrap ? " wrap" : ""}"${preAttrs}>${body}</pre></div>`;
+  )}</span><span class="scope-sym">${label}</span>${statHtml(rows)}</div><pre class="source${wrap ? " wrap" : ""}"${preAttrs}><span class="lines">${body}</span></pre></div>`;
 }

@@ -182,7 +182,7 @@ export function renderCodeBlock(segments: SourceSegment[], opts: BlockOptions): 
   if (gaps && entry && previousEnd < entry.lines.length) {
     rows.push(gapRow(entry, previousEnd + 1, entry.lines.length));
   }
-  return `<pre class="source" data-w="${width}">${rows.join("")}</pre>`;
+  return `<pre class="source" data-w="${width}"><span class="lines">${rows.join("")}</span></pre>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +420,13 @@ export const CSS = `
   .loc { color: var(--ink-faint); font-size: 0.8em; }
   .missing { color: var(--ink-faint); font-style: italic; }
   pre.source { overflow-x: auto; background: var(--panel); border: 1px solid var(--line-c); border-radius: 8px; padding: 0.35rem 0; margin: 0.5rem 0 0.2rem; line-height: 1.65; font-family: var(--mono); font-size: 0.78rem; }
+  /* Row backgrounds (diff tint, highlight, focus edge) must reach past the
+     visible edge into the horizontally-scrolled part of a long line. The
+     pre scrolls its content but stays the pane's width, so a row sized to
+     it (100%) only covers what's on screen at load. .lines shrink-wraps
+     to the widest row instead (inline-block, floored at 100%), and each
+     block-level row then fills that — the true scrollable width. */
+  .source .lines { display: inline-block; min-width: 100%; }
   .source .line { display: block; padding: 0 0.9rem; }
   .source .lineno { display: inline-block; color: var(--ink-faint); margin-right: 1.1rem; user-select: none; white-space: pre; }
   /* Markdown panes: wrap long lines instead of scrolling, with a hanging

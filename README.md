@@ -4,6 +4,28 @@ A full-stack TypeScript tool for code review.
 
 Project vocabulary lives in [CONTEXT.md](./CONTEXT.md).
 
+## Quick start
+
+```sh
+pnpm install
+pnpm dev        # server on :3001, web on :5173
+```
+
+Then, to view a PR in the slice explorer — the tool's primary interface,
+stacking slices vertically and each slice's call graph horizontally — run it
+against any GitHub PR URL:
+
+```sh
+export OPENAI_API_KEY=...   # or ANTHROPIC_API_KEY / GROK_API_KEY, see below
+pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
+```
+
+This slices the PR with an agent, walks a call graph from each slice's
+target function, and opens the rendered report (`review-<repo>-pr<n>.html`)
+in your browser. See [The slice explorer](#the-slice-explorer) below for
+options, and [PR slicing](#pr-slicing) for the environment variables it
+needs.
+
 ## Structure
 
 - `apps/server` — [Hono](https://hono.dev) API on Node. Reviews and findings, backed by an in-memory store (swap in a database via `src/store.ts`).
