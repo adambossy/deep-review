@@ -645,10 +645,12 @@ export const WRAP_JS = `
  */
 export const SCOPE_JS = `
   /* Head line of the first row not scrolled under the bar: binary search
-     over the pre's children (rows and gaps, in document order). */
+     over the rows and gaps, in document order. Rows sit inside .lines (an
+     inline-block wrapper so a row's background can span a horizontally-
+     scrolled line's full width) rather than directly under the pre. */
   function firstVisibleLine(bar, pre) {
     var limit = bar.getBoundingClientRect().bottom;
-    var kids = pre.children, lo = 0, hi = kids.length - 1, found = -1;
+    var kids = (pre.querySelector(".lines") || pre).children, lo = 0, hi = kids.length - 1, found = -1;
     while (lo <= hi) {
       var mid = (lo + hi) >> 1;
       if (kids[mid].getBoundingClientRect().bottom > limit) { found = mid; hi = mid - 1; }
