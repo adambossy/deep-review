@@ -470,8 +470,8 @@ export const CSS = `
   .scope-bar .plus { color: var(--add-edge); }
   .scope-bar .minus { color: var(--del-edge); margin-left: 0.4rem; }
   .code-pane > pre.source { margin: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
-  .gap-btns { display: inline-flex; gap: 2px; }
-  .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.7rem; padding: 0.05rem 0.3rem; border-radius: 4px; }
+  .gap-btns { display: inline-flex; align-items: center; gap: 2px; }
+  .gap-btn { border: none; background: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 0.7rem; line-height: 1; padding: 0.05rem 0.3rem; border-radius: 4px; }
   .gap-btn:hover { background: var(--accent-soft); }
   .gap-count { color: var(--ink-faint); }
   .gap-crumb { color: var(--ink-soft); font-family: var(--mono); margin-left: auto; }
