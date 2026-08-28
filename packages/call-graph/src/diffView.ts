@@ -244,10 +244,12 @@ export function segmentRows(segments: readonly SourceSegment[], hunks: DiffHunk[
 }
 
 /**
- * GitHub's within-line highlighting: a run of removed lines immediately
- * followed by an equally long run of added lines pairs up 1:1, and the words
- * that differ inside each pair are marked. Runs of different length, or a
- * pair with nothing in common, get no inner marks — the whole line changed.
+ * GitHub's within-line highlighting: a run of removed lines is paired up
+ * with the run of added lines that follows it, and the words that differ
+ * inside each pair are marked. Equal-length runs pair by position, the way
+ * GitHub does; runs of different length — one line rewritten as a paragraph,
+ * say — pair by how much the lines share, so the one line that really was
+ * edited still gets marked.
  */
 export function markIntraLine(rows: DiffRow[]): void {
   let i = 0;
@@ -260,19 +262,88 @@ export function markIntraLine(rows: DiffRow[]): void {
     while (j < rows.length && rows[j]!.kind === "del") j++;
     let k = j;
     while (k < rows.length && rows[k]!.kind === "add") k++;
-    if (j - i === k - j) {
-      for (let p = 0; p < j - i; p++) {
-        const del = rows[i + p] as Extract<DiffRow, { kind: "del" }>;
-        const add = rows[j + p] as Extract<DiffRow, { kind: "add" }>;
-        const marks = intraLineMarks(del.text, add.text);
-        if (marks) {
-          del.marks = marks.del;
-          add.marks = marks.add;
-        }
+    const dels = rows.slice(i, j) as Array<Extract<DiffRow, { kind: "del" }>>;
+    const adds = rows.slice(j, k) as Array<Extract<DiffRow, { kind: "add" }>>;
+    for (const [d, a] of pairLines(dels.map((r) => r.text), adds.map((r) => r.text))) {
+      const del = dels[d]!;
+      const add = adds[a]!;
+      const marks = intraLineMarks(del.text, add.text);
+      if (marks) {
+        del.marks = marks.del;
+        add.marks = marks.add;
       }
     }
     i = k;
   }
+}
+
+/**
+ * Below this shared fraction, two lines of an uneven run are different lines
+ * rather than an edit of one. Only uneven runs are judged: within an even
+ * run, position already says which line became which.
+ */
+const MIN_SIMILARITY = 0.25;
+
+/** Word-diffing every candidate pair is quadratic; past this a run pairs by position or not at all. */
+const MAX_PAIRS = 400;
+
+/**
+ * Which removed line became which added line: position when the runs match
+ * in length, otherwise the non-crossing pairing that shares the most words
+ * overall, ignoring pairs too dissimilar to be an edit. Returned as
+ * `[removed index, added index]` in top-to-bottom order.
+ */
+function pairLines(dels: readonly string[], adds: readonly string[]): Array<[number, number]> {
+  const m = dels.length;
+  const n = adds.length;
+  if (!m || !n) return [];
+  if (m === n || m * n > MAX_PAIRS) {
+    return m === n ? dels.map((_, p): [number, number] => [p, p]) : [];
+  }
+
+  const shared = dels.map((del) => adds.map((add) => similarity(del, add)));
+  // best[d][a]: the most words the first d removed and first a added lines
+  // can share. Skipping a line on either side is always allowed, so a run
+  // of one against a run of three still finds its one real pair.
+  const best: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+  for (let d = 1; d <= m; d++) {
+    for (let a = 1; a <= n; a++) {
+      const pair = shared[d - 1]![a - 1]!;
+      best[d]![a] = Math.max(
+        best[d - 1]![a]!,
+        best[d]![a - 1]!,
+        pair >= MIN_SIMILARITY ? best[d - 1]![a - 1]! + pair : 0,
+      );
+    }
+  }
+  const pairs: Array<[number, number]> = [];
+  let d = m;
+  let a = n;
+  while (d > 0 && a > 0) {
+    const pair = shared[d - 1]![a - 1]!;
+    if (pair >= MIN_SIMILARITY && best[d]![a] === best[d - 1]![a - 1]! + pair) {
+      pairs.push([d - 1, a - 1]);
+      d--;
+      a--;
+    } else if (best[d - 1]![a]! >= best[d]![a - 1]!) d--;
+    else a--;
+  }
+  return pairs.reverse();
+}
+
+/** Words two lines share, as a fraction of the wordier one. Whitespace counts for nothing. */
+function similarity(before: string, after: string): number {
+  const total = Math.max(weight(before), weight(after));
+  if (!total) return 0;
+  let common = 0;
+  for (const change of diffWordsWithSpace(before, after)) {
+    if (!change.added && !change.removed) common += weight(change.value);
+  }
+  return common / total;
+}
+
+function weight(text: string): number {
+  return text.replace(/\s+/g, "").length;
 }
 
 function intraLineMarks(before: string, after: string): { del: Mark[]; add: Mark[] } | null {
@@ -296,7 +367,22 @@ function intraLineMarks(before: string, after: string): { del: Mark[]; add: Mark
       a += len;
     }
   }
-  return { del, add };
+  return { del: joinAcrossSpaces(del, before), add: joinAcrossSpaces(add, after) };
+}
+
+/**
+ * One highlight per changed phrase, not one per changed word: neighbouring
+ * marks with nothing but whitespace between them become a single mark, so a
+ * rewritten phrase reads as one continuous band instead of a row of boxes.
+ */
+function joinAcrossSpaces(marks: readonly Mark[], text: string): Mark[] {
+  const out: Mark[] = [];
+  for (const mark of marks) {
+    const last = out[out.length - 1];
+    if (last && !text.slice(last.end, mark.start).trim()) last.end = mark.end;
+    else out.push({ ...mark });
+  }
+  return out;
 }
 
 export interface DiffRenderOptions {

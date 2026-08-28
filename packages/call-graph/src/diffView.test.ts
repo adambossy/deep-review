@@ -9,6 +9,7 @@ import {
   segmentRows,
   type DiffRow,
 } from "./diffView.js";
+import type { Mark } from "./highlight.js";
 import { buildFileIndex } from "./html.js";
 import type { DiffHunk } from "./types.js";
 
@@ -139,20 +140,45 @@ describe("markIntraLine", () => {
     expect((rows[3] as { marks?: unknown }).marks).toEqual([{ start: 8, end: 13, cls: "diff-add-inner" }]);
   });
 
-  it("marks nothing for unequal runs or a rewritten line", () => {
-    const unequal: DiffRow[] = [
-      { kind: "del", text: "a" },
-      { kind: "del", text: "b" },
-      { kind: "add", n: 1, text: "a2" },
+  it("pairs across unequal runs, leaving the lines with nothing in common unmarked", () => {
+    const rows: DiffRow[] = [
+      { kind: "del", text: "the quick brown fox jumps over it" },
+      { kind: "add", n: 1, text: "the quick red fox jumps over it" },
+      { kind: "add", n: 2, text: "" },
+      { kind: "add", n: 3, text: "an unrelated sentence entirely" },
     ];
-    markIntraLine(unequal);
-    expect(unequal.every((r) => !("marks" in r && r.marks))).toBe(true);
+    markIntraLine(rows);
+    expect((rows[0] as { marks?: unknown }).marks).toEqual([{ start: 10, end: 15, cls: "diff-del-inner" }]);
+    expect((rows[1] as { marks?: unknown }).marks).toEqual([{ start: 10, end: 13, cls: "diff-add-inner" }]);
+    expect((rows[2] as { marks?: unknown }).marks).toBeUndefined();
+    expect((rows[3] as { marks?: unknown }).marks).toBeUndefined();
+  });
+
+  it("marks nothing for a rewritten line", () => {
     const rewritten: DiffRow[] = [
       { kind: "del", text: "return foo;" },
       { kind: "add", n: 1, text: "throw bar()" },
     ];
     markIntraLine(rewritten);
     expect(rewritten.every((r) => !("marks" in r && r.marks))).toBe(true);
+  });
+
+  it("joins marks separated only by whitespace into one band", () => {
+    const del = "- pickup: outbound calls without an event";
+    const add = "- pickup: see the outcomes listed below";
+    const rows: DiffRow[] = [
+      { kind: "del", text: del },
+      { kind: "add", n: 1, text: add },
+    ];
+    markIntraLine(rows);
+    // Word-for-word replacement leaves the spaces between unchanged; one
+    // band must cover the whole rewritten phrase, spaces included.
+    expect((rows[0] as { marks?: Mark[] }).marks).toEqual([
+      { start: del.indexOf("outbound"), end: del.length, cls: "diff-del-inner" },
+    ]);
+    expect((rows[1] as { marks?: Mark[] }).marks).toEqual([
+      { start: add.indexOf("see"), end: add.length, cls: "diff-add-inner" },
+    ]);
   });
 });
 
