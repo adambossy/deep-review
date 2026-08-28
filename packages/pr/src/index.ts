@@ -1,4 +1,4 @@
-export { parsePrUrl, type PrRef } from "./prUrl.js";
+export { parsePrTarget, parsePrUrl, prUrl, type PrRef } from "./prUrl.js";
 export { fetchPrInfo, type PrInfo } from "./github.js";
 export {
   parseUnifiedDiff,

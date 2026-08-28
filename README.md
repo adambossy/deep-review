@@ -196,6 +196,14 @@ writes that copy and exits. Reuse a previous slicing run with
 iterating on the page itself; `scripts/rerender.sh` wraps it for a batch of
 saved reports.
 
+In place of the URL you can pass just the PR number, as long as something
+names the repo it belongs to — `--repo <owner>/<repo>`, or the
+`DEEP_REVIEW_REPO` environment variable:
+
+```sh
+pnpm --filter @deep-review/review cli 2950 --repo vercel/swr
+```
+
 Vertically, scrolling inside a slice behaves normally until its content runs
 out; pushing past the bottom carries you to the next slice, past the top to
 the previous one, landing at the edge you were heading toward so the motion
