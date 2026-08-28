@@ -3,6 +3,7 @@ import { existsSync, fstatSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import { renderSliceExplorerHtml } from "@deep-review/call-graph";
+import { parsePrTarget, prUrl } from "@deep-review/pr";
 import {
   apiKeyEnvVars,
   DEFAULT_MODEL,
@@ -15,7 +16,7 @@ import {
 import { buildSliceExplorerInput } from "./build.js";
 import { serveExplorer } from "./serve.js";
 
-const USAGE = `Usage: pr-review <pr-url> [options]
+const USAGE = `Usage: pr-review <pr-url|pr-number> [options]
 
 Slices a PR, then renders it as a two-axis explorer: slices stacked
 vertically in priority order, each slice's call graph walkable horizontally
@@ -23,6 +24,7 @@ from the symbols in its diff. Serves the page from a local server that
 answers symbol clicks from the language services; Ctrl-C stops it.
 
 Options:
+  --repo <owner/repo>  Repo a bare PR number refers to (default: $DEEP_REVIEW_REPO)
   --slices <file>   Reuse a saved slice JSON instead of running the agent
   --save <file>     Also write the slice JSON from this run
   --out <file>      Also write the page here as a static copy (navigation inert)
@@ -40,11 +42,13 @@ Environment:
   ANTHROPIC_API_KEY  Required for claude-* models.
   GROK_API_KEY       Required for grok-* models.
   GITHUB_TOKEN       Needed for private repos.
+  DEEP_REVIEW_REPO   <owner>/<repo> a bare PR number refers to.
   LINEAR_API_KEY     Optional; enables linked-ticket context.
 
 Examples:
   pr-review https://github.com/vercel/swr/pull/2950
-  pr-review https://github.com/vercel/swr/pull/2950 --slices slices.json`;
+  pr-review https://github.com/vercel/swr/pull/2950 --slices slices.json
+  pr-review 2950 --repo vercel/swr`;
 
 function stdinIsPipe(): boolean {
   try {
@@ -73,6 +77,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       out: { type: "string" },
+      repo: { type: "string" },
       slices: { type: "string" },
       save: { type: "string" },
       "max-graphs": { type: "string" },
@@ -87,10 +92,23 @@ async function main(): Promise<void> {
     },
   });
 
-  const [prUrl] = positionals;
-  if (values.help || (!prUrl && !values.slices)) {
+  const [prTarget] = positionals;
+  if (values.help || (!prTarget && !values.slices)) {
     console.log(USAGE);
     process.exit(values.help ? 0 : 1);
+  }
+
+  // A bare PR number is only meaningful once a repo names it.
+  let prUrlArg: string | undefined;
+  if (prTarget) {
+    try {
+      prUrlArg = prUrl(
+        parsePrTarget(prTarget, values.repo ?? process.env.DEEP_REVIEW_REPO),
+      );
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
   }
 
   const log = values.quiet ? () => {} : (m: string) => console.error(m);
@@ -128,7 +146,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const report = await slicePr({
-      prUrl: prUrl!,
+      prUrl: prUrlArg!,
       ...(workDir ? { workDir } : {}),
       ...(values.model ? { model: values.model } : {}),
       ...(values.quiet ? {} : { onProgress: log }),
