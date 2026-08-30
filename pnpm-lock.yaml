@@ -175,6 +175,9 @@ importers:
       '@deep-review/pr':
         specifier: workspace:*
         version: link:../pr
+      '@openrouter/ai-sdk-provider':
+        specifier: ^3.0.0
+        version: 3.0.0(ai@7.0.69(zod@3.25.76))(zod@3.25.76)
       ai:
         specifier: ^7.0.69
         version: 7.0.69(zod@3.25.76)
@@ -825,6 +828,13 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
+
+  '@openrouter/ai-sdk-provider@3.0.0':
+    resolution: {integrity: sha512-m9XTSWoODH2RM5OsZpaGiN7QRR8cdP5paBWq699Tu3JVmGPBKT8xF8XwV0ZBVVsjikD/JgWfak4VSsTR4wAVbg==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      ai: ^7.0.0
+      zod: ^3.25.76 || ^4.1.8
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -1953,6 +1963,11 @@ snapshots:
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
+
+  '@openrouter/ai-sdk-provider@3.0.0(ai@7.0.69(zod@3.25.76))(zod@3.25.76)':
+    dependencies:
+      ai: 7.0.69(zod@3.25.76)
+      zod: 3.25.76
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 

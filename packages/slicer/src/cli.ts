@@ -32,6 +32,7 @@ Environment:
   OPENAI_API_KEY     Required for the default model.
   ANTHROPIC_API_KEY  Required for claude-* models.
   GROK_API_KEY       Required for grok-* models.
+  OPENROUTER_API_KEY Required for glm-* models.
   GITHUB_TOKEN       Needed for private repos.
   LINEAR_API_KEY     Optional; enables linked-ticket context.
 

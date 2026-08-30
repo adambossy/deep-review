@@ -46,6 +46,7 @@ const MODELS = process.env.PROFILE_MODELS?.split(",") ?? [
   "claude-opus-5",
   "gpt-5.6-sol",
   "grok-4.6",
+  "glm-5.3",
 ];
 
 // grok-4.6 has been flaky about producing a diff-partitioning result; retry

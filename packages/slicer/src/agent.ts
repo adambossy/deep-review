@@ -1,6 +1,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { createXai } from "@ai-sdk/xai";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { isStepCount, Output, ToolLoopAgent } from "ai";
 import type { DiffIndex } from "./annotate.js";
 import { buildPrompt, buildRepairPrompt } from "./prompt.js";
@@ -20,7 +21,8 @@ const DEFAULT_EFFORT: ReasoningEffort = "xhigh";
  * Picks the AI SDK provider by model id prefix and, where the provider
  * supports it, sets its reasoning-effort knob. Each provider names this
  * option differently (`effort` for Anthropic, `reasoningEffort` for OpenAI
- * and xAI), so the mapping lives here rather than at call sites.
+ * and xAI, `reasoning.effort` for OpenRouter), so the mapping lives here
+ * rather than at call sites.
  */
 function resolveModel(modelId: string, effort?: ReasoningEffort) {
   if (modelId.startsWith("gpt-")) {
@@ -45,6 +47,15 @@ function resolveModel(modelId: string, effort?: ReasoningEffort) {
       providerOptions: effort ? { xai: { reasoningEffort: effort } } : undefined,
     };
   }
+  if (modelId.startsWith("glm-")) {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    const openrouter = createOpenRouter(apiKey ? { apiKey } : {});
+    return {
+      // Z.ai serves GLM models on OpenRouter under the `z-ai/` namespace.
+      model: openrouter(`z-ai/${modelId}`),
+      providerOptions: effort ? { openrouter: { reasoning: { effort } } } : undefined,
+    };
+  }
   return {
     model: anthropic(modelId),
     providerOptions: effort ? { anthropic: { effort } } : undefined,
@@ -58,6 +69,7 @@ function resolveModel(modelId: string, effort?: ReasoningEffort) {
 export function apiKeyEnvVars(modelId: string): string[] {
   if (modelId.startsWith("gpt-")) return ["OPENAI_API_KEY"];
   if (modelId.startsWith("grok-")) return ["XAI_API_KEY", "GROK_API_KEY"];
+  if (modelId.startsWith("glm-")) return ["OPENROUTER_API_KEY"];
   return ["ANTHROPIC_API_KEY"];
 }
 
