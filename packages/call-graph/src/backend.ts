@@ -20,6 +20,48 @@ export interface FunctionRelations {
   callees: RelationEntry[];
 }
 
+/** Where the symbol at a position is declared. */
+export interface DefinitionLocation {
+  /** Absolute path of the declaring file. */
+  fileName: string;
+  name: string;
+  /** Language-service kind: "function", "class", "variable", "parameter", … */
+  kind: string;
+  /** True when the declaration lies outside the checkout (dependency, stdlib). */
+  external: boolean;
+  /**
+   * True when the position asked about is this declaration's own name:
+   * nothing to navigate to, but still the symbol whose callers to list.
+   */
+  self: boolean;
+  /** Position of the declared name: 1-based line, 0-based columns. */
+  nameLine: number;
+  nameColumn: number;
+  nameEndColumn: number;
+  /** Full declaration extent, 1-based inclusive. */
+  startLine: number;
+  endLine: number;
+}
+
+/** The declaration a reference sits inside: a function/method, or failing that a class. */
+export interface EnclosingDeclaration extends DeclRef {
+  name: string;
+  kind: string;
+  startLine: number;
+  endLine: number;
+}
+
+/** One place a symbol is called from or referenced. */
+export interface IncomingReference {
+  fileName: string;
+  line: number;
+  startColumn: number;
+  endColumn: number;
+  snippet: string;
+  /** Null at module level. */
+  enclosing: EnclosingDeclaration | null;
+}
+
 /**
  * A language service the analysis can drive: the in-process TypeScript
  * service, or any LSP server that supports call hierarchy.
@@ -32,8 +74,24 @@ export interface LanguageBackend {
   relationsAt(decl: DeclRef): Promise<FunctionRelations | null>;
   /** Full-source snapshot of the function declared at `decl`. */
   snapshotAt(decl: DeclRef): Promise<FunctionSnapshot | null>;
-  /** Full line content + declared symbols of a repo-relative file. */
-  fileInfo(relativePath: string): Promise<{ lines: string[]; symbols: SymbolRange[] } | null>;
+  /**
+   * Full line content + declared symbols of a file: repo-relative, or
+   * absolute for a file outside the checkout (an external definition).
+   */
+  fileInfo(file: string): Promise<{ lines: string[]; symbols: SymbolRange[] } | null>;
+  /**
+   * Where the symbol at `ref` is declared; null when there is none. When
+   * `ref` is the declaration itself the answer is that declaration, flagged
+   * `self`.
+   */
+  definitionAt(ref: DeclRef): Promise<DefinitionLocation | null>;
+  /**
+   * Call sites of the callable declared at `ref`, via call hierarchy. Null
+   * when `ref` is not callable — the caller falls back to `referencesAt`.
+   */
+  incomingCallsAt(ref: DeclRef): Promise<IncomingReference[] | null>;
+  /** Every use of the symbol declared at `ref`, excluding the declaration. */
+  referencesAt(ref: DeclRef): Promise<IncomingReference[]>;
   dispose(): void;
 }
 

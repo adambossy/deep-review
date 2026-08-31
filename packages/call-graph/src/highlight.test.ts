@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderLine, tokenizeLines } from "./highlight.js";
+import { identifiersOf, renderLine, tokenizeLines } from "./highlight.js";
 
 function classesOf(lines: string[]): string[][] {
   return tokenizeLines(lines).map((tokens) => tokens.map((t) => t.cls));
@@ -47,6 +47,30 @@ describe("tokenizeLines (python)", () => {
     expect(classes[1]).toEqual(["str"]);
     expect(classes[2]![0]).toBe("str");
     expect(classes[2]).toContain("num");
+  });
+});
+
+describe("identifiersOf", () => {
+  it("reports every plain identifier with columns, skipping keywords and literals", () => {
+    const [ids] = identifiersOf(['const total = compute(items, 42, "str x"); // note y']);
+    expect(ids!.map((t) => [t.text, t.start, t.end])).toEqual([
+      ["total", 6, 11],
+      ["compute", 14, 21],
+      ["items", 22, 27],
+    ]);
+  });
+
+  it("excludes words inside strings and comments carried across lines", () => {
+    const ids = identifiersOf(["/* skip me", "still skipped */ keep(this_one)"]);
+    expect(ids[0]).toEqual([]);
+    expect(ids[1]!.map((t) => t.text)).toEqual(["keep", "this_one"]);
+  });
+
+  it("handles Python self.attr and TS #private names", () => {
+    const [py] = identifiersOf(["return self.value + other  # trailing"], "py");
+    expect(py!.map((t) => t.text)).toEqual(["value", "other"]);
+    const [ts] = identifiersOf(["this.#calc(1)"]);
+    expect(ts!.map((t) => t.text)).toEqual(["#calc"]);
   });
 });
 

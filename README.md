@@ -4,6 +4,28 @@ A full-stack TypeScript tool for code review.
 
 Project vocabulary lives in [CONTEXT.md](./CONTEXT.md).
 
+## Quick start
+
+```sh
+pnpm install
+pnpm dev        # server on :3001, web on :5173
+```
+
+Then, to view a PR in the slice explorer — the tool's primary interface,
+stacking slices vertically and each slice's call graph horizontally — run it
+against any GitHub PR URL:
+
+```sh
+export OPENAI_API_KEY=...   # or ANTHROPIC_API_KEY / GROK_API_KEY, see below
+pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
+```
+
+This slices the PR with an agent, walks a call graph from each slice's
+target function, and opens the rendered report (`review-<repo>-pr<n>.html`)
+in your browser. See [The slice explorer](#the-slice-explorer) below for
+options, and [PR slicing](#pr-slicing) for the environment variables it
+needs.
+
 ## Structure
 
 - `apps/server` — [Hono](https://hono.dev) API on Node. Reviews and findings, backed by an in-memory store (swap in a database via `src/store.ts`).
@@ -161,10 +183,26 @@ priority order; each slice's call graph walks on the **horizontal** axis.
 pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
 ```
 
-It slices the PR, walks a call graph from each slice's named `target`, writes
-`review-<repo>-pr<n>.html`, and opens it. Reuse a previous slicing run with
+It slices the PR, walks a call graph from each slice's named `target`, then
+serves the page from a local **navigation server** (`http://127.0.0.1:<port>/`)
+and opens it; Ctrl-C stops the server, as does closing the page. The server
+keeps the language services warm over the PR's head checkout and answers
+symbol clicks on demand — where a symbol is defined, who calls it, the panel
+for a definition nothing on the page had shown yet — so nothing is resolved
+ahead of time and nothing is capped. `--out <file>` also writes a static copy
+(readable, but symbol clicks are inert without the server); `--no-serve`
+writes that copy and exits. Reuse a previous slicing run with
 `--slices <file>` to skip the agent entirely — that is the fast loop while
-iterating on the page itself.
+iterating on the page itself; `scripts/rerender.sh` wraps it for a batch of
+saved reports.
+
+In place of the URL you can pass just the PR number, as long as something
+names the repo it belongs to — `--repo <owner>/<repo>`, or the
+`DEEP_REVIEW_REPO` environment variable:
+
+```sh
+pnpm --filter @deep-review/review cli 2950 --repo vercel/swr
+```
 
 Vertically, scrolling inside a slice behaves normally until its content runs
 out; pushing past the bottom carries you to the next slice, past the top to
@@ -174,10 +212,14 @@ scroll that merely lands on the boundary does not. Pips, PageUp/PageDown, and
 labelled rails at the top and bottom do the same thing deliberately.
 
 Horizontally, each slice starts at its **slice panel** — the slice's title,
-reasoning, and every fragment's diff. Symbols in that diff that correspond to
-functions in the slice's call graph are tappable, and tapping one slides its
-panel in exactly as the standalone explorer does; from there the usual walk
-up (called-by rows) and down (call marks) applies. Each slice keeps its own
+reasoning, and every fragment's diff. Any identifier in that diff is
+tappable: the server resolves it, and its panel slides in exactly as the
+standalone explorer does (a call-graph function's own panel when it has one,
+a definition panel otherwise; a declaration already in view lights up in
+place instead). ⌘-click a symbol — a newly declared function included — for
+a menu of everything that calls or references it, and tap a row to walk up
+into the caller with the call site highlighted. From there the usual walk up
+(called-by rows) and down (call marks) applies. Each slice keeps its own
 track and position, so walking deep into one slice's callers leaves the
 others where you left them.
 

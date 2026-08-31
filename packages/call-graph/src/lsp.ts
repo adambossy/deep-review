@@ -23,6 +23,13 @@ export class LspClient {
     number,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
   >();
+  /** Work-done-progress tokens the server has told us it is still working on
+      (e.g. pyright's initial workspace scan). Cross-file answers like
+      call-hierarchy and find-references only see files the scan has reached
+      so far; a query issued while this is non-empty can miss real call
+      sites, not just find fewer of them. */
+  private activeProgress = new Set<string | number>();
+  private idleWaiters: Array<() => void> = [];
 
   constructor(
     command: string,
@@ -47,6 +54,10 @@ export class LspClient {
         textDocument: {
           callHierarchy: {},
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
+          // linkSupport makes definition answers carry the whole declaration
+          // range alongside the name range, not just the name.
+          definition: { linkSupport: true },
+          references: {},
         },
         workspace: { symbol: {} },
       },
@@ -78,6 +89,29 @@ export class LspClient {
 
   notify(method: string, params: unknown): void {
     this.send({ jsonrpc: "2.0", method, params });
+  }
+
+  /**
+   * Resolves once the server has reported every work-done-progress token it
+   * has told us about as finished (or `timeoutMs` passes) — in particular,
+   * pyright's initial workspace scan. Call before a whole-workspace query
+   * (find-references, incoming calls) so it does not silently answer from a
+   * partially-indexed program.
+   */
+  whenIdle(timeoutMs = 20_000): Promise<void> {
+    if (this.activeProgress.size === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const at = this.idleWaiters.indexOf(finish);
+        if (at !== -1) this.idleWaiters.splice(at, 1);
+        resolve();
+      }, timeoutMs);
+      const finish = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.idleWaiters.push(finish);
+    });
   }
 
   async dispose(): Promise<void> {
@@ -122,6 +156,12 @@ export class LspClient {
   }
 
   private handle(message: RpcMessage): void {
+    if (message.method === "window/workDoneProgress/create" && message.id !== undefined) {
+      const token = (message.params as { token?: string | number } | undefined)?.token;
+      if (token !== undefined) this.activeProgress.add(token);
+      this.send({ jsonrpc: "2.0", id: message.id, result: null });
+      return;
+    }
     if (message.method !== undefined && message.id !== undefined) {
       // Server→client request: answer generically so the server proceeds.
       const result =
@@ -131,6 +171,24 @@ export class LspClient {
       this.send({ jsonrpc: "2.0", id: message.id, result });
       return;
     }
+    if (message.method === "$/progress") {
+      const { token, value } = (message.params ?? {}) as {
+        token?: string | number;
+        value?: { kind?: string };
+      };
+      if (token === undefined) return;
+      if (value?.kind === "end") {
+        this.activeProgress.delete(token);
+        if (this.activeProgress.size === 0) {
+          const waiters = this.idleWaiters;
+          this.idleWaiters = [];
+          for (const waiter of waiters) waiter();
+        }
+      } else {
+        this.activeProgress.add(token);
+      }
+      return;
+    }
     if (message.id !== undefined) {
       const pending = this.pending.get(message.id as number);
       if (!pending) return;
@@ -138,6 +196,6 @@ export class LspClient {
       if (message.error) pending.reject(new Error(message.error.message));
       else pending.resolve(message.result);
     }
-    // Notifications (diagnostics, progress, logs) are ignored.
+    // Other notifications (diagnostics, logs) are ignored.
   }
 }

@@ -102,7 +102,19 @@ name); an edge is one caller→callee relationship carrying its call sites.
 
 **Embedded file**:
 The full text and symbol table of a source file carried inside a report so
-the page can reveal any part of the file without a server.
+the page can reveal any part of the file (expanders, scope labels) on its
+own. Only the files the slices touch and the call graphs reach are embedded;
+anything else is fetched from the navigation server as a window.
+
+**Navigation server**:
+The local loopback HTTP server `pr-review` runs behind an explorer page. It
+keeps the language services warm over the PR's head checkout and answers
+the page's questions as symbols are clicked: where a symbol is defined
+(`/definition`), who calls it (`/references`), and the rendered panel for a
+definition (`/panel`). Nothing is resolved ahead of time and nothing is
+capped; the page starts small and learns as it is read. It stops on Ctrl-C
+or shortly after the page goes away.
+_Avoid_: backend (collides with language backend), API
 
 ### Report UI
 

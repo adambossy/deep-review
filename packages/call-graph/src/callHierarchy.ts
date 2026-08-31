@@ -3,7 +3,10 @@ import ts from "typescript";
 import {
   extractSource,
   type DeclRef,
+  type DefinitionLocation,
+  type EnclosingDeclaration,
   type FunctionRelations,
+  type IncomingReference,
 } from "./backend.js";
 import type { CallSite, FunctionSnapshot, SymbolRange } from "./types.js";
 
@@ -231,44 +234,209 @@ const SYMBOL_KINDS: Array<[check: (n: ts.Node) => boolean, kind: string]> = [
   [ts.isSetAccessorDeclaration, "accessor"],
 ];
 
+/** Declared symbols as a tree: a class holds its methods, a function its inner functions. */
 function collectSymbols(sourceFile: ts.SourceFile): SymbolRange[] {
-  const symbols: SymbolRange[] = [];
-  const push = (node: ts.Node, name: string, kind: string) => {
-    symbols.push({
+  const build = (node: ts.Node, nameNode: ts.Node | undefined, name: string, kind: string): SymbolRange => {
+    const symbol: SymbolRange = {
       name,
       kind,
       startLine: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
       endLine: sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1,
-    });
+    };
+    if (nameNode) {
+      const start = sourceFile.getLineAndCharacterOfPosition(nameNode.getStart(sourceFile));
+      const end = sourceFile.getLineAndCharacterOfPosition(nameNode.getEnd());
+      symbol.nameLine = start.line + 1;
+      symbol.nameColumn = start.character;
+      symbol.nameEndColumn = end.line === start.line ? end.character : start.character + name.length;
+    }
+    return symbol;
   };
-  const visit = (node: ts.Node): void => {
+  const symbolOf = (node: ts.Node): SymbolRange | null => {
     const match = SYMBOL_KINDS.find(([check]) => check(node));
     if (match) {
       const named = node as ts.NamedDeclaration;
-      if (named.name) push(node, named.name.getText(sourceFile), match[1]);
-    } else if (ts.isConstructorDeclaration(node)) {
-      push(node, "constructor", "constructor");
-    } else if (
+      return named.name ? build(node, named.name, named.name.getText(sourceFile), match[1]) : null;
+    }
+    if (ts.isConstructorDeclaration(node)) return build(node, undefined, "constructor", "constructor");
+    if (
       (ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) &&
       node.initializer &&
       (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
     ) {
-      push(node, node.name.getText(sourceFile), "function");
+      return build(node, node.name, node.name.getText(sourceFile), "function");
     }
-    ts.forEachChild(node, visit);
+    return null;
   };
-  visit(sourceFile);
+  const visit = (node: ts.Node, into: SymbolRange[]): void => {
+    const symbol = symbolOf(node);
+    if (symbol) {
+      into.push(symbol);
+      const children: SymbolRange[] = [];
+      ts.forEachChild(node, (child) => visit(child, children));
+      if (children.length) symbol.children = children;
+    } else {
+      ts.forEachChild(node, (child) => visit(child, into));
+    }
+  };
+  const symbols: SymbolRange[] = [];
+  visit(sourceFile, symbols);
   return symbols;
 }
 
-/** Full line content + declared symbols of one repo-relative file. */
+/**
+ * Full line content + declared symbols of one file. Repo-relative paths are
+ * resolved against the root; an absolute path (an external definition's
+ * `.d.ts`) is used as-is, since the program holds those too.
+ */
 export function fileSnapshot(
   ps: ProjectService,
-  relativeFile: string,
+  file: string,
 ): { lines: string[]; symbols: SymbolRange[] } | null {
-  const sourceFile = ps.program.getSourceFile(path.join(ps.rootDir, relativeFile));
+  const sourceFile = ps.program.getSourceFile(path.resolve(ps.rootDir, file));
   if (!sourceFile) return null;
   return { lines: sourceFile.text.split("\n"), symbols: collectSymbols(sourceFile) };
+}
+
+/** The name node of a declaration that can enclose code, or undefined. */
+function scopeName(node: ts.Node): ts.Node | undefined {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isClassDeclaration(node)
+  ) {
+    return node.name;
+  }
+  if (
+    (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+    (ts.isVariableDeclaration(node.parent) || ts.isPropertyDeclaration(node.parent))
+  ) {
+    return node.parent.name;
+  }
+  return undefined;
+}
+
+/** The innermost named function (else class) containing `pos`. */
+function enclosingAt(sourceFile: ts.SourceFile, pos: number): EnclosingDeclaration | null {
+  let node: ts.Node = sourceFile;
+  for (;;) {
+    const child = ts.forEachChild(node, (c) => (c.getStart(sourceFile) <= pos && pos < c.getEnd() ? c : undefined));
+    if (!child) break;
+    node = child;
+  }
+  let fn: ts.Node | null = null;
+  let cls: ts.Node | null = null;
+  for (let n: ts.Node | undefined = node; n && !fn; n = n.parent) {
+    const name = scopeName(n);
+    if (!name) continue;
+    if (ts.isClassDeclaration(n)) cls ??= n;
+    else fn = n;
+  }
+  const scope = fn ?? cls;
+  const name = scope && scopeName(scope);
+  if (!scope || !name) return null;
+  const decl = ts.isArrowFunction(scope) || ts.isFunctionExpression(scope) ? scope.parent : scope;
+  const lc = sourceFile.getLineAndCharacterOfPosition(name.getStart(sourceFile));
+  return {
+    fileName: sourceFile.fileName,
+    line: lc.line + 1,
+    column: lc.character,
+    name: name.getText(sourceFile),
+    kind: ts.isClassDeclaration(scope) ? "class" : ts.isMethodDeclaration(scope) ? "method" : "function",
+    startLine: sourceFile.getLineAndCharacterOfPosition(decl.getStart(sourceFile)).line + 1,
+    endLine: sourceFile.getLineAndCharacterOfPosition(decl.getEnd()).line + 1,
+  };
+}
+
+function referenceAt(ps: ProjectService, fileName: string, span: ts.TextSpan): IncomingReference | null {
+  const sourceFile = ps.program.getSourceFile(fileName);
+  if (!sourceFile) return null;
+  const start = sourceFile.getLineAndCharacterOfPosition(span.start);
+  const end = sourceFile.getLineAndCharacterOfPosition(span.start + span.length);
+  const lineText = sourceFile.text.split("\n")[start.line] ?? "";
+  return {
+    fileName,
+    line: start.line + 1,
+    startColumn: start.character,
+    endColumn: end.line === start.line ? end.character : lineText.length,
+    snippet: lineText.trim(),
+    enclosing: enclosingAt(sourceFile, span.start),
+  };
+}
+
+/** Call sites of the callable at `pos`; null when nothing callable is there. */
+export function incomingCallsAt(
+  ps: ProjectService,
+  fileName: string,
+  pos: number,
+): IncomingReference[] | null {
+  const prepared = ps.service.prepareCallHierarchy(fileName, pos);
+  const item = Array.isArray(prepared) ? prepared[0] : prepared;
+  if (!item) return null;
+  const refs: IncomingReference[] = [];
+  for (const incoming of ps.service.provideCallHierarchyIncomingCalls(item.file, item.selectionSpan.start)) {
+    if (!isProjectFile(ps.rootDir, incoming.from.file)) continue;
+    for (const span of incoming.fromSpans) {
+      const ref = referenceAt(ps, incoming.from.file, span);
+      if (ref) refs.push(ref);
+    }
+  }
+  return refs;
+}
+
+/** Uses of the symbol at `pos` across the project, excluding its declaration. */
+export function referencesAt(ps: ProjectService, fileName: string, pos: number): IncomingReference[] {
+  const refs: IncomingReference[] = [];
+  for (const symbol of ps.service.findReferences(fileName, pos) ?? []) {
+    for (const entry of symbol.references) {
+      if (entry.isDefinition || !isProjectFile(ps.rootDir, entry.fileName)) continue;
+      const ref = referenceAt(ps, entry.fileName, entry.textSpan);
+      if (ref) refs.push(ref);
+    }
+  }
+  return refs;
+}
+
+/**
+ * Where the symbol at `pos` is declared. Null when the language service has
+ * no answer, or when `pos` sits on the declaration itself — the reader is
+ * already looking at it.
+ */
+export function definitionAt(
+  ps: ProjectService,
+  fileName: string,
+  pos: number,
+): DefinitionLocation | null {
+  const defs = ps.service.getDefinitionAtPosition(fileName, pos);
+  const def = defs?.[0];
+  if (!def) return null;
+  const target = ps.program.getSourceFile(def.fileName);
+  if (!target) return null;
+  const self =
+    def.fileName === fileName &&
+    def.textSpan.start <= pos &&
+    pos <= def.textSpan.start + def.textSpan.length;
+
+  const nameStart = target.getLineAndCharacterOfPosition(def.textSpan.start);
+  const nameEnd = target.getLineAndCharacterOfPosition(def.textSpan.start + def.textSpan.length);
+  const extent = def.contextSpan ?? def.textSpan;
+  const start = target.getLineAndCharacterOfPosition(extent.start);
+  const end = target.getLineAndCharacterOfPosition(extent.start + extent.length);
+  return {
+    fileName: def.fileName,
+    name: def.name,
+    kind: def.kind,
+    external: !isProjectFile(ps.rootDir, def.fileName),
+    self,
+    nameLine: nameStart.line + 1,
+    nameColumn: nameStart.character,
+    nameEndColumn:
+      nameEnd.line === nameStart.line ? nameEnd.character : nameStart.character + def.name.length,
+    startLine: start.line + 1,
+    endLine: end.line + 1,
+  };
 }
 
 /** Callers (incoming calls) and callees (outgoing calls) of one function. */
