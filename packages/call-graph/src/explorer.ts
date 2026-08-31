@@ -578,11 +578,26 @@ function initExplorer(root, NAMES, onNavigate) {
       dest = tagged ? [tagged] : destPanel.querySelectorAll(".self-sym");
     }
     for (var d = 0; d < dest.length; d++) dest[d].classList.add("sym-link", "sym-dim");
+    if (dest.length) revealInPanel(destPanel, dest[0]);
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         for (var k = 0; k < clicked.length; k++) clicked[k].classList.add("sym-dim");
       });
     });
+  }
+  /* A panel opens at the top of the region it renders, but the declaration
+     that was asked for can sit far below that — off the bottom entirely for
+     a symbol declared late in a long region. Scroll it into the panel's own
+     scrollport, a third of the way down so its body reads underneath it,
+     and leave a panel that already shows it where the reader left it. */
+  function revealInPanel(panel, el) {
+    if (!panel || !el) return;
+    var p = panel.getBoundingClientRect(), r = el.getBoundingClientRect();
+    if (!p.height || !r.height) return;
+    if (r.top >= p.top && r.bottom <= p.bottom) return;
+    var offset = r.top - p.top + panel.scrollTop;
+    var max = panel.scrollHeight - panel.clientHeight;
+    panel.scrollTop = Math.max(0, Math.min(offset - panel.clientHeight / 3, max));
   }
   /* Is the element fully inside the panel's scrollport? Panels are their own
      scroll containers, so the panel's rect is the viewport that matters. */
@@ -661,7 +676,7 @@ function initExplorer(root, NAMES, onNavigate) {
             var site = spanAt(dest, link.dataset.refFile, Number(link.dataset.refLine), Number(link.dataset.refCol));
             if (site) {
               site.classList.add("sym-link");
-              site.scrollIntoView({ block: "center" });
+              revealInPanel(dest, site);
             }
             closeRefMenu();
           }
