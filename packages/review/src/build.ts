@@ -166,6 +166,8 @@ export async function buildSliceExplorerInput(
     repo: `${report.pr.owner}/${report.pr.repo}`,
     number: report.pr.number,
     overview: report.overview,
+    prDescription: report.pr.description,
+    prAuthor: report.pr.author,
     slices,
     files: options.headDir
       ? await readChangedFiles(report, options.headDir, log)

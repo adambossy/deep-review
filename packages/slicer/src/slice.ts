@@ -116,6 +116,8 @@ export async function slicePr(options: SliceOptions): Promise<SliceReport> {
       repo: context.info.repo,
       number: context.info.number,
       title: context.info.title,
+      description: context.info.body,
+      author: context.info.author,
       baseSha: context.info.baseSha,
       mergeBaseSha: context.mergeBaseSha,
       headSha: context.info.headSha,
@@ -147,12 +149,22 @@ export async function loadRenderEntry(
         .join("; ")}`,
     );
   }
-  const report = parsed.data as SliceReport;
+  const saved = parsed.data;
   const info = await fetchPrInfo({
-    owner: report.pr.owner,
-    repo: report.pr.repo,
-    number: report.pr.number,
+    owner: saved.pr.owner,
+    repo: saved.pr.repo,
+    number: saved.pr.number,
   });
+  // A report written before the description was persisted still gets one:
+  // this re-render fetches the PR anyway.
+  const report = {
+    ...saved,
+    pr: {
+      ...saved.pr,
+      description: saved.pr.description ?? info.body,
+      author: saved.pr.author ?? info.author,
+    },
+  } as SliceReport;
   const checkouts = prepareCheckouts(info, workDir);
   return {
     report,

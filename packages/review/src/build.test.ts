@@ -27,6 +27,8 @@ function report(startLine: number, endLine: number): SliceReport {
       repo: "b",
       number: 1,
       title: "A PR",
+      description: "Adds **constants**.",
+      author: "octocat",
       baseSha: "a".repeat(40),
       mergeBaseSha: "a".repeat(40),
       headSha: "b".repeat(40),
@@ -73,6 +75,12 @@ describe("buildSliceExplorerInput", () => {
     const input = await buildSliceExplorerInput({ report: report(1, 4), index });
     expect(input.slices[0]!.graph).toBeUndefined();
     expect(input.slices[0]!.target).toBeUndefined();
+  });
+
+  it("carries the PR's description and author through for the description tab", async () => {
+    const input = await buildSliceExplorerInput({ report: report(2, 3), index });
+    expect(input.prDescription).toBe("Adds **constants**.");
+    expect(input.prAuthor).toBe("octocat");
   });
 
   it("drops a fragment whose hunk is missing instead of throwing", async () => {
