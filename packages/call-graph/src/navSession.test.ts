@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { NavSession, type DefinitionAnswer } from "./navSession.js";
 import type { SliceExplorerInput } from "./sliceExplorer.js";
-import type { CallPathResult, EmbeddedFile } from "./types.js";
+import type { CallPathResult, EmbeddedFile, FileDiff } from "./types.js";
 
 // A tiny TS project: the slice changes `use.ts`, which calls `helper` and
 // reads `LIMIT` from `lib.ts`; `helper` is also a call-graph node.
@@ -202,6 +202,39 @@ describe("NavSession.panel", () => {
       expect(panel.html).not.toContain('class="gap"');
     } finally {
       bare.dispose();
+    }
+  }, 30_000);
+
+  it("shades a definition from the PR's diff, whichever slice claimed the change", async () => {
+    // The only slice touches use.ts; `LIMIT` was added over in lib.ts, so
+    // its panel is shaded from the PR's diff or not at all.
+    const diff: FileDiff[] = [
+      {
+        oldPath: "lib.ts",
+        newPath: "lib.ts",
+        hunks: [
+          {
+            header: "@@ -0,0 +1,1 @@",
+            oldStart: 0,
+            oldLines: 0,
+            newStart: 1,
+            newLines: 1,
+            lines: [`+${libText[0]}`],
+          },
+        ],
+      },
+    ];
+    const withDiff = new NavSession(dir, { ...input, diff });
+    try {
+      const limit = await hit("use.ts", 4, 28, withDiff);
+      const panel = (await withDiff.panel(limit.panelId))!;
+      expect(panel.name).toBe("LIMIT");
+      expect(panel.html).toContain("diff-add");
+      // Without the diff the same panel has nothing to shade with.
+      const plain = (await session.panel((await hit("use.ts", 4, 28)).panelId))!;
+      expect(plain.html).not.toContain("diff-add");
+    } finally {
+      withDiff.dispose();
     }
   }, 30_000);
 

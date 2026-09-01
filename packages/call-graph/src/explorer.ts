@@ -52,6 +52,15 @@ export interface PanelOptions {
   debug?: boolean | undefined;
 }
 
+export interface DefinitionPanelOptions extends PanelOptions {
+  /**
+   * The PR's hunks over this declaration, head-side. Taken from the whole
+   * diff rather than from a slice's fragments: which slice claimed the
+   * change says nothing about whether the declaration changed.
+   */
+  hunks?: DiffHunk[] | undefined;
+}
+
 /**
  * The diff rows a panel shows for a declaration: the whole file's changes
  * and the declaration itself, each with context, when the file is embedded;
@@ -190,15 +199,21 @@ export function renderPanel(
 /**
  * A panel for a definition the call graph did not reach — a class, a
  * constant, an import, a local, or something in a dependency. Same card as
- * a function's, minus the call-graph parts (no called-by rows, no diff).
- * Rendered by the navigation server when a reader first opens it.
+ * a function's, minus the called-by rows the call graph would supply. Its
+ * diff comes from the PR instead, so the panel shades the same whichever
+ * slice the reader opened it from. Rendered by the navigation server when a
+ * reader first opens it.
  */
-export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, options: PanelOptions = {}): string {
+export function renderDefinitionPanel(
+  def: DefinitionTarget,
+  index: FileIndex,
+  options: DefinitionPanelOptions = {},
+): string {
   const debug = options.debug ?? false;
   // A window wins when present: the file is not on the page whole.
   const entry = def.external || def.source ? undefined : index.get(`after:${def.file}`);
   if (!entry && !def.source) return "";
-  const rows = panelRows({ ...def, source: def.source ? [def.source] : [] }, [], entry);
+  const rows = panelRows({ ...def, source: def.source ? [def.source] : [] }, options.hunks ?? [], entry);
 
   const decorations: Decorations = new Map();
   decorations.set(def.nameLine, {
