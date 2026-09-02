@@ -37,6 +37,13 @@ export const VERSION: string = (() => {
 export interface NavServerOptions {
   /** Turns a PR into a built page; see `BuildPr`. */
   build: BuildPr;
+  /**
+   * Where a PR's head is right now, asked when an already-built PR is added
+   * again: a head that moved means the build is stale and is rebuilt rather
+   * than returned. Absent (or answering null — rate limit, no token), the
+   * existing build is trusted.
+   */
+  currentHeadSha?: ((ref: PrRef) => Promise<string | null>) | undefined;
   /** Port to listen on; 0 (the default) picks a free one. */
   port?: number | undefined;
   /** How many PRs may build at once. */
@@ -254,10 +261,19 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
           sendJson(res, 400, { why: "owner, repo, number and prUrl are required" });
           return;
         }
-        const pr = registry.add(
-          { owner: body.owner, repo: body.repo, number: body.number!, prUrl: body.prUrl },
-          body.options ?? {},
-        );
+        const ref = { owner: body.owner, repo: body.repo, number: body.number!, prUrl: body.prUrl };
+        // Re-adding a PR normally returns the build already here — unless
+        // its head has moved since, in which case the reader is asking for
+        // a review of code the build no longer shows: drop it and rebuild.
+        const existing = registry.get(prKey(ref));
+        if (existing?.state === "ready" && existing.headSha && options.currentHeadSha) {
+          const live = await options.currentHeadSha(ref).catch(() => null);
+          if (live && live !== existing.headSha) {
+            log(`${existing.key}: head moved ${existing.headSha.slice(0, 8)} → ${live.slice(0, 8)}; rebuilding.`);
+            registry.remove(existing.key);
+          }
+        }
+        const pr = registry.add(ref, body.options ?? {});
         sendJson(res, 200, { pr });
         return;
       }

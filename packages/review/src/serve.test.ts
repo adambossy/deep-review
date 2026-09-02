@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { SliceExplorerInput } from "@deep-review/call-graph";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { serveExplorer, type NavServer } from "./serve.js";
+import { serveExplorer, startNavServer, type NavServer } from "./serve.js";
 
 // A two-file TS project as the head checkout; the slice changes use.ts.
 const headDir = mkdtempSync(path.join(os.tmpdir(), "serve-test-"));
@@ -156,6 +156,43 @@ describe("serveExplorer", () => {
     expect(again.name).toBe("helper");
     expect(server.registry.get("a/b#1")?.live).toBe(true);
   }, 30_000);
+
+  it("rebuilds a held PR whose head has moved, and only then", async () => {
+    let liveHead = "aaa1111";
+    let builds = 0;
+    const fresh = await startNavServer({
+      build: ({ navBase }) => {
+        builds++;
+        const rebuilt = { ...input, navBase };
+        return Promise.resolve({ input: rebuilt, headDir, html: "<html></html>", headSha: liveHead });
+      },
+      currentHeadSha: () => Promise.resolve(liveHead),
+    });
+    const addBody = JSON.stringify({ owner: "a", repo: "b", number: 1, prUrl: input.prUrl });
+    const add = () =>
+      fetch(new URL("/prs", fresh.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: addBody,
+      });
+    await add();
+    await fresh.registry.settled();
+    expect(builds).toBe(1);
+    expect(fresh.registry.get("a/b#1")?.headSha).toBe("aaa1111");
+
+    // Head unchanged: the same build is returned, nothing re-runs.
+    await add();
+    await fresh.registry.settled();
+    expect(builds).toBe(1);
+
+    // Head moved: the stale build is dropped and remade at the new head.
+    liveHead = "bbb2222";
+    await add();
+    await fresh.registry.settled();
+    expect(builds).toBe(2);
+    expect(fresh.registry.get("a/b#1")?.headSha).toBe("bbb2222");
+    await fresh.close();
+  }, 15_000);
 
   it("stops when asked over /quit", async () => {
     expect((await fetch(new URL("/quit", server.url), { method: "POST" })).status).toBe(204);

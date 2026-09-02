@@ -52,6 +52,8 @@ export interface PrView extends PrRef {
   error?: string | undefined;
   addedAt: number;
   readyAt?: number | undefined;
+  /** The head commit the build was made from, for staleness checks. */
+  headSha?: string | undefined;
   /** The build's progress lines, newest last — what the index shows while building. */
   log: string[];
   /** Whether language services are up for this PR right now. */
@@ -64,6 +66,8 @@ export interface BuiltPr {
   /** The PR's head checkout, which the language services read. */
   headDir: string;
   html: string;
+  /** The head commit this build was made from; a moved head means a stale build. */
+  headSha?: string | undefined;
 }
 
 /** Per-PR knobs, carried from the request that added it. */
@@ -357,6 +361,7 @@ export class PrRegistry {
       ...(entry.error ? { error: entry.error } : {}),
       addedAt: entry.addedAt,
       ...(entry.readyAt !== undefined ? { readyAt: entry.readyAt } : {}),
+      ...(entry.built?.headSha ? { headSha: entry.built.headSha } : {}),
       log: [...entry.log],
       live: entry.session !== undefined,
     };

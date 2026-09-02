@@ -11,17 +11,13 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { renderSliceExplorerHtml } from "@deep-review/call-graph";
-import {
-  defaultOutFile,
-  loadRenderEntry,
-  slicePr,
-  writeSliceReport,
-} from "@deep-review/slicer";
+import { fetchPrInfo, parsePrUrl } from "@deep-review/pr";
+import { loadRenderEntry, slicePr, writeSliceReport } from "@deep-review/slicer";
 import { buildSliceExplorerInput } from "./build.js";
 import type { AddOptions, BuildPr, PrView } from "./registry.js";
 import { startNavServer, VERSION, type NavServer } from "./serve.js";
@@ -77,46 +73,85 @@ export async function findServer(): Promise<string | null> {
 }
 
 /**
- * The build the daemon runs when a PR is added: slice it (or reuse a saved
- * slice JSON), walk each slice's call graph, render the page under the
- * prefix the server will mount it at. The slice JSON of a fresh run is kept
- * under the state dir so adding the same PR after a restart skips the model.
+ * Where the daemon caches clones and worktrees when the add carries no
+ * --work-dir of its own. The library default is under os.tmpdir(), which
+ * macOS purges periodically — fine for a one-shot CLI run, a re-clone tax
+ * on a server that lives for weeks.
+ */
+function defaultDaemonWorkDir(): string {
+  return path.join(stateDir(), "work");
+}
+
+/** The slice JSON a fresh run of this PR is kept at (the CLI's default name, homed). */
+function cachedSliceFile(repo: string, number: number): string {
+  return path.join(stateDir(), "slices", `slices-${repo}-pr${number}.json`);
+}
+
+/** The head commit a saved slice report was made from, or null if unreadable. */
+function reportHeadSha(file: string): string | null {
+  try {
+    const report = JSON.parse(readFileSync(file, "utf8")) as { pr?: { headSha?: string } };
+    return report.pr?.headSha ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The build the daemon runs when a PR is added: slice it, walk each slice's
+ * call graph, render the page under the prefix the server will mount it at.
+ * The slice JSON of a fresh run is kept under the state dir, and a kept one
+ * whose head commit still matches the PR's is reused instead of paying for
+ * the model again — a restart, or re-adding an unchanged PR, costs no slicing.
+ * An explicit slice JSON (--slices) is trusted as given, no head check.
  */
 export const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => {
+  const workDir = options.workDir ?? defaultDaemonWorkDir();
+  mkdirSync(workDir, { recursive: true });
+
   let reportFile: string;
   if (options.slicesFile) {
     reportFile = options.slicesFile;
     log(`using slices from ${reportFile}`);
   } else {
-    const report = await slicePr({
-      prUrl,
-      ...(options.workDir ? { workDir: options.workDir } : {}),
-      ...(options.model ? { model: options.model } : {}),
-      onProgress: log,
-    });
-    const slicesDir = path.join(stateDir(), "slices");
-    mkdirSync(slicesDir, { recursive: true });
-    reportFile = writeSliceReport(
-      report,
-      options.save ?? path.join(slicesDir, defaultOutFile(report)),
-    );
-    log(`slices written to ${reportFile}`);
+    const info = await fetchPrInfo(parsePrUrl(prUrl));
+    const cached = cachedSliceFile(info.repo, info.number);
+    if (existsSync(cached) && reportHeadSha(cached) === info.headSha) {
+      reportFile = cached;
+      log(`head unchanged at ${info.headSha.slice(0, 8)}; reusing slices from ${cached}`);
+    } else {
+      const report = await slicePr({
+        prUrl,
+        workDir,
+        ...(options.model ? { model: options.model } : {}),
+        onProgress: log,
+      });
+      mkdirSync(path.dirname(cached), { recursive: true });
+      reportFile = writeSliceReport(report, cached);
+      log(`slices written to ${reportFile}`);
+      if (options.save) writeSliceReport(report, options.save);
+    }
   }
 
-  const { report, index, headDir } = await loadRenderEntry(reportFile, options.workDir);
+  const { report, index, headDir } = await loadRenderEntry(reportFile, workDir);
   const input = {
     ...(await buildSliceExplorerInput({
       report,
       index,
       headDir,
-      ...(options.workDir ? { workDir: options.workDir } : {}),
+      workDir,
       ...(options.maxGraphs !== undefined ? { maxGraphs: options.maxGraphs } : {}),
       ...(options.debugMarks ? { debugMarks: true } : {}),
       onProgress: log,
     })),
     navBase,
   };
-  return { input, headDir, html: renderSliceExplorerHtml(input) };
+  return {
+    input,
+    headDir,
+    html: renderSliceExplorerHtml(input),
+    headSha: report.pr.headSha,
+  };
 };
 
 export interface RunDaemonOptions {
@@ -138,6 +173,8 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
   }
   const server = await startNavServer({
     build: daemonBuild,
+    // A re-added PR is only trusted while its head has not moved.
+    currentHeadSha: async (ref) => (await fetchPrInfo(ref)).headSha,
     ...(options.port !== undefined ? { port: options.port } : {}),
     ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
