@@ -81,13 +81,20 @@ export async function findServer(): Promise<string | null> {
 }
 
 /**
- * Where the daemon caches clones and worktrees when the add carries no
- * --work-dir of its own. The library default is under os.tmpdir(), which
+ * Where the daemon caches one PR's clone and worktrees when the add carries
+ * no --work-dir of its own. The library default is under os.tmpdir(), which
  * macOS purges periodically — fine for a one-shot CLI run, a re-clone tax
- * on a server that lives for weeks.
+ * on a server that lives for weeks. Per PR, not shared: a work dir holds
+ * `repo/`, `base/` and `head/` for exactly one PR (see prepareCheckouts),
+ * and two PRs sharing one would swap each other's worktrees out from under
+ * their language services.
  */
-function defaultDaemonWorkDir(): string {
-  return path.join(stateDir(), "work");
+function defaultDaemonWorkDir(ref: PrRef): string {
+  return path.join(
+    stateDir(),
+    "work",
+    `${safeName(ref.owner)}-${safeName(ref.repo)}-pr${ref.number}`,
+  );
 }
 
 /** One path-safe filename segment; GitHub names are tame, but the path must not care. */
@@ -126,7 +133,8 @@ function reportHeadSha(file: string): string | null {
  * An explicit slice JSON (--slices) is trusted as given, no head check.
  */
 const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => {
-  const workDir = options.workDir ?? defaultDaemonWorkDir();
+  const ref = parsePrUrl(prUrl);
+  const workDir = options.workDir ?? defaultDaemonWorkDir(ref);
   mkdirSync(workDir, { recursive: true });
 
   let reportFile: string;
@@ -134,7 +142,7 @@ const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => {
     reportFile = options.slicesFile;
     log(`using slices from ${reportFile}`);
   } else {
-    const info = await fetchPrInfo(parsePrUrl(prUrl));
+    const info = await fetchPrInfo(ref);
     const cached = cachedSliceFile(info.owner, info.repo, info.number);
     if (existsSync(cached) && reportHeadSha(cached) === info.headSha) {
       reportFile = cached;
