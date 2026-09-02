@@ -33,7 +33,6 @@ export {
   readWatcherState,
   writeWatcherState,
   watcherStateFile,
-  defaultWatcherWorkDir,
   DEFAULT_INTERVAL_MS,
   type WatcherState,
   type SeenPr,

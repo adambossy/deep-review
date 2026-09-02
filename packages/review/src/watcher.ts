@@ -24,11 +24,6 @@ export function watcherStateFile(): string {
   return path.join(stateDir(), "watcher.json");
 }
 
-/** Where an unattended watcher keeps clones, since the tmp dir gets purged. */
-export function defaultWatcherWorkDir(): string {
-  return path.join(stateDir(), "work");
-}
-
 /** What the watcher remembers about a PR it has already handed over. */
 export interface SeenPr {
   /** The PR's `updated_at` when we dispatched it; shown, not compared. */
@@ -109,7 +104,7 @@ export interface PollDeps {
   /** The PRs assigned to you right now. */
   list?: (() => Promise<AssignedPr[]>) | undefined;
   /** Hand one PR to the server. Defaults to starting/finding it and adding. */
-  add?: ((pr: AssignedPr) => Promise<PrView>) | undefined;
+  add?: ((pr: AssignedPr, options: AddOptions) => Promise<PrView>) | undefined;
   options?: AddOptions | undefined;
   onProgress?: ((message: string) => void) | undefined;
 }
@@ -144,14 +139,19 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
       `${dispatch.length} new.`,
   );
 
+  // Note what is *not* set here: a workDir. The daemon keys one per PR
+  // under the state dir, so it is already durable and already separate.
+  // Pinning one here would put every clone and checkout in a single
+  // directory, and builds run two at a time.
+  const options: AddOptions = { ...deps.options };
   const add =
     deps.add ??
-    (async (pr: AssignedPr): Promise<PrView> => {
+    (async (pr: AssignedPr, addOptions: AddOptions): Promise<PrView> => {
       const { url } = await ensureServer();
       return addPrToServer(
         url,
         { owner: pr.owner, repo: pr.repo, number: pr.number },
-        { workDir: defaultWatcherWorkDir(), ...deps.options },
+        addOptions,
       );
     });
 
@@ -159,7 +159,7 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
   for (const pr of dispatch) {
     const key = prKey(pr);
     try {
-      const view = await add(pr);
+      const view = await add(pr, options);
       log(`${key}: ${view.state}.`);
     } catch (error) {
       // Forget it, so the next poll tries again rather than losing the PR

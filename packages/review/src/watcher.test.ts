@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AssignedPr } from "@deep-review/pr";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { PrView } from "./registry.js";
+import type { AddOptions, PrView } from "./registry.js";
 import {
   planPoll,
   pollOnce,
@@ -148,6 +148,21 @@ describe("pollOnce", () => {
     expect(JSON.parse(readFileSync(watcherStateFile(), "utf8")).seen).toHaveProperty(
       "acme/widgets#7",
     );
+  });
+
+  it("leaves the work dir to the daemon, which keys one per PR", async () => {
+    // A single shared work dir would put the clones and checkouts of two
+    // concurrently building PRs on top of each other.
+    let handed: AddOptions | undefined;
+    await pollOnce({
+      list: async () => [assigned(1)],
+      add: async (pr, options) => {
+        handed = options;
+        return view(pr);
+      },
+    });
+    expect(handed).toBeDefined();
+    expect(handed).not.toHaveProperty("workDir");
   });
 
   it("survives a corrupt state file rather than refusing to start", () => {
