@@ -146,8 +146,8 @@ const SLICE_CSS = `
     max-width: none; margin: 0; padding: 0;
     display: grid; grid-template-columns: 240px 1fr;
   }
-  .main { padding: 0.8rem 1rem; min-width: 0; --tab-bar: 2.1rem; }
-  .stage { position: relative; overflow: hidden; height: calc(100vh - 1.6rem - var(--tab-bar)); }
+  .main { padding: 0.8rem 1rem; min-width: 0; }
+  .stage { position: relative; overflow: hidden; height: calc(100vh - 1.6rem); }
   .deck {
     display: flex; flex-direction: column; height: 100%;
     transform: translateY(calc(var(--slice, 0) * -100%));
@@ -236,23 +236,22 @@ const SLICE_CSS = `
 
   .slice-panel .code-pane { margin: 0 0 1.1rem; }
 
-  /* The two views of the PR: what it changed, and what its author says
-     about it. The tab bar sits above both and is the only thing that
-     switches between them. */
-  .view-tabs { display: flex; gap: 0.3rem; align-items: center; height: var(--tab-bar); }
-  .view-tab {
-    appearance: none; border: none; border-radius: 999px; background: none;
-    color: var(--ink-soft); font: 600 0.74rem ui-sans-serif, system-ui, sans-serif;
-    padding: 0.22rem 0.75rem; cursor: pointer;
+  /* The two things the sidebar can point at: the PR's prose, or one of its
+     slices. Which one is showing is a single class on the body, so the
+     stage and the description never both claim the main column, and the
+     highlight follows without any bookkeeping. */
+  .doc-link { margin-bottom: 0.9rem; }
+  .doc-view { display: none; height: calc(100vh - 1.6rem); overflow-y: auto; padding-right: 0.8rem; }
+  body.showing-description .doc-view { display: block; }
+  body.showing-description .stage { display: none; }
+  body.showing-description .doc-link {
+    background: var(--accent-soft); color: var(--accent); font-weight: 600;
   }
-  .view-tab:hover { background: var(--panel-2); color: var(--ink); }
-  .view-tab[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
-
-  .doc-view {
-    height: calc(100vh - 1.6rem - var(--tab-bar));
-    overflow-y: auto; padding-right: 0.8rem;
+  /* The slice the deck is parked on stays named in the sidebar, but yields
+     the highlight while the description is what's on screen. */
+  body.showing-description .slice-link.on {
+    background: none; color: var(--ink-soft); font-weight: 400;
   }
-  .doc-view[hidden] { display: none; }
   .doc-title { font-size: 1.35rem; font-weight: 650; letter-spacing: -0.015em;
                margin: 0 0 0.4rem; max-width: 48rem; }
   .doc-meta { font-size: 0.74rem; color: var(--ink-faint); margin-bottom: 1.4rem; }
@@ -285,14 +284,15 @@ const SLICE_CSS = `
 `;
 
 /**
- * The description tab: the PR as its author wrote it, plus the slicing
- * model's own one-paragraph read of it. Neither is code — the point of the
- * tab is to be able to check the claim against the diff without leaving the
- * page for GitHub.
+ * The description view: the PR as its author wrote it, plus the slicing
+ * model's own one-paragraph read of it. Neither is code — the point of it
+ * is to be able to check the claim against the diff without leaving the
+ * page for GitHub. The sidebar names it above the slices, since it is what
+ * the slices are an answer to.
  */
 function renderDescriptionView(input: SliceExplorerInput): string {
   const description = (input.prDescription ?? "").trim();
-  return `<section class="doc-view" data-view="description" hidden>
+  return `<section class="doc-view">
     <span class="eyebrow">Pull request</span>
     <h3 class="doc-title">${esc(input.prTitle)}</h3>
     <div class="doc-meta">
@@ -311,27 +311,22 @@ function renderDescriptionView(input: SliceExplorerInput): string {
 }
 
 /**
- * Switching views, and nothing else: each view keeps its own scroll state
- * and the slice deck keeps its position, so coming back to the code lands
- * where the reader left it.
+ * Which of the sidebar's two kinds of destination is showing. Tapping the
+ * description shows the prose; tapping any slice returns to the deck, whose
+ * own handler (DECK_JS) then moves it — including when the slice tapped is
+ * the one the deck is already parked on, which is why leaving the
+ * description is handled here rather than there.
+ *
+ * Neither view is rebuilt on the way in, so each keeps its scroll position
+ * and the deck keeps its slice: coming back to the code lands where the
+ * reader left it.
  */
-const TABS_JS = `
+const SIDEBAR_VIEW_JS = `
 (function () {
-  var tabs = Array.prototype.slice.call(document.querySelectorAll(".view-tab"));
-  var views = {};
-  Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (el) {
-    if (!el.classList.contains("view-tab")) views[el.dataset.view] = el;
-  });
-
-  function show(name) {
-    tabs.forEach(function (t) {
-      t.setAttribute("aria-selected", String(t.dataset.view === name));
-    });
-    Object.keys(views).forEach(function (key) { views[key].hidden = key !== name; });
-  }
-
-  tabs.forEach(function (tab) {
-    tab.addEventListener("click", function () { show(tab.dataset.view); });
+  var body = document.body;
+  document.addEventListener("click", function (e) {
+    if (e.target.closest(".doc-link")) body.classList.add("showing-description");
+    else if (e.target.closest(".slice-link")) body.classList.remove("showing-description");
   });
 })();
 `;
@@ -467,9 +462,9 @@ const DECK_JS = `
   }, { passive: false });
 
   document.addEventListener("keydown", function (e) {
-    /* Paging belongs to the slice deck; on the description tab the keys
-       should scroll the prose the reader is actually looking at. */
-    if (stage.hidden) return;
+    /* Paging belongs to the slice deck; while the description is showing,
+       the keys should scroll the prose the reader is looking at. */
+    if (document.body.classList.contains("showing-description")) return;
     if (e.key === "PageDown") { e.preventDefault(); go(current + 1, "above"); }
     else if (e.key === "PageUp") { e.preventDefault(); go(current - 1, "below"); }
   });
@@ -627,6 +622,9 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
     <div class="pr-title">${esc(input.prTitle)}</div>
   </div>
   <nav>
+    <div class="slice-nav">
+      <button class="slice-link doc-link" type="button">Description</button>
+    </div>
     <div class="side-label">Slices · <span class="progress-label"></span></div>
     <div class="slice-nav">${sliceLinks}</div>
   </nav>
@@ -643,11 +641,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 </aside>
 
 <div class="main">
-<div class="view-tabs" role="tablist">
-  <button class="view-tab" role="tab" data-view="slices" aria-selected="true">Slices</button>
-  <button class="view-tab" role="tab" data-view="description" aria-selected="false">Description</button>
-</div>
-<div class="stage" data-view="slices">
+<div class="stage">
   <button class="vrail vrail-up"></button>
   <button class="vrail vrail-down"></button>
   <div class="deck">${views}</div>
@@ -668,7 +662,7 @@ ${SCOPE_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}
 ${DECK_JS}
-${TABS_JS}
+${SIDEBAR_VIEW_JS}
 ${input.debugMarks ? DEBUG_MARKS_JS : ""}
 </script>
 </body>

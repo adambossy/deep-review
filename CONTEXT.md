@@ -143,10 +143,12 @@ vertical counterpart of a track.
 _Avoid_: carousel, stack (overloaded), pager
 
 **Description view**:
-The explorer's second tab: the PR as its author wrote it, rendered from
-Markdown, plus the slicer's own overview of what the PR does. The deck's
-counterpart — the one view of the page that is not code.
-_Avoid_: readme, notes, body (reserved for a hunk's or an issue's text)
+What the sidebar's Description entry shows in place of the deck: the PR as
+its author wrote it, rendered from Markdown, plus the slicer's own overview
+of what the PR does. The one view of the page that is not code, and the
+sidebar's other kind of destination — a slice, or this.
+_Avoid_: description tab, readme, notes, body (reserved for a hunk's or an
+issue's text)
 
 **Slice panel**:
 The first panel in a slice's track: the slice's title, summary, rationale,

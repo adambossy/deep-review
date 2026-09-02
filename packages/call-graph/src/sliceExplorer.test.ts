@@ -292,12 +292,27 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(html).toContain('fetch("/alive"');
   });
 
-  it("offers the description as a second view, with the code selected first", () => {
-    expect(html).toContain('<button class="view-tab" role="tab" data-view="slices" aria-selected="true">Slices</button>');
-    expect(html).toContain('data-view="description" aria-selected="false">Description</button>');
-    // The code view is what the page opens on; the prose waits, hidden.
-    expect(html).toContain('<div class="stage" data-view="slices">');
-    expect(html).toContain('<section class="doc-view" data-view="description" hidden>');
+  it("names the description in the sidebar, alongside the slices", () => {
+    const side = html.slice(html.indexOf('<aside class="side">'), html.indexOf("</aside>"));
+    expect(side).toContain('<button class="slice-link doc-link" type="button">Description</button>');
+    // Both kinds of destination are the same kind of tappable sidebar link.
+    expect([...side.matchAll(/class="slice-link/g)]).toHaveLength(3);
+    expect(html).not.toContain("view-tab");
+  });
+
+  it("shows the code first, and switches views on one body class", () => {
+    // No `hidden` on either view: which one is showing is CSS driven by the
+    // class, so the deck is never rebuilt on the way back.
+    expect(html).toContain('<section class="doc-view">');
+    expect(html).toContain('<div class="stage">');
+    expect(html).toContain("body.showing-description .doc-view { display: block; }");
+    expect(html).toContain("body.showing-description .stage { display: none; }");
+    expect(html).toContain('.doc-link")) body.classList.add("showing-description")');
+    expect(html).toContain('.slice-link")) body.classList.remove("showing-description")');
+  });
+
+  it("leaves paging to the deck only while the deck is what's showing", () => {
+    expect(html).toContain('if (document.body.classList.contains("showing-description")) return;');
   });
 
   it("renders the description as markdown, alongside the model's overview", () => {
@@ -309,9 +324,9 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(doc).toContain(`<p class="doc-overview">does a thing</p>`);
   });
 
-  it("says a PR has no description rather than dropping the tab", () => {
+  it("says a PR has no description rather than dropping the sidebar entry", () => {
     expect(html).toContain('class="doc-empty">This PR has no description.');
-    expect(html).toContain('data-view="description"');
+    expect(html).toContain('class="slice-link doc-link"');
   });
 
   it("ships no debug hints unless asked", () => {
