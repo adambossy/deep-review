@@ -158,9 +158,10 @@ async function main(): Promise<void> {
     log(`Slices written to ${reportFile}`);
   }
 
-  const { report, index, headDir } = await loadRenderEntry(reportFile, workDir);
+  const { report, diff, index, headDir } = await loadRenderEntry(reportFile, workDir);
   const input = await buildSliceExplorerInput({
     report,
+    diff,
     index,
     headDir,
     ...(workDir ? { workDir } : {}),

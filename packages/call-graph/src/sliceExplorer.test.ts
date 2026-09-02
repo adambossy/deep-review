@@ -125,7 +125,7 @@ function render(overrides: Partial<SliceInput> = {}): string {
   });
 }
 
-/** The same page for a PR that has a description, for the description tab. */
+/** The same page for a PR that has a description, for the description view. */
 const describedHtml = renderSliceExplorerHtml({
   prUrl: "https://github.com/a/b/pull/1",
   prTitle: "A PR",
@@ -338,6 +338,23 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
   it("says a PR has no description rather than dropping the sidebar entry", () => {
     expect(html).toContain('class="doc-empty">This PR has no description.');
     expect(html).toContain('class="side-link doc-link"');
+  });
+
+  it("restores a history step with the panels' anchors and lit pair, reusing panels still on the track", () => {
+    // Each step carries what every panel was opened for and which pair was
+    // lit, not just the node ids — and the restore hands them back.
+    expect(html).toContain("anchors: children.map(function (c) { return c.__anchor || null; })");
+    expect(html).toContain("anchors: step.anchors,");
+    expect(html).toContain("link: step.link,");
+    expect(html).toContain("__restore(step.ids, step.pos, step.anchors, step.link)");
+    expect(html).toContain("root.__restore = function (ids, newPos, anchors, link)");
+    // A panel still on the track keeps its scroll; a detached one is scrolled
+    // back to its anchor once re-attached.
+    expect(html).toContain("if (p.onTrack) { p.el.scrollTop = p.scrollTop; continue; }");
+    // A rebuilt panel scrolls to its anchor; the pair is re-lit through the
+    // same routine a live walk uses.
+    expect(html).toContain("if (el) revealInPanel(p.el, el);");
+    expect(html).toContain("if (from && to) applyLink(from, link.fromDesc, to, link.toDesc);");
   });
 
   it("ships no debug hints unless asked", () => {

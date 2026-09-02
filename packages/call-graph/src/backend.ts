@@ -90,7 +90,12 @@ export interface LanguageBackend {
    * when `ref` is not callable — the caller falls back to `referencesAt`.
    */
   incomingCallsAt(ref: DeclRef): Promise<IncomingReference[] | null>;
-  /** Every use of the symbol declared at `ref`, excluding the declaration. */
+  /**
+   * Every use of the symbol declared at `ref`, excluding the declaration and
+   * the import/export bindings that only bring the name into scope. For a
+   * callable this is a superset of `incomingCallsAt`: it also finds the
+   * places the function is passed as a value rather than called.
+   */
   referencesAt(ref: DeclRef): Promise<IncomingReference[]>;
   dispose(): void;
 }

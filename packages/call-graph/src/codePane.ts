@@ -14,7 +14,7 @@ import {
   type DiffRow,
   type LineSpan,
 } from "./diffView.js";
-import { escapeHtml as esc, type Language, type Mark } from "./highlight.js";
+import { escapeHtml as esc, type Language } from "./highlight.js";
 import { scopeLabelFor, type Decorations, type FileEntry } from "./html.js";
 
 export interface CodePaneInput {
@@ -26,14 +26,12 @@ export interface CodePaneInput {
   lang: Language;
   /** Row classes and marks keyed by head line (call marks, self-sym, …). */
   decorations?: Decorations | undefined;
-  /** Extra marks for a row from its text; the head line is null for a removed row. */
-  marksFor?: ((text: string, headLine: number | null) => Mark[]) | undefined;
   /** Head span outlined as the focused declaration. */
   focus?: LineSpan | undefined;
   /**
-   * Make the pane answerable: every identifier gets an `.id` span, and the
-   * pane says which file (by default `file`) and side it shows, so a click
-   * can be turned into a position the navigation server understands.
+   * Make the pane answerable: it says which file (by default `file`) and
+   * side it shows, so a click on one of its `.id` spans can be turned into
+   * a position the navigation server understands.
    */
   navigable?: { side: "before" | "after"; file?: string } | undefined;
   /** Debug builds: explain every mark (`data-why`). */
@@ -71,9 +69,7 @@ export function renderCodePane(input: CodePaneInput): string {
     lang: input.lang,
     entry,
     decorations: input.decorations,
-    marksFor: input.marksFor,
     focus: input.focus,
-    identifiers: Boolean(navigable),
     debug: input.debug,
   });
   const paneAttrs = navigable

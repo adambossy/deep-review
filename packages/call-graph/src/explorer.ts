@@ -52,6 +52,15 @@ export interface PanelOptions {
   debug?: boolean | undefined;
 }
 
+export interface DefinitionPanelOptions extends PanelOptions {
+  /**
+   * The PR's hunks over this declaration, head-side. Taken from the whole
+   * diff rather than from a slice's fragments: which slice claimed the
+   * change says nothing about whether the declaration changed.
+   */
+  hunks?: DiffHunk[] | undefined;
+}
+
 /**
  * The diff rows a panel shows for a declaration: the whole file's changes
  * and the declaration itself, each with context, when the file is embedded;
@@ -190,15 +199,21 @@ export function renderPanel(
 /**
  * A panel for a definition the call graph did not reach — a class, a
  * constant, an import, a local, or something in a dependency. Same card as
- * a function's, minus the call-graph parts (no called-by rows, no diff).
- * Rendered by the navigation server when a reader first opens it.
+ * a function's, minus the called-by rows the call graph would supply. Its
+ * diff comes from the PR instead, so the panel shades the same whichever
+ * slice the reader opened it from. Rendered by the navigation server when a
+ * reader first opens it.
  */
-export function renderDefinitionPanel(def: DefinitionTarget, index: FileIndex, options: PanelOptions = {}): string {
+export function renderDefinitionPanel(
+  def: DefinitionTarget,
+  index: FileIndex,
+  options: DefinitionPanelOptions = {},
+): string {
   const debug = options.debug ?? false;
   // A window wins when present: the file is not on the page whole.
   const entry = def.external || def.source ? undefined : index.get(`after:${def.file}`);
   if (!entry && !def.source) return "";
-  const rows = panelRows({ ...def, source: def.source ? [def.source] : [] }, [], entry);
+  const rows = panelRows({ ...def, source: def.source ? [def.source] : [] }, options.hunks ?? [], entry);
 
   const decorations: Decorations = new Map();
   decorations.set(def.nameLine, {
@@ -306,6 +321,7 @@ export const EXPLORER_CSS = `
   }
   .ref-menu .call-sites-label { margin: 0 0.5rem 0.2rem; }
   .ref-menu .ref-more { padding: 0.2rem 0.5rem; font-size: 0.72rem; color: var(--ink-faint); }
+  .ref-menu .ref-tag { margin-left: 0.35rem; padding: 0 0.3rem; border-radius: 3px; font-size: 0.66rem; color: var(--ink-faint); background: var(--accent-soft); }
 `;
 
 /**
@@ -448,33 +464,43 @@ function initExplorer(root, NAMES, onNavigate) {
      as much as ten. Left untouched by the reveal-in-place shortcut below,
      since that's a pure "look left", not a new pick. */
   var freshCaller = false;
-  /* The slice panel (when this track has one) is server-rendered directly
-     into the track, not duplicated into the defs — its diff content can be
-     large, and there's only ever one. Keep a live reference so a history
-     restore can move it back in without needing a def to clone. */
-  var pinnedNode = track.children[0] && track.children[0].dataset.node === "__slice__" ? track.children[0] : null;
+  /* One live element per node this track has shown. A panel walked away
+     from is detached, not discarded: the gaps the reader expanded and the
+     answers its spans have collected come back with it on the next visit.
+     The defs stay pristine templates — the first visit clones one, every
+     later visit returns the same element. The slice panel is here from the
+     start: it is server-rendered straight into the track, never duplicated
+     into the defs, since its diff can be large and there is only ever one. */
+  var live = Object.create(null);
+  if (track.children[0] && track.children[0].dataset.node === "__slice__") live.__slice__ = track.children[0];
+  function keep(id, panel) { live[id] = panel; return panel; }
   function esc1(id) { return window.CSS && CSS.escape ? CSS.escape(id) : id; }
-  /* This track's own graph panels, then page-wide definition panels, then —
-     a graph node walked only in another slice, e.g. a function reached by
-     that slice's own call path but not this one's — every other track's
-     panel-defs. All tracks render their panels into the DOM up front (just
-     hidden), so a cross-slice node is still right there. Only a definition
-     the page has never shown goes to the server, and it is kept in
-     #shared-defs for next time. */
-  function panelFor(id) {
-    if (pinnedNode && id === "__slice__") return Promise.resolve(pinnedNode);
+  /* The panel for a node. One already shown comes back as it was — unless
+     it is still on the track (a recursive walk revisits a node in view), in
+     which case a copy joins it rather than tearing it out of the deck; a
+     rebuild of the whole track is about to detach everything and takes the
+     element itself. A first visit looks in this track's own graph panels,
+     then page-wide definition panels, then — a graph node walked only in
+     another slice, e.g. a function reached by that slice's own call path
+     but not this one's — every other track's panel-defs. All tracks render
+     their panels into the DOM up front (just hidden), so a cross-slice node
+     is still right there. Only a definition the page has never shown goes
+     to the server, and it is kept in #shared-defs for next time. */
+  function panelFor(id, rebuilding) {
+    var kept = live[id];
+    if (kept) return Promise.resolve(kept.parentNode === track && !rebuilding ? kept.cloneNode(true) : kept);
     var sel = '[data-node="' + esc1(id) + '"]';
     var def = (defs && defs.querySelector(sel))
       || (sharedDefs && sharedDefs.querySelector(sel))
       || document.querySelector(".panel-defs " + sel);
-    if (def) return Promise.resolve(def.cloneNode(true));
+    if (def) return Promise.resolve(keep(id, def.cloneNode(true)));
     if (!sharedDefs) return Promise.resolve(null);
     return navFetch("/panel?id=" + encodeURIComponent(id)).then(function (answer) {
       if (!answer || !answer.html) return null;
       if (!sharedDefs.querySelector(sel)) sharedDefs.insertAdjacentHTML("beforeend", answer.html);
       window.DEFNAMES[id] = answer.name;
       var got = sharedDefs.querySelector(sel);
-      return got ? got.cloneNode(true) : null;
+      return got ? keep(id, got.cloneNode(true)) : null;
     });
   }
   function nameOf(id) { return NAMES[id] || window.DEFNAMES[id]; }
@@ -485,13 +511,12 @@ function initExplorer(root, NAMES, onNavigate) {
   function updateRails() {
     var count = track.children.length;
     track.style.setProperty("--pos", String(pos));
-    /* The pinned slice panel always sits at index 0, and every lateral
-       caller swap collapses back to right beside it — so "behind" is the
-       slice itself right after a caller pick, and that's not a real
-       waypoint (the sidebar already reaches the slice). But once a walk
-       down has happened since, the slice sitting behind reflects genuine
-       accumulated depth, not a swap — show the rail regardless of what's
-       immediately behind it. */
+    /* Every lateral caller swap collapses back to right beside the pinned
+       slice — so "behind" is the slice itself right after a caller pick,
+       and that's not a real waypoint (the sidebar already reaches the
+       slice). But once a walk down has happened since, the slice sitting
+       behind reflects genuine accumulated depth, not a swap — show the
+       rail regardless of what's immediately behind it. */
     var behind = pos > 0 && (nodeAt(pos - 1) !== "__slice__" || !freshCaller);
     viewport.classList.toggle("can-back", behind);
     viewport.classList.toggle("can-fwd", count > pos + 2);
@@ -515,12 +540,23 @@ function initExplorer(root, NAMES, onNavigate) {
       return panel;
     });
   }
-  /* Caller direction: reveal the caller on the LEFT and slide right, so the
-     track always reads caller → callee. The slice panel is pinned at the
-     head of the track — the caller slots in after it, so the way back to
-     the slice is never lost. Only the panels between the pin and the tapped
-     one go: they were a different caller chain, and each stays one tap away
-     in its callee's "called by" rows. */
+  /* Where the pinned slice panel sits, or -1. It is never removed — every
+     walk keeps a way back to the diff that started the trail — but it does
+     not always sit at the head: a caller reached from the slice's own code
+     belongs to the slice's left. */
+  function sliceSlot() {
+    for (var i = 0; i < track.children.length; i++) {
+      if (track.children[i].dataset.node === "__slice__") return i;
+    }
+    return -1;
+  }
+  /* Caller direction: the caller slides in on the LEFT of the tapped panel
+     and the deck slides right, so the track always reads caller → callee —
+     including when the tapped panel is the slice itself, which then sits to
+     the right of its own caller. The panels the caller displaces on that
+     side were a different caller chain and go; the pinned slice is the one
+     that stays, so the way back to it is never lost. Each dropped panel is
+     still one tap away in its callee's "called by" rows. */
   function walkUp(id, fromIndex) {
     if (fromIndex > 0 && nodeAt(fromIndex - 1) === id) {
       setPos(fromIndex - 1, true);
@@ -528,62 +564,115 @@ function initExplorer(root, NAMES, onNavigate) {
     }
     return panelFor(id).then(function (panel) {
       if (!panel) return null;
-      var pin = nodeAt(0) === "__slice__" ? 1 : 0;
+      /* The stale chain runs from the tapped panel back to its anchor: the
+         slice when the tapped panel sits to the slice's right, the head of
+         the track when it is the slice or something already left of it. */
+      var slice = sliceSlot();
+      var anchor = slice >= 0 && slice < fromIndex ? slice + 1 : 0;
       var oldSlot = fromIndex - pos;
-      while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
-      /* Normally the tapped panel is still sitting at pin, ready to be
-         pushed right as the new caller's pair partner. The one time nothing
-         is there — walking up for the very first time, straight from the
-         pinned slice — there's nothing to its right yet; pair it with the
-         slice on the left instead of leaving the other half of the deck
-         blank. */
-      var hasPartner = !!track.children[pin];
-      track.insertBefore(panel, track.children[pin] || null);
+      while (fromIndex > anchor) { track.removeChild(track.children[anchor]); fromIndex--; }
+      track.insertBefore(panel, track.children[anchor]);
       freshCaller = true;
-      var showAt = hasPartner ? pin : Math.max(0, pin - 1);
+      /* The tapped panel is now the caller's pair partner on the right. If
+         it had been in the left slot, start the deck there so it visibly
+         slides across as the caller takes its place. */
       if (oldSlot <= 0) {
-        setPos(showAt + 1, false);
-        setPos(showAt, true);
+        setPos(anchor + 1, false);
+        setPos(anchor, true);
       } else {
-        setPos(showAt, false);
+        setPos(anchor, false);
       }
       return panel;
     });
   }
   var linkGen = 0;
+  /* The highlighted pair the reader last made — the symbol they clicked and
+     the panel it opened — as element references plus the descriptors that
+     can find the marks again in a rebuilt copy of either panel. Null after
+     a click that lit something up in place, or before any walk. */
+  var activeLink = null;
   function clearLinks() {
     linkGen++;
+    activeLink = null;
     var old = root.querySelectorAll(".sym-link");
     for (var i = 0; i < old.length; i++) old[i].classList.remove("sym-link", "sym-dim");
   }
-  /* Tie the clicked symbol to the panel it opened: both turn accent blue;
-     the clicked one fades partially as the panes slide. */
-  function linkSymbols(link, destPanel) {
-    clearLinks();
-    var clicked;
+  /* Where a clicked link sits, in terms a fresh clone of its panel can
+     answer: the node it targets, the definition it resolves to, and its text
+     position. A clone has not been through resolveSpan, so its identifier
+     spans carry no data-target or data-def — the position is the fallback. */
+  function originDesc(link) {
     if (link.classList.contains("caller-row")) {
-      clicked = [link.querySelector(".fn-name") || link];
-    } else {
-      var scope = link.closest(".panel") || root;
-      var t = esc1(link.dataset.target);
-      clicked = scope.querySelectorAll('.csite[data-target="' + t + '"], .sym[data-target="' + t + '"]');
+      return link.dataset.refDef ? { def: link.dataset.refDef } : { row: link.dataset.target };
     }
+    var d = { target: link.dataset.target || null, def: link.dataset.def || null };
+    var at = positionOf(link);
+    if (at) d.at = { file: at.file, line: at.line, col: at.column };
+    return d;
+  }
+  /* The mark a link opens onto in its destination panel: a call site by
+     position (a row from the callers menu), or a declaration by id. */
+  function destDesc(link) {
+    if (link.classList.contains("caller-row") && link.dataset.refDef) {
+      return { site: { file: link.dataset.refFile, line: Number(link.dataset.refLine), col: Number(link.dataset.refCol) } };
+    }
+    return { decl: link.dataset.def || null };
+  }
+  function originEls(panel, d) {
+    if (!d) return [];
+    if (d.row) {
+      var row = panel.querySelector('.caller-row[data-target="' + esc1(d.row) + '"]');
+      return row ? [row.querySelector(".fn-name") || row] : [];
+    }
+    var found = [];
+    if (d.def) found = panel.querySelectorAll('.sym[data-def="' + esc1(d.def) + '"], .self-sym[data-decl="' + esc1(d.def) + '"]');
+    if (!found.length && d.target) found = panel.querySelectorAll('.csite[data-target="' + esc1(d.target) + '"], .sym[data-target="' + esc1(d.target) + '"]');
+    if (!found.length && d.at) {
+      var span = spanAt(panel, d.at.file, d.at.line, d.at.col);
+      if (span) found = [span];
+    }
+    return found;
+  }
+  /* The declaration marks a destination descriptor names. A function panel
+     has one self-sym; a definition panel may show several declarations, so
+     prefer the one tagged with the link's definition id. */
+  function declEls(panel, d) {
+    var tagged = d && d.decl && panel.querySelector('.self-sym[data-decl="' + esc1(d.decl) + '"]');
+    return tagged ? [tagged] : panel.querySelectorAll(".self-sym");
+  }
+  /* The one element a panel scrolls to for its anchor. */
+  function anchorEl(panel, d) {
+    if (d && d.site) return spanAt(panel, d.site.file, d.site.line, d.site.col);
+    var decl = declEls(panel, d);
+    return decl.length ? decl[0] : null;
+  }
+  /* Tie a clicked symbol to the panel it opened: both turn accent blue; the
+     clicked one fades partially as the panes slide. A call-site anchor stays
+     bright in the destination while its declarations fade, so the eye lands
+     on the site the caller was chosen for. Shared by a live walk and a
+     history restore, so the two cannot drift apart. */
+  function applyLink(originPanel, oDesc, destPanel, dDesc) {
+    clearLinks();
+    var clicked = originEls(originPanel, oDesc);
     for (var j = 0; j < clicked.length; j++) clicked[j].classList.add("sym-link");
-    /* The destination mark is the declaration this link resolves to. A
-       function panel has one self-sym; a definition panel may show several
-       declarations, so prefer the one tagged with the link's definition id. */
-    var dest = [];
-    if (destPanel) {
-      var tagged = link.dataset.def && destPanel.querySelector('.self-sym[data-decl="' + esc1(link.dataset.def) + '"]');
-      dest = tagged ? [tagged] : destPanel.querySelectorAll(".self-sym");
-    }
+    var dest = declEls(destPanel, dDesc);
     for (var d = 0; d < dest.length; d++) dest[d].classList.add("sym-link", "sym-dim");
-    if (dest.length) revealInPanel(destPanel, dest[0]);
+    var anchor = anchorEl(destPanel, dDesc);
+    if (anchor && dDesc && dDesc.site) anchor.classList.add("sym-link");
+    if (anchor) revealInPanel(destPanel, anchor);
+    activeLink = { origin: originPanel, originDesc: oDesc, dest: destPanel, destDesc: dDesc };
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         for (var k = 0; k < clicked.length; k++) clicked[k].classList.add("sym-dim");
       });
     });
+  }
+  /* A link just walked to \`dest\`: remember on the panel what it was opened
+     for, so a rebuilt copy can scroll to the same spot, and light the pair. */
+  function linkSymbols(link, dest) {
+    var dDesc = destDesc(link);
+    dest.__anchor = dDesc;
+    applyLink(link.closest(".panel") || root, originDesc(link), dest, dDesc);
   }
   /* A panel opens at the top of the region it renders, but the declaration
      that was asked for can sit far below that — off the bottom entirely for
@@ -630,9 +719,17 @@ function initExplorer(root, NAMES, onNavigate) {
      that's new ground or a spot it's already visited. */
   function report(id) {
     if (!onNavigate) return;
+    var children = Array.prototype.slice.call(track.children);
+    var link = null;
+    if (activeLink) {
+      var from = children.indexOf(activeLink.origin), to = children.indexOf(activeLink.dest);
+      if (from >= 0 && to >= 0) link = { from: from, fromDesc: activeLink.originDesc, to: to, toDesc: activeLink.destDesc };
+    }
     onNavigate({
       id: id,
-      ids: Array.prototype.map.call(track.children, function (c) { return c.dataset.node; }),
+      ids: children.map(function (c) { return c.dataset.node; }),
+      anchors: children.map(function (c) { return c.__anchor || null; }),
+      link: link,
       pos: pos,
     });
   }
@@ -666,20 +763,12 @@ function initExplorer(root, NAMES, onNavigate) {
         if (!link.dataset.target) return;
         walkUp(link.dataset.target, i).then(function (dest) {
           if (!dest) return;
-          linkSymbols(link, dest);
           /* A row from the callers menu: the menu is gone once the caller
              slides in, so the trail marker is the symbol the menu was opened
-             on, and the destination is the call site inside the caller. */
-          if (link.dataset.refDef) {
-            var origin = panel.querySelectorAll('.sym[data-def="' + esc1(link.dataset.refDef) + '"], .self-sym[data-decl="' + esc1(link.dataset.refDef) + '"]');
-            for (var o = 0; o < origin.length; o++) origin[o].classList.add("sym-link", "sym-dim");
-            var site = spanAt(dest, link.dataset.refFile, Number(link.dataset.refLine), Number(link.dataset.refCol));
-            if (site) {
-              site.classList.add("sym-link");
-              revealInPanel(dest, site);
-            }
-            closeRefMenu();
-          }
+             on, and the destination is the call site inside the caller —
+             linkSymbols reads both off the row's data attributes. */
+          linkSymbols(link, dest);
+          if (link.dataset.refDef) closeRefMenu();
           report(link.dataset.target);
         });
         return;
@@ -747,7 +836,9 @@ function initExplorer(root, NAMES, onNavigate) {
           (site.panelId ? ' data-target="' + escAttr(site.panelId) + '"' : " disabled") +
           ' data-ref-def="' + escAttr(found.id) + '" data-ref-file="' + escAttr(site.file) + '"' +
           ' data-ref-line="' + site.line + '" data-ref-col="' + site.startColumn + '">\\u2196 <code class="fn-name">' + escText(site.enclosingName) +
-          '</code> <span class="loc">L' + site.line + "</span> <code>" + escText(site.snippet) + "</code></button>";
+          '</code> <span class="loc">L' + site.line + "</span>" +
+          (site.indirect ? '<span class="ref-tag" title="passed as a value, not called here">passed</span>' : "") +
+          " <code>" + escText(site.snippet) + "</code></button>";
       }
       menu.innerHTML = html;
       left = Math.max(0, Math.min(left, panel.scrollLeft + panel.clientWidth - menu.offsetWidth - 8));
@@ -756,18 +847,41 @@ function initExplorer(root, NAMES, onNavigate) {
   }
   /* External restore point for a history entry: rebuild the track from a
      saved list of node ids and re-settle the viewport at the saved slot.
-     Panels come back through the same lookup a walk uses, so one the server
-     rendered earlier is still there (or fetched again). */
-  root.__restore = function (ids, newPos) {
+     Panels come back through the same lookup a walk uses — the live element
+     each node already has, or a fetch for one the page has never shown. A
+     node listed twice (a recursive walk) gets a copy for its second slot.
+     One still on the track keeps the scroll the reader left it at; one that
+     was detached lost its scroll along with its layout, and is scrolled
+     back to the anchor it was originally opened for. The highlighted pair
+     is rebuilt last from the same descriptors a live walk records — which
+     brings the step's own destination mark back into view even in a panel
+     the reader has since scrolled away from, since that mark is what the
+     step *is*. */
+  root.__restore = function (ids, newPos, anchors, link) {
     var panels = [];
-    return ids.reduce(function (chain, id) {
+    return ids.reduce(function (chain, id, i) {
       return chain.then(function () {
-        return panelFor(id).then(function (panel) { if (panel) panels.push(panel); });
+        return panelFor(id, true).then(function (panel) {
+          if (!panel) return;
+          var copy = panels.some(function (p) { return p.el === panel; });
+          var el = copy ? panel.cloneNode(true) : panel;
+          el.__anchor = anchors && anchors[i] ? anchors[i] : null;
+          panels.push({ el: el, onTrack: !copy && el.parentNode === track, scrollTop: el.scrollTop });
+        });
       });
     }, Promise.resolve()).then(function () {
       track.innerHTML = "";
-      for (var r = 0; r < panels.length; r++) track.appendChild(panels[r]);
+      for (var r = 0; r < panels.length; r++) track.appendChild(panels[r].el);
       setPos(Math.max(0, Math.min(newPos, track.children.length - 2)), true);
+      clearLinks();
+      for (var f = 0; f < panels.length; f++) {
+        var p = panels[f];
+        if (p.onTrack) { p.el.scrollTop = p.scrollTop; continue; }
+        var el = anchorEl(p.el, p.el.__anchor);
+        if (el) revealInPanel(p.el, el);
+      }
+      var from = link && track.children[link.from], to = link && track.children[link.to];
+      if (from && to) applyLink(from, link.fromDesc, to, link.toDesc);
     });
   };
   updateRails();

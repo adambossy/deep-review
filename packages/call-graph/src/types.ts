@@ -72,6 +72,12 @@ export interface ReferenceSite {
    * synthesized panel. Absent for a site at module level.
    */
   panelId?: string;
+  /**
+   * On a "calls" list: the function is used here without being called —
+   * passed as a value to `functools.partial`, `map`, a callback slot. Call
+   * hierarchy does not see these, so they come from the reference search.
+   */
+  indirect?: true;
 }
 
 /** Every place a definition is used, for the callers menu. */

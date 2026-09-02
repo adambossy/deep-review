@@ -242,6 +242,13 @@ describe("renderCallPathExplorerHtml", () => {
     expect(html).toContain("--pos");
   });
 
+  it("keeps one live element per panel, so a revisited panel comes back as the reader left it", () => {
+    // The defs are templates cloned once; after that the same element returns.
+    expect(html).toContain("var live = Object.create(null)");
+    expect(html).toContain("keep(id, def.cloneNode(true))");
+    expect(html).toContain("kept.parentNode === track && !rebuilding ? kept.cloneNode(true) : kept");
+  });
+
   it("includes the clicked-symbol linking styles and behavior", () => {
     expect(html).toContain(".sym-link");
     expect(html).toContain(".sym-link.sym-dim");
@@ -348,7 +355,10 @@ describe("renderDefinitionPanel", () => {
 
   it("explains its marks only in a debug build", () => {
     expect(renderDefinitionPanel(internal, index)).not.toContain("data-why");
-    const debug = renderDefinitionPanel(internal, index, { debug: true });
+    // The panel's own marks follow its option; the identifier spans come
+    // baked into the file index, so a debug page builds a debug index.
+    const debugIndex = buildFileIndex(result.files, { debug: true });
+    const debug = renderDefinitionPanel(internal, debugIndex, { debug: true });
     expect(debug).toContain('data-why="decl · leaf (function) leaf.ts:20:9"');
     expect(debug).toContain('data-why="id · not asked yet"');
   });

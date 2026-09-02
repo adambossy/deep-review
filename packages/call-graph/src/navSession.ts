@@ -7,12 +7,13 @@
  */
 
 import path from "node:path";
-import type { DeclRef, EnclosingDeclaration, LanguageBackend } from "./backend.js";
+import { hunksForFileRange } from "@deep-review/pr";
+import type { DeclRef, EnclosingDeclaration, IncomingReference, LanguageBackend } from "./backend.js";
 import { Backends } from "./backends.js";
 import { definitionPanelId, renderDefinitionPanel } from "./explorer.js";
 import type { FileIndex } from "./html.js";
 import { explorerFileIndex, type SliceExplorerInput } from "./sliceExplorer.js";
-import type { DefinitionId, DefinitionTarget, ReferenceList, ReferenceSite } from "./types.js";
+import type { DefinitionId, DefinitionTarget, FileDiff, ReferenceList, ReferenceSite } from "./types.js";
 
 export { definitionPanelId } from "./explorer.js";
 
@@ -65,6 +66,8 @@ export class NavSession {
   private readonly linesByFile = new Map<string, string[]>();
   /** Files the page embeds whole; a definition elsewhere gets a window. */
   private readonly pageFiles: Set<string>;
+  /** The PR's diff, whole — what every panel rendered here is shaded from. */
+  private readonly diff: FileDiff[];
   /** `<file>:<nameLine>` of a graph node's declaration → the node's id. */
   private readonly nodeByDecl = new Map<string, string>();
   private readonly defs = new Map<DefinitionId, DefinitionTarget>();
@@ -82,6 +85,7 @@ export class NavSession {
     this.backends = new Backends(headDir);
     this.index = explorerFileIndex(input);
     this.debug = options.debug ?? false;
+    this.diff = input.diff ?? [];
     for (const file of [...input.files, ...input.slices.flatMap((s) => s.graph?.files ?? [])]) {
       if (file.side === "after" && !this.linesByFile.has(file.path)) this.linesByFile.set(file.path, file.lines);
     }
@@ -212,6 +216,12 @@ export class NavSession {
    * Who calls a definition — or, for a class or constant that call hierarchy
    * does not answer for, who references it. Every site, uncapped, each with
    * the panel to walk up into. Null for an id this session never handed out.
+   *
+   * Call hierarchy only reports call expressions, so a function handed to
+   * `functools.partial`, `asyncio.to_thread`, `map`, or a callback parameter
+   * is invisible to it — and a function whose only production use is such a
+   * hand-off would read as called by nothing but its tests. The reference
+   * search does see those sites, so they are folded in and flagged indirect.
    */
   references(id: DefinitionId): Promise<ReferenceList | null> {
     let pending = this.refs.get(id);
@@ -228,9 +238,11 @@ export class NavSession {
     const backend: LanguageBackend | null = this.backends.for(def.file);
     if (!backend) return { kind: "references", sites: [] };
     const ref: DeclRef = { fileName: this.absolute(def.file), line: def.nameLine, column: def.nameColumn };
-    const calls = await backend.incomingCallsAt(ref).catch(() => null);
-    const found = calls ?? (await backend.referencesAt(ref).catch(() => []));
-    const sites: ReferenceSite[] = found.map((r) => ({
+    const [calls, uses] = await Promise.all([
+      backend.incomingCallsAt(ref).catch(() => null),
+      backend.referencesAt(ref).catch((): IncomingReference[] => []),
+    ]);
+    const site = (r: IncomingReference): ReferenceSite => ({
       file: toRelative(this.headDir, r.fileName),
       line: r.line,
       startColumn: r.startColumn,
@@ -238,8 +250,15 @@ export class NavSession {
       snippet: r.snippet,
       enclosingName: r.enclosing?.name ?? path.basename(r.fileName),
       ...(r.enclosing ? { panelId: this.enclosingPanel(r.enclosing) } : {}),
-    }));
-    return { kind: calls ? "calls" : "references", sites };
+    });
+    if (!calls) return { kind: "references", sites: uses.map(site) };
+    const at = (r: IncomingReference) => `${r.fileName}:${r.line}:${r.startColumn}`;
+    const called = new Set(calls.map(at));
+    const sites = [
+      ...calls.map(site),
+      ...uses.filter((r) => !called.has(at(r))).map((r) => ({ ...site(r), indirect: true as const })),
+    ].sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.startColumn - b.startColumn);
+    return { kind: "calls", sites };
   }
 
   /**
@@ -275,7 +294,12 @@ export class NavSession {
       const to = Math.min(lines.length, def.endLine + WINDOW_CONTEXT, from + WINDOW_MAX_LINES - 1);
       def.source = { startLine: from, lines: lines.slice(from - 1, to) };
     }
-    const html = renderDefinitionPanel(def, this.index, { debug: this.debug });
+    // Head-side hunks over the declaration itself, the way a graph node's
+    // panel takes its own. A definition outside the repo has none.
+    const hunks = def.external
+      ? []
+      : hunksForFileRange(this.diff, "new", def.file, def.startLine, def.endLine);
+    const html = renderDefinitionPanel(def, this.index, { debug: this.debug, hunks });
     if (!html) return null;
     return { id: definitionPanelId(def), name: def.name, html };
   }
