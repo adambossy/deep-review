@@ -105,7 +105,40 @@ async function readJsonBody(req: IncomingMessage, limit = 1 << 20): Promise<unkn
     chunks.push(buf);
   }
   if (size === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("request body is not JSON");
+  }
+}
+
+/**
+ * Whether a state-changing request came from somewhere other than this
+ * server's own pages or a local program. The server is loopback-only, but
+ * any web page a browser visits can still *send* to 127.0.0.1 (CSRF needs
+ * no CORS approval to fire), so a POST carrying a foreign Origin — or a
+ * Host that is not this server — could stop the server or spend the model
+ * budget from a drive-by tab. The CLI and the pages themselves pass: node
+ * sends no Origin, and the pages' own beacons are same-origin.
+ */
+function crossSite(req: IncomingMessage): boolean {
+  const port = req.socket.localPort;
+  const own = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const host = req.headers.host;
+  if (!host || !own.has(host.toLowerCase())) return true;
+  const origin = req.headers.origin;
+  if (origin) {
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      return true;
+    }
+    if (!own.has(originHost)) return true;
+  }
+  const site = req.headers["sec-fetch-site"];
+  if (typeof site === "string" && site !== "same-origin" && site !== "none") return true;
+  return false;
 }
 
 /**
@@ -123,8 +156,15 @@ interface PrRoute {
 function routePr(pathname: string): PrRoute | null {
   const parts = pathname.split("/").filter((p) => p !== "");
   if (parts.length < 4 || parts[0] !== "pr") return null;
-  const owner = decodeURIComponent(parts[1]!);
-  const repo = decodeURIComponent(parts[2]!);
+  let owner: string;
+  let repo: string;
+  try {
+    owner = decodeURIComponent(parts[1]!);
+    repo = decodeURIComponent(parts[2]!);
+  } catch {
+    // A malformed percent-escape is a bad address, not a server fault.
+    return null;
+  }
   const number = Number(parts[3]);
   if (!owner || !repo || !Number.isInteger(number) || number <= 0) return null;
   const ref = { owner, repo, number };
@@ -227,6 +267,14 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
     const path = url.pathname;
     const method = req.method ?? "GET";
 
+    // Everything that changes state is a non-GET; none of it is for a
+    // foreign page. (GET responses are unreadable cross-origin anyway —
+    // no CORS headers are ever sent.)
+    if (method !== "GET" && method !== "HEAD" && crossSite(req)) {
+      sendJson(res, 403, { why: "not from this server's own pages" });
+      return;
+    }
+
     // Server-wide routes first; a PR can never be named `_`.
     if (method === "POST" && path === "/quit") {
       res.writeHead(204, NO_STORE);
@@ -250,7 +298,14 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
         return;
       }
       if (method === "POST") {
-        const body = (await readJsonBody(req)) as {
+        let parsed: unknown;
+        try {
+          parsed = await readJsonBody(req);
+        } catch (error) {
+          sendJson(res, 400, { why: error instanceof Error ? error.message : "bad body" });
+          return;
+        }
+        const body = parsed as {
           owner?: string;
           repo?: string;
           number?: number;

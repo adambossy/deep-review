@@ -11,7 +11,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -51,17 +51,20 @@ export function readLock(): ServerLock | null {
   }
 }
 
-/** The lock's claim, verified: the server there answered `/health`. */
-export async function probe(url: string, timeoutMs = 1500): Promise<boolean> {
+/** The lock's claim, verified: what the server there says about itself, or null. */
+export async function probe(
+  url: string,
+  timeoutMs = 1500,
+): Promise<{ version: string } | null> {
   try {
     const response = await fetch(new URL("/health", url), {
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!response.ok) return false;
-    const body = (await response.json()) as { ok?: boolean };
-    return body.ok === true;
+    if (!response.ok) return null;
+    const body = (await response.json()) as { ok?: boolean; version?: string };
+    return body.ok === true ? { version: body.version ?? "0.0.0" } : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -82,9 +85,22 @@ function defaultDaemonWorkDir(): string {
   return path.join(stateDir(), "work");
 }
 
-/** The slice JSON a fresh run of this PR is kept at (the CLI's default name, homed). */
-function cachedSliceFile(repo: string, number: number): string {
-  return path.join(stateDir(), "slices", `slices-${repo}-pr${number}.json`);
+/** One path-safe filename segment; GitHub names are tame, but the path must not care. */
+function safeName(part: string): string {
+  return part.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+/**
+ * The slice JSON a fresh run of this PR is kept at. Keyed by the PR's full
+ * identity — owner included, or `vercel/swr#100` and a fork's `swr#100`
+ * would share a file.
+ */
+function cachedSliceFile(owner: string, repo: string, number: number): string {
+  return path.join(
+    stateDir(),
+    "slices",
+    `slices-${safeName(owner)}-${safeName(repo)}-pr${number}.json`,
+  );
 }
 
 /** The head commit a saved slice report was made from, or null if unreadable. */
@@ -115,10 +131,12 @@ export const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => 
     log(`using slices from ${reportFile}`);
   } else {
     const info = await fetchPrInfo(parsePrUrl(prUrl));
-    const cached = cachedSliceFile(info.repo, info.number);
+    const cached = cachedSliceFile(info.owner, info.repo, info.number);
     if (existsSync(cached) && reportHeadSha(cached) === info.headSha) {
       reportFile = cached;
       log(`head unchanged at ${info.headSha.slice(0, 8)}; reusing slices from ${cached}`);
+      // --save means "leave me the slice JSON" however the run was answered.
+      if (options.save) copyFileSync(cached, options.save);
     } else {
       const report = await slicePr({
         prUrl,
@@ -187,7 +205,30 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
     version: VERSION,
     startedAt: Date.now(),
   };
-  writeFileSync(lockFile(), JSON.stringify(lock, null, 2));
+  // The claim must be atomic: two first invocations that both found no
+  // server will both reach here, and check-then-write would leave the
+  // loser running forever with no lock pointing at it. Exclusive create
+  // makes exactly one winner; a loser defers to a live claimant and shuts
+  // itself down, or clears a dead one's file and tries once more.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      writeFileSync(lockFile(), JSON.stringify(lock, null, 2), { flag: "wx" });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 5) {
+        await server.close();
+        throw error;
+      }
+      const claimant = readLock();
+      if (claimant && claimant.pid !== process.pid && (await probe(claimant.url))) {
+        await server.close();
+        throw new Error(
+          `A server is already running at ${claimant.url} (pr-review stop to stop it).`,
+        );
+      }
+      rmSync(lockFile(), { force: true });
+    }
+  }
 
   const releaseLock = (): void => {
     // Only withdraw our own claim; a newer server may have overwritten it.
@@ -208,9 +249,25 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
  * spawned process is this same CLI with `serve`, so there is exactly one
  * code path a server starts through.
  */
-export async function ensureServer(): Promise<{ url: string; started: boolean }> {
-  const existing = await findServer();
-  if (existing) return { url: existing, started: false };
+export interface EnsuredServer {
+  url: string;
+  started: boolean;
+  /** Set when the running server is an older build than this CLI. */
+  staleVersion?: string;
+}
+
+export async function ensureServer(): Promise<EnsuredServer> {
+  const lock = readLock();
+  if (lock) {
+    const health = await probe(lock.url);
+    if (health) {
+      return {
+        url: lock.url,
+        started: false,
+        ...(health.version !== VERSION ? { staleVersion: health.version } : {}),
+      };
+    }
+  }
 
   mkdirSync(stateDir(), { recursive: true });
   const log = openSync(logFile(), "a");
@@ -261,7 +318,12 @@ export async function listServerPrs(serverUrl: string): Promise<PrView[]> {
   return ((await response.json()) as { prs: PrView[] }).prs;
 }
 
-/** Stop the running server, if any. True when there was one to stop. */
+/**
+ * Stop the running server, if any, and wait until it is actually gone —
+ * "stopped" that returns while the port and lockfile are still live would
+ * make `pr-review stop && pr-review serve` flaky. True when there was one
+ * to stop.
+ */
 export async function stopServer(): Promise<boolean> {
   const url = await findServer();
   if (!url) {
@@ -270,5 +332,10 @@ export async function stopServer(): Promise<boolean> {
     return false;
   }
   await fetch(new URL("/quit", url), { method: "POST" });
-  return true;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!(await probe(url, 500))) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`The server at ${url} did not stop; kill pid ${readLock()?.pid ?? "?"} by hand.`);
 }

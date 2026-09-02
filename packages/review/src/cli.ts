@@ -264,8 +264,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { url: serverUrl, started } = await ensureServer();
+  const { url: serverUrl, started, staleVersion } = await ensureServer();
   log(started ? `Started the server at ${serverUrl} (log: ${logFile()}).` : `Using the server at ${serverUrl}.`);
+  if (staleVersion) {
+    log(
+      `The running server is v${staleVersion}; this CLI is newer. \`pr-review stop\` and re-add to refresh it.`,
+    );
+  }
 
   const added: PrView[] = [];
   for (const target of targets) {
