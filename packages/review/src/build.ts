@@ -6,12 +6,19 @@ import {
   type SliceExplorerInput,
   type SliceInput,
 } from "@deep-review/call-graph";
+import type { FileDiff } from "@deep-review/pr";
 import type { DiffIndex } from "@deep-review/slicer";
 import type { Fragment, SliceReport } from "@deep-review/slicer";
 
 export interface BuildOptions {
   report: SliceReport;
   index: DiffIndex;
+  /**
+   * The PR's diff, whole. The slices carry their own fragments of it; this
+   * is what a panel opened by a symbol click is shaded from, so a
+   * declaration reads as changed no matter which slice claimed the change.
+   */
+  diff?: FileDiff[];
   /** Where the clone/worktrees are cached, shared with the slicing run. */
   workDir?: string;
   /** The head worktree, read for the context around each fragment. */
@@ -167,6 +174,7 @@ export async function buildSliceExplorerInput(
     number: report.pr.number,
     overview: report.overview,
     slices,
+    ...(options.diff ? { diff: options.diff } : {}),
     files: options.headDir
       ? await readChangedFiles(report, options.headDir, log)
       : [],

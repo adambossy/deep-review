@@ -7,12 +7,13 @@
  */
 
 import path from "node:path";
+import { hunksForFileRange } from "@deep-review/pr";
 import type { DeclRef, EnclosingDeclaration, IncomingReference, LanguageBackend } from "./backend.js";
 import { Backends } from "./backends.js";
 import { definitionPanelId, renderDefinitionPanel } from "./explorer.js";
 import type { FileIndex } from "./html.js";
 import { explorerFileIndex, type SliceExplorerInput } from "./sliceExplorer.js";
-import type { DefinitionId, DefinitionTarget, ReferenceList, ReferenceSite } from "./types.js";
+import type { DefinitionId, DefinitionTarget, FileDiff, ReferenceList, ReferenceSite } from "./types.js";
 
 export { definitionPanelId } from "./explorer.js";
 
@@ -65,6 +66,8 @@ export class NavSession {
   private readonly linesByFile = new Map<string, string[]>();
   /** Files the page embeds whole; a definition elsewhere gets a window. */
   private readonly pageFiles: Set<string>;
+  /** The PR's diff, whole — what every panel rendered here is shaded from. */
+  private readonly diff: FileDiff[];
   /** `<file>:<nameLine>` of a graph node's declaration → the node's id. */
   private readonly nodeByDecl = new Map<string, string>();
   private readonly defs = new Map<DefinitionId, DefinitionTarget>();
@@ -82,6 +85,7 @@ export class NavSession {
     this.backends = new Backends(headDir);
     this.index = explorerFileIndex(input);
     this.debug = options.debug ?? false;
+    this.diff = input.diff ?? [];
     for (const file of [...input.files, ...input.slices.flatMap((s) => s.graph?.files ?? [])]) {
       if (file.side === "after" && !this.linesByFile.has(file.path)) this.linesByFile.set(file.path, file.lines);
     }
@@ -290,7 +294,12 @@ export class NavSession {
       const to = Math.min(lines.length, def.endLine + WINDOW_CONTEXT, from + WINDOW_MAX_LINES - 1);
       def.source = { startLine: from, lines: lines.slice(from - 1, to) };
     }
-    const html = renderDefinitionPanel(def, this.index, { debug: this.debug });
+    // Head-side hunks over the declaration itself, the way a graph node's
+    // panel takes its own. A definition outside the repo has none.
+    const hunks = def.external
+      ? []
+      : hunksForFileRange(this.diff, "new", def.file, def.startLine, def.endLine);
+    const html = renderDefinitionPanel(def, this.index, { debug: this.debug, hunks });
     if (!html) return null;
     return { id: definitionPanelId(def), name: def.name, html };
   }

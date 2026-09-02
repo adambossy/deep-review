@@ -5,7 +5,7 @@ import { escapeHtml as esc, languageOf } from "./highlight.js";
 import { buildFileIndex, CSS, GAP_JS, renderDataBlob, SCOPE_JS, WRAP_JS, type FileIndex } from "./html.js";
 
 export { fileBlockRanges } from "./diffView.js";
-import type { CallPathResult, EmbeddedFile } from "./types.js";
+import type { CallPathResult, EmbeddedFile, FileDiff } from "./types.js";
 
 /**
  * One fragment of a slice: a contiguous run of diff lines. Given
@@ -63,6 +63,15 @@ export interface SliceExplorerInput {
    * fragment rendering.
    */
   files: EmbeddedFile[];
+  /**
+   * The PR's diff, whole. Slices partition the diff between them, but a
+   * panel opened by a symbol click is about a declaration, not a slice —
+   * a function added by slice 1 has to read as added when it is reached
+   * from slice 2, so panels are shaded from the PR's changes rather than
+   * from the fragments of whichever slice the reader walked in from.
+   * Absent, opened panels show plain source.
+   */
+  diff?: FileDiff[] | undefined;
   /**
    * Debug builds: every marked symbol says why it is marked, and every
    * identifier what the navigation server said about it, in a hint shown
