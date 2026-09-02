@@ -168,14 +168,17 @@ const SLICE_CSS = `
   .side-label { font-size: 0.62rem; font-weight: 600; letter-spacing: 0.1em;
                 text-transform: uppercase; color: var(--ink-faint); margin-bottom: 0.4rem; }
   .slice-nav { display: flex; flex-direction: column; gap: 2px; }
-  .slice-link {
+  /* Every destination the sidebar offers looks the same; the slice-link and
+     doc-link classes say which kind it is, and only the slices are the
+     deck's pips. */
+  .side-link {
     display: flex; gap: 0.55rem; align-items: baseline; text-align: left;
     padding: 0.42rem 0.55rem; border-radius: 6px; border: none;
     background: none; color: var(--ink-soft); font: inherit; font-size: 0.78rem;
     cursor: pointer; line-height: 1.3;
   }
-  .slice-link:hover { background: var(--panel-2); color: var(--ink); }
-  .slice-link.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .side-link:hover { background: var(--panel-2); color: var(--ink); }
+  .side-link.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .slice-link .n { font-variant-numeric: tabular-nums; font-size: 0.68rem; opacity: 0.7; }
   .side .foot { margin-top: auto; font-size: 0.7rem; color: var(--ink-faint); }
   .progress-label { font-variant-numeric: tabular-nums; }
@@ -252,6 +255,7 @@ const SLICE_CSS = `
   body.showing-description .slice-link.on {
     background: none; color: var(--ink-soft); font-weight: 400;
   }
+  body.showing-description .slice-link.on:hover { background: var(--panel-2); color: var(--ink); }
   .doc-title { font-size: 1.35rem; font-weight: 650; letter-spacing: -0.015em;
                margin: 0 0 0.4rem; max-width: 48rem; }
   .doc-meta { font-size: 0.74rem; color: var(--ink-faint); margin-bottom: 1.4rem; }
@@ -602,7 +606,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   const sliceLinks = input.slices
     .map(
       (s, i) =>
-        `<button class="slice-link" title="${esc(`${i + 1}. ${s.title}`)}"><span class="n">${i + 1}</span> ${esc(s.title)}</button>`,
+        `<button class="side-link slice-link" title="${esc(`${i + 1}. ${s.title}`)}"><span class="n">${i + 1}</span> ${esc(s.title)}</button>`,
     )
     .join("");
   const titles = input.slices.map((s) => s.title);
@@ -623,7 +627,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   </div>
   <nav>
     <div class="slice-nav">
-      <button class="slice-link doc-link" type="button">Description</button>
+      <button class="side-link doc-link" type="button">Description</button>
     </div>
     <div class="side-label">Slices · <span class="progress-label"></span></div>
     <div class="slice-nav">${sliceLinks}</div>

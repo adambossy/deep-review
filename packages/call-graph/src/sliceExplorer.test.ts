@@ -294,10 +294,21 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
 
   it("names the description in the sidebar, alongside the slices", () => {
     const side = html.slice(html.indexOf('<aside class="side">'), html.indexOf("</aside>"));
-    expect(side).toContain('<button class="slice-link doc-link" type="button">Description</button>');
+    expect(side).toContain('<button class="side-link doc-link" type="button">Description</button>');
     // Both kinds of destination are the same kind of tappable sidebar link.
-    expect([...side.matchAll(/class="slice-link/g)]).toHaveLength(3);
+    expect([...side.matchAll(/class="side-link/g)]).toHaveLength(3);
     expect(html).not.toContain("view-tab");
+  });
+
+  it("keeps the description out of the deck's pips, so slice 1 is still pip 1", () => {
+    // Sharing `.slice-link` with the description would make it pip 0: the
+    // highlight would land on it at load and every slice click would be off
+    // by one.
+    expect(html).toContain('var pips = Array.prototype.slice.call(document.querySelectorAll(".slice-link"));');
+    const side = html.slice(html.indexOf('<aside class="side">'), html.indexOf("</aside>"));
+    const pips = [...side.matchAll(/class="side-link slice-link"/g)];
+    expect(pips).toHaveLength(2);
+    expect(side).not.toContain('class="side-link doc-link" title');
   });
 
   it("shows the code first, and switches views on one body class", () => {
@@ -326,7 +337,7 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
 
   it("says a PR has no description rather than dropping the sidebar entry", () => {
     expect(html).toContain('class="doc-empty">This PR has no description.');
-    expect(html).toContain('class="slice-link doc-link"');
+    expect(html).toContain('class="side-link doc-link"');
   });
 
   it("ships no debug hints unless asked", () => {
