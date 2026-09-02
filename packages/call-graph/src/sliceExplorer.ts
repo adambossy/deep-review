@@ -301,7 +301,7 @@ function renderDescriptionView(input: SliceExplorerInput): string {
     </div>
     <div class="doc-block">
       <div class="side-label">Description</div>
-      ${description ? renderMarkdown(description) : `<p class="doc-empty">This PR has no description.</p>`}
+      ${description ? renderMarkdown(description, { baseUrl: input.prUrl }) : `<p class="doc-empty">This PR has no description.</p>`}
     </div>
     <div class="doc-block">
       <div class="side-label">Overview · what the slicer read</div>

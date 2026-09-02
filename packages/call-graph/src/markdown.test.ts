@@ -87,6 +87,24 @@ describe("renderMarkdown", () => {
     );
   });
 
+  it("resolves a relative link against the PR it came from, the way GitHub does", () => {
+    const base = "https://github.com/o/r/pull/7";
+    expect(renderMarkdown("see [2/3](../../pulls?q=stack)", { baseUrl: base })).toContain(
+      `<a class="md-a" href="https://github.com/o/r/pulls?q=stack">2/3</a>`,
+    );
+    expect(renderMarkdown("[docs](/o/r/blob/main/README.md)", { baseUrl: base })).toContain(
+      `href="https://github.com/o/r/blob/main/README.md"`,
+    );
+    // An in-page anchor addresses this page, so it is left as written.
+    expect(renderMarkdown("[top](#why)", { baseUrl: base })).toContain(`href="#why"`);
+  });
+
+  it("leaves a relative link as text when there is no base to resolve it against", () => {
+    const html = renderMarkdown("see [2/3](../../pulls?q=stack)");
+    expect(html).not.toContain("<a ");
+    expect(html).toContain("[2/3](../../pulls?q=stack)");
+  });
+
   it("drops a link whose scheme is not one a description may use", () => {
     const html = renderMarkdown("[x](javascript:alert(1))");
     expect(html).not.toContain("<a ");

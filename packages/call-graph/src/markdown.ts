@@ -1,5 +1,16 @@
 import { escapeHtml as esc } from "./highlight.js";
 
+export interface MarkdownOptions {
+  /**
+   * What a relative link resolves against — for a PR description, the PR's
+   * own URL. GitHub renders `[2/3](../../pulls?q=…)` relative to the page
+   * the description sits on, and this page is served from localhost, so
+   * without a base such a link would point at nothing. Omitted, a relative
+   * link stays plain text rather than pointing somewhere wrong.
+   */
+  baseUrl?: string | undefined;
+}
+
 /**
  * A small Markdown renderer, enough for what a pull request description
  * actually contains: headings, lists (nested, and with task boxes), fenced
@@ -11,20 +22,36 @@ import { escapeHtml as esc } from "./highlight.js";
  * panel. Anything unrecognized falls through as a paragraph, so the worst
  * case is prose that reads plainly rather than prose that disappears.
  */
-export function renderMarkdown(source: string): string {
+export function renderMarkdown(
+  source: string,
+  options: MarkdownOptions = {},
+): string {
   return renderBlocks(
     source.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n"),
+    options.baseUrl,
   );
 }
 
-/** Only schemes a description can safely link to; anything else is dropped. */
-function safeUrl(url: string): string | null {
+/** Only what a description may link to; anything else is dropped. */
+function safeUrl(url: string, baseUrl: string | undefined): string | null {
   const trimmed = url.trim();
   if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
-  // Relative links and in-page anchors are harmless; they just may not
-  // resolve from a page served outside the repo.
-  if (/^[#/]/.test(trimmed)) return trimmed;
-  return null;
+  // An in-page anchor stays as written: it addresses this page.
+  if (trimmed.startsWith("#")) return trimmed;
+  if (!baseUrl) return null;
+  // A relative or root-relative link belongs to the repository the PR is
+  // in, which is what the base says. A base that will not parse, or a
+  // result that is not http(s), leaves the link as plain text.
+  try {
+    // GitHub resolves a description's relative links as if the PR page were
+    // a directory, which is what makes its own `../../pulls` idiom land on
+    // the repository's pull list rather than one level above it.
+    const dir = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+    const resolved = new URL(trimmed, dir);
+    return /^https?:$/.test(resolved.protocol) ? resolved.href : null;
+  } catch {
+    return null;
+  }
 }
 
 const HEADING = /^(#{1,6})\s+(.*)$/;
@@ -41,7 +68,7 @@ function indentOf(text: string): number {
   return lead.replaceAll("\t", "  ").length;
 }
 
-function renderBlocks(lines: string[]): string {
+function renderBlocks(lines: string[], baseUrl: string | undefined): string {
   const out: string[] = [];
   let i = 0;
 
@@ -82,7 +109,7 @@ function renderBlocks(lines: string[]): string {
       // Shifted down: the panel already carries the PR title as its
       // heading, so the description's own `#` sits under it.
       const level = Math.min(heading[1]!.length + 2, 6);
-      out.push(`<h${level} class="md-h">${renderInline(heading[2]!)}</h${level}>`);
+      out.push(`<h${level} class="md-h">${renderInline(heading[2]!, baseUrl)}</h${level}>`);
       i++;
       continue;
     }
@@ -97,12 +124,12 @@ function renderBlocks(lines: string[]): string {
         body.push(next[1]!);
         i++;
       }
-      out.push(`<blockquote class="md-quote">${renderBlocks(body)}</blockquote>`);
+      out.push(`<blockquote class="md-quote">${renderBlocks(body, baseUrl)}</blockquote>`);
       continue;
     }
 
     if (BULLET.test(line) || NUMBER.test(line)) {
-      const [html, next] = renderList(lines, i);
+      const [html, next] = renderList(lines, i, baseUrl);
       out.push(html);
       i = next;
       continue;
@@ -125,7 +152,7 @@ function renderBlocks(lines: string[]): string {
       paragraph.push(next.trim());
       i++;
     }
-    out.push(`<p class="md-p">${renderInline(paragraph.join(" "))}</p>`);
+    out.push(`<p class="md-p">${renderInline(paragraph.join(" "), baseUrl)}</p>`);
   }
 
   return out.join("\n");
@@ -136,7 +163,11 @@ function renderBlocks(lines: string[]): string {
  * item's continuation. Items indented past the list's own marker become a
  * nested list inside the item above them.
  */
-function renderList(lines: string[], start: number): [string, number] {
+function renderList(
+  lines: string[],
+  start: number,
+  baseUrl: string | undefined,
+): [string, number] {
   const opener = BULLET.exec(lines[start]!);
   const ordered = opener === null;
   const baseIndent = indentOf(
@@ -170,7 +201,7 @@ function renderList(lines: string[], start: number): [string, number] {
         // Nested: hand the run to a recursive call and hang it off the item
         // above. An indented run with no item above it (a description that
         // starts mid-nesting) becomes a list on its own.
-        const [nested, next] = renderList(lines, i);
+        const [nested, next] = renderList(lines, i, baseUrl);
         if (items.length === 0) items.push([]);
         items[items.length - 1]!.push(nested);
         i = next;
@@ -190,7 +221,7 @@ function renderList(lines: string[], start: number): [string, number] {
   }
 
   const tag = ordered ? "ol" : "ul";
-  const body = items.map((parts) => `<li>${renderItem(parts)}</li>`).join("");
+  const body = items.map((parts) => `<li>${renderItem(parts, baseUrl)}</li>`).join("");
   return [`<${tag} class="md-list">${body}</${tag}>`, i];
 }
 
@@ -198,14 +229,14 @@ function renderList(lines: string[], start: number): [string, number] {
  * An item's own content: its text (with a task box where it has one), plus
  * any nested list already rendered to HTML.
  */
-function renderItem(parts: string[]): string {
+function renderItem(parts: string[], baseUrl: string | undefined): string {
   return parts
     .map((part) => {
       if (part.startsWith("<ul") || part.startsWith("<ol")) return part;
       const task = TASK.exec(part);
-      if (!task) return renderInline(part);
+      if (!task) return renderInline(part, baseUrl);
       const done = task[1]!.toLowerCase() === "x";
-      return `<span class="md-task${done ? " done" : ""}">${done ? "☑" : "☐"}</span> ${renderInline(task[2]!)}`;
+      return `<span class="md-task${done ? " done" : ""}">${done ? "☑" : "☐"}</span> ${renderInline(task[2]!, baseUrl)}`;
     })
     .join(" ");
 }
@@ -215,7 +246,7 @@ function renderItem(parts: string[]): string {
  * contents are never read as emphasis or a link; every other pattern runs
  * over escaped text, which escaping leaves matchable.
  */
-function renderInline(text: string): string {
+function renderInline(text: string, baseUrl: string | undefined): string {
   const code: string[] = [];
   const withoutCode = text.replace(/`([^`]+)`/g, (_all, body: string) => {
     code.push(`<code class="md-inline-code">${esc(body)}</code>`);
@@ -227,7 +258,7 @@ function renderInline(text: string): string {
   html = html.replace(
     /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
     (all: string, alt: string, url: string) => {
-      const href = safeUrl(url);
+      const href = safeUrl(url, baseUrl);
       return href
         ? `<img class="md-img" src="${esc(href)}" alt="${esc(alt)}" loading="lazy">`
         : all;
@@ -236,7 +267,7 @@ function renderInline(text: string): string {
   html = html.replace(
     /\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
     (all: string, label: string, url: string) => {
-      const href = safeUrl(url);
+      const href = safeUrl(url, baseUrl);
       return href ? `<a class="md-a" href="${esc(href)}">${label}</a>` : all;
     },
   );
