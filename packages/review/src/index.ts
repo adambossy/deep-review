@@ -26,3 +26,25 @@ export {
   runDaemon,
   stopServer,
 } from "./daemon.js";
+export {
+  pollOnce,
+  planPoll,
+  runWatcher,
+  readWatcherState,
+  writeWatcherState,
+  watcherStateFile,
+  defaultWatcherWorkDir,
+  DEFAULT_INTERVAL_MS,
+  type WatcherState,
+  type SeenPr,
+} from "./watcher.js";
+export {
+  installAgent,
+  uninstallAgent,
+  agentInstalled,
+  agentLoaded,
+  renderAgentPlist,
+  captureEnv,
+  missingEnv,
+  AGENT_LABEL,
+} from "./launchAgent.js";

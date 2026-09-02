@@ -24,11 +24,27 @@ import {
   runDaemon,
   stopServer,
 } from "./daemon.js";
+import {
+  agentInstalled,
+  agentLoaded,
+  installAgent,
+  loadEnvFile as loadWatcherEnv,
+  plistPath,
+  uninstallAgent,
+  watcherLogFile,
+} from "./launchAgent.js";
 import type { AddOptions, PrView } from "./registry.js";
 import { serveExplorer } from "./serve.js";
+import {
+  DEFAULT_INTERVAL_MS,
+  pidAlive,
+  readWatcherState,
+  runWatcher,
+  watcherStateFile,
+} from "./watcher.js";
 
 const USAGE = `Usage: pr-review <pr-url|pr-number>... [options]
-       pr-review serve|status|stop [options]
+       pr-review watch|serve|status|stop [options]
 
 Slices each PR, then renders it as a two-axis explorer: slices stacked
 vertically in priority order, each slice's call graph walkable horizontally
@@ -40,9 +56,11 @@ into the explorer when ready.
 
 Commands:
   <pr>...           Add these PRs to the server (starting it if needed).
+  watch             Review PRs as they are assigned to you. Turns itself on
+                    at login and after a reboot; --off turns it back off.
   serve             Run the server in the foreground.
-  status            What the server holds, one line per PR.
-  stop              Stop the server.
+  status            What is being watched and what the server holds.
+  stop              Stop watching, and stop the server.
 
 Options:
   --repo <owner/repo>  Repo a bare PR number refers to (default: $DEEP_REVIEW_REPO)
@@ -54,6 +72,10 @@ Options:
   --no-serve        With --out: write it and exit without serving
   --no-daemon       Build and serve in this process, for this PR alone;
                     Ctrl-C stops it (the pre-daemon behavior)
+  --off             watch: stop watching.
+  --interval <s>    watch: seconds between checks (default: ${DEFAULT_INTERVAL_MS / 1000})
+  --foreground      watch: run the loop here instead of in the background
+  --force           watch: install even from a path that may not outlive today
   --port <n>        serve/--no-daemon: listen on this port (default: a free one)
   --concurrency <n> serve: how many PRs may build at once (default: 2)
   --max-graphs <n>  Analyze at most n slices' call graphs (default: all)
@@ -77,6 +99,7 @@ Examples:
   pr-review https://github.com/vercel/swr/pull/2950
   pr-review 2950 2951 2952 --repo vercel/swr
   pr-review 2950 --repo vercel/swr --slices slices.json
+  pr-review watch
   pr-review status
   pr-review stop`;
 
@@ -144,6 +167,10 @@ async function main(): Promise<void> {
       "max-graphs": { type: "string" },
       "no-serve": { type: "boolean", default: false },
       "no-daemon": { type: "boolean", default: false },
+      off: { type: "boolean", default: false },
+      force: { type: "boolean", default: false },
+      interval: { type: "string" },
+      foreground: { type: "boolean", default: false },
       port: { type: "string" },
       concurrency: { type: "string" },
       "debug-marks": { type: "boolean", default: false },
@@ -168,6 +195,49 @@ async function main(): Promise<void> {
     process.exit(values.help ? 0 : 1);
   }
 
+  if (command === "watch") {
+    const intervalMs = intFlag(values.interval, "--interval", 30);
+    const running = readWatcherState().runner;
+
+    if (values.off) {
+      uninstallAgent();
+      // A watcher started with --foreground is not launchd's to stop.
+      if (running && running.pid !== process.pid && pidAlive(running.pid)) {
+        try {
+          process.kill(running.pid, "SIGTERM");
+        } catch {
+          // Gone between the check and the signal; nothing to stop.
+        }
+      }
+      log("Not watching.");
+      return;
+    }
+
+    if (values.foreground) {
+      // Started by launchd, which sources no profile: the keys captured at
+      // install time are the only ones this process will ever see.
+      loadWatcherEnv();
+      log(`Watching PRs assigned to you every ${intervalMs ?? DEFAULT_INTERVAL_MS / 1000}s.`);
+      await runWatcher({
+        ...(intervalMs !== undefined ? { intervalMs: intervalMs * 1000 } : {}),
+        onProgress: log,
+      });
+      return;
+    }
+
+    const result = installAgent({
+      ...(intervalMs !== undefined ? { intervalMs: intervalMs * 1000 } : {}),
+      ...(values.force ? { force: true } : {}),
+    });
+    log(
+      `Watching PRs assigned to you, every ${intervalMs ?? DEFAULT_INTERVAL_MS / 1000}s.\n` +
+        `Reviews appear at the server's index as they build; pr-review status shows both.\n` +
+        `Carried into the background: ${result.captured.join(", ")}.\n` +
+        `Log: ${watcherLogFile()}`,
+    );
+    return;
+  }
+
   if (command === "serve") {
     const server = await runDaemon({
       ...(port !== undefined ? { port } : {}),
@@ -181,12 +251,50 @@ async function main(): Promise<void> {
   }
 
   if (command === "stop") {
+    const wasWatching = agentInstalled() || readWatcherState().runner !== undefined;
+    if (wasWatching) {
+      uninstallAgent();
+      const running = readWatcherState().runner;
+      if (running && pidAlive(running.pid)) {
+        try {
+          process.kill(running.pid, "SIGTERM");
+        } catch {
+          // Already gone.
+        }
+      }
+    }
     const stopped = await stopServer();
-    log(stopped ? "Stopped." : "No server was running.");
+    if (!wasWatching && !stopped) {
+      log("Nothing was running.");
+      return;
+    }
+    log(
+      [wasWatching ? "Stopped watching." : null, stopped ? "Stopped the server." : null]
+        .filter(Boolean)
+        .join(" "),
+    );
     return;
   }
 
   if (command === "status") {
+    const watcher = readWatcherState();
+    const live = watcher.runner !== undefined && pidAlive(watcher.runner.pid);
+    if (live) {
+      const last = watcher.lastPollAt
+        ? `last checked ${Math.round((Date.now() - watcher.lastPollAt) / 1000)}s ago`
+        : "no check yet";
+      const held = Object.keys(watcher.seen).length;
+      log(
+        `Watching — ${last}, ${held} PR${held === 1 ? "" : "s"} seen` +
+          `${agentLoaded() ? "" : " (this session only; not installed at login)"}.`,
+      );
+      if (watcher.lastError) log(`  last check failed: ${watcher.lastError}`);
+    } else if (agentInstalled()) {
+      log(`Watching is installed but not running; see ${watcherLogFile()}.`);
+    } else {
+      log("Not watching (pr-review watch turns it on).");
+    }
+
     const url = await findServer();
     if (!url) {
       log("No server is running.");

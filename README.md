@@ -174,6 +174,50 @@ root is picked up automatically), `GITHUB_TOKEN` for private repos,
 `LINEAR_API_KEY` optional — without it, ticket references are reported and
 skipped rather than failing the run.
 
+## Watching your assigned PRs
+
+`pr-review watch` turns the whole thing around: instead of asking for a
+review, a review is waiting when a PR is assigned to you.
+
+```sh
+pr-review watch          # on; survives logout, reboot and a closed lid
+pr-review status         # what is being watched, and what the server holds
+pr-review watch --off    # off
+```
+
+It checks GitHub every five minutes (`--interval <seconds>`) for the open PRs
+assigned to you, and hands each new one to the same long-lived server every
+other invocation uses — starting it if it is not up, so there is never a
+server to start yourself. New PRs simply appear on the server's index, built
+and ready.
+
+The check asks for the *current* set of assigned PRs rather than for events,
+which is what makes a laptop the right place to run it: a webhook delivered to
+a sleeping machine is lost, but one poll after the lid opens sees everything
+that happened overnight. Missing a check costs nothing by construction.
+
+A PR is handed over once, when it first appears assigned to you — not every
+time it changes, because `updated_at` moves on every comment and a rebuild
+means a paid slicing run. Unassigning and reassigning is therefore the
+deliberate way to ask for it again.
+
+Turning it on installs a launchd agent (`com.deep-review.watcher`), which is
+what carries it across reboots. Two consequences worth knowing:
+
+- **Keys are captured at install time.** launchd sources no shell profile, so
+  the agent can only have what your shell had when you ran `watch`. It refuses
+  to install without a model key and a GitHub token rather than failing at 3am,
+  and stores them in `~/.deep-review/watcher.env` (mode 0600) rather than in
+  the plist, which lives in a world-readable directory.
+- **Install from a permanent checkout.** The agent points at the exact
+  interpreter and CLI path that installed it, so installing from a git
+  worktree or a temp dir gives you something that breaks silently when that
+  path is removed. `watch` refuses those paths; `--force` overrides.
+
+State lives beside the server's, under `~/.deep-review` (`$DEEP_REVIEW_HOME`):
+`watcher.json` for what has been handed over, `watcher.log` for what the
+agent has been doing. `pr-review stop` stops watching and stops the server.
+
 ## The slice explorer
 
 `@deep-review/review` fuses the two. Slices stack on the **vertical** axis in
