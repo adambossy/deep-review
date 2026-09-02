@@ -80,7 +80,7 @@ are `<base>/comments` and `<base>/drafts`, reached through `navUrl()`, never
 `navFetch` no-ops off http(s), so it degrades exactly as before.
 
 One concrete edit needed: under a PR prefix every non-GET returns 405 except
-`/gone` (`serve.ts:347-356`). A write route has to be named there explicitly.
+`/gone` (`serve.ts:347` for `/gone`, `:360` for the blanket 405). A write route has to be named there explicitly.
 
 ## The comment store
 
@@ -130,7 +130,7 @@ scheduler for a single consumer.
 
 ## What still has to be built
 
-The daemon changes where things run. It does not touch the hard part, which
+The server changes where things run. It does not touch the hard part, which
 is anchoring — all of the following stands unchanged.
 
 ### Anchoring
