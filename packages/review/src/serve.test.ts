@@ -185,6 +185,7 @@ describe("serveExplorer", () => {
       body: "not json",
     });
     expect(bad.status).toBe(400);
+    expect((await fetch(new URL("/prs/%zz", server.url), { method: "DELETE" })).status).toBe(404);
   });
 
   it("rebuilds a held PR whose head has moved, and only then", async () => {

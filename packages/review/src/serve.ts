@@ -336,7 +336,14 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
       return;
     }
     if (path.startsWith("/prs/") && method === "DELETE") {
-      const key = decodeURIComponent(path.slice("/prs/".length));
+      let key: string;
+      try {
+        key = decodeURIComponent(path.slice("/prs/".length));
+      } catch {
+        // A malformed percent-escape is a bad address, not a server fault.
+        sendJson(res, 404, { why: "no such PR on this server" });
+        return;
+      }
       sendJson(res, 200, { removed: registry.remove(key) });
       return;
     }

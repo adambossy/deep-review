@@ -205,11 +205,13 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
     version: VERSION,
     startedAt: Date.now(),
   };
-  // The claim must be atomic: two first invocations that both found no
-  // server will both reach here, and check-then-write would leave the
-  // loser running forever with no lock pointing at it. Exclusive create
-  // makes exactly one winner; a loser defers to a live claimant and shuts
-  // itself down, or clears a dead one's file and tries once more.
+  // The claim is contested through exclusive create: two first invocations
+  // that both found no server will both reach here, and check-then-write
+  // would leave the loser running forever with no lock pointing at it.
+  // A loser defers to a live claimant and shuts itself down; a dead
+  // claimant's file is cleared and the claim retried — but only while the
+  // file still holds the claim that failed the probe, so a rival who won
+  // the meantime is deferred to on the next pass, not deleted.
   for (let attempt = 0; ; attempt++) {
     try {
       writeFileSync(lockFile(), JSON.stringify(lock, null, 2), { flag: "wx" });
@@ -225,6 +227,10 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
         throw new Error(
           `A server is already running at ${claimant.url} (pr-review stop to stop it).`,
         );
+      }
+      const now = readLock();
+      if (now && claimant && (now.pid !== claimant.pid || now.port !== claimant.port)) {
+        continue; // someone else claimed while we probed; judge them next pass
       }
       rmSync(lockFile(), { force: true });
     }
@@ -252,8 +258,8 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
 export interface EnsuredServer {
   url: string;
   started: boolean;
-  /** Set when the running server is an older build than this CLI. */
-  staleVersion?: string;
+  /** Set when the running server's version differs from this CLI's, either way. */
+  serverVersion?: string;
 }
 
 export async function ensureServer(): Promise<EnsuredServer> {
@@ -264,7 +270,7 @@ export async function ensureServer(): Promise<EnsuredServer> {
       return {
         url: lock.url,
         started: false,
-        ...(health.version !== VERSION ? { staleVersion: health.version } : {}),
+        ...(health.version !== VERSION ? { serverVersion: health.version } : {}),
       };
     }
   }

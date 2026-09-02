@@ -25,7 +25,7 @@ import {
   stopServer,
 } from "./daemon.js";
 import type { AddOptions, PrView } from "./registry.js";
-import { serveExplorer } from "./serve.js";
+import { serveExplorer, VERSION } from "./serve.js";
 
 const USAGE = `Usage: pr-review <pr-url|pr-number>... [options]
        pr-review serve|status|stop [options]
@@ -264,11 +264,11 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { url: serverUrl, started, staleVersion } = await ensureServer();
+  const { url: serverUrl, started, serverVersion } = await ensureServer();
   log(started ? `Started the server at ${serverUrl} (log: ${logFile()}).` : `Using the server at ${serverUrl}.`);
-  if (staleVersion) {
+  if (serverVersion) {
     log(
-      `The running server is v${staleVersion}; this CLI is newer. \`pr-review stop\` and re-add to refresh it.`,
+      `The running server is v${serverVersion}; this CLI is v${VERSION}. \`pr-review stop\` and re-add to match them.`,
     );
   }
 
