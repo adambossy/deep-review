@@ -264,11 +264,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { url: serverUrl, started, serverVersion } = await ensureServer();
+  const { url: serverUrl, started, serverVersion, missingGithubToken } = await ensureServer();
   log(started ? `Started the server at ${serverUrl} (log: ${logFile()}).` : `Using the server at ${serverUrl}.`);
   if (serverVersion) {
     log(
       `The running server is v${serverVersion}; this CLI is v${VERSION}. \`pr-review stop\` and re-add to match them.`,
+    );
+  }
+  if (missingGithubToken) {
+    log(
+      "GITHUB_TOKEN is set here but the running server started without it; private repos will fail until `pr-review stop` and re-add.",
     );
   }
 

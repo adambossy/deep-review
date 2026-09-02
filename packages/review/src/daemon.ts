@@ -55,14 +55,19 @@ export function readLock(): ServerLock | null {
 export async function probe(
   url: string,
   timeoutMs = 1500,
-): Promise<{ version: string } | null> {
+): Promise<{ version: string; hasGithubToken: boolean } | null> {
   try {
     const response = await fetch(new URL("/health", url), {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) return null;
-    const body = (await response.json()) as { ok?: boolean; version?: string };
-    return body.ok === true ? { version: body.version ?? "0.0.0" } : null;
+    const body = (await response.json()) as {
+      ok?: boolean;
+      version?: string;
+      hasGithubToken?: boolean;
+    };
+    if (body.ok !== true) return null;
+    return { version: body.version ?? "0.0.0", hasGithubToken: body.hasGithubToken === true };
   } catch {
     return null;
   }
@@ -260,6 +265,13 @@ export interface EnsuredServer {
   started: boolean;
   /** Set when the running server's version differs from this CLI's, either way. */
   serverVersion?: string;
+  /**
+   * Set when this process has GITHUB_TOKEN but the running server does not.
+   * The server keeps the env of whichever shell spawned it, so a token
+   * exported later never reaches it — private-repo builds then fail with a
+   * hint that blames the shell, which is the one place the token *is* set.
+   */
+  missingGithubToken?: boolean;
 }
 
 export async function ensureServer(): Promise<EnsuredServer> {
@@ -271,6 +283,9 @@ export async function ensureServer(): Promise<EnsuredServer> {
         url: lock.url,
         started: false,
         ...(health.version !== VERSION ? { serverVersion: health.version } : {}),
+        ...(process.env.GITHUB_TOKEN && !health.hasGithubToken
+          ? { missingGithubToken: true }
+          : {}),
       };
     }
   }

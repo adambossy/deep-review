@@ -13,6 +13,7 @@
 
 import { createRequire } from "node:module";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import process from "node:process";
 import type { AddressInfo } from "node:net";
 import { renderSliceExplorerHtml, type SliceExplorerInput } from "@deep-review/call-graph";
 import { renderBuildingPage, renderIndexPage } from "./indexPage.js";
@@ -289,6 +290,10 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
         version: VERSION,
         pid: process.pid,
         prs: registry.list().length,
+        // The server keeps the env of whichever shell spawned it; telling
+        // callers whether it holds a GitHub token lets a CLI whose shell
+        // has one warn that the server cannot see it.
+        hasGithubToken: Boolean(process.env.GITHUB_TOKEN),
       });
       return;
     }
@@ -357,6 +362,9 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
         res.end();
         return;
       }
+      // A mutating route under a PR prefix must be named above this line,
+      // as /gone is — anything else non-GET answers 405 here before any
+      // handler below could see it.
       if (method !== "GET" && method !== "HEAD") {
         sendText(res, 405, "text/plain", "method not allowed");
         return;
