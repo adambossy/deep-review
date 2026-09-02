@@ -401,6 +401,29 @@ export interface DiffRenderOptions {
 }
 
 /**
+ * Cut every gap around the lines `pinned` says must show, which become
+ * context rows of the file's own text. Gaps that end up empty vanish.
+ */
+function pinRows(rows: readonly DiffRow[], entry: FileEntry, pinned: (n: number) => boolean): DiffRow[] {
+  const out: DiffRow[] = [];
+  for (const row of rows) {
+    if (row.kind !== "gap") {
+      out.push(row);
+      continue;
+    }
+    let from = row.from;
+    for (let n = row.from; n <= row.to; n++) {
+      if (!pinned(n)) continue;
+      if (n > from) out.push({ kind: "gap", from, to: n - 1 });
+      out.push({ kind: "ctx", n, text: entry.lines[n - 1] ?? "" });
+      from = n + 1;
+    }
+    if (from <= row.to) out.push({ kind: "gap", from, to: row.to });
+  }
+  return out;
+}
+
+/**
  * Render rows to `<span class="line">`s; the caller wraps them in a `<pre>`.
  * Every head-side row carries a bare `.id` span on each identifier no mark
  * covers — the page asks the navigation server about a name through it. A
@@ -409,9 +432,15 @@ export interface DiffRenderOptions {
  * does not back is scanned here. Removed lines have no head-side position,
  * so nothing can be asked about them and they get none.
  */
-export function renderDiffRows(rows: readonly DiffRow[], options: DiffRenderOptions): string {
+export function renderDiffRows(input: readonly DiffRow[], options: DiffRenderOptions): string {
   const { width, lang, entry, decorations, focus } = options;
   const debug = options.debug ?? false;
+  // A decorated line is one the reader is meant to see — a call mark, the
+  // declared name — so it is never left inside a gap for the expander to
+  // reveal as a plain base row. Pinning it here makes that a property of
+  // this renderer rather than of every row builder that feeds it.
+  const pinned = (n: number): boolean => Boolean(decorations?.has(n));
+  const rows = entry ? pinRows(input, entry, pinned) : input;
   // Rows without an embedded file are tokenized together so multi-line
   // strings and comments carry across them; removed rows always are, since
   // the embedded file (head side) has no tokens for them.

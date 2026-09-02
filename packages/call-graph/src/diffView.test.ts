@@ -213,6 +213,36 @@ describe("renderDiffRows", () => {
     expect(renderDiffRows(rows, { width: 2, lang: "ts" })).toContain('class="gap static"');
   });
 
+  it("never leaves a decorated line inside a gap: the gap is cut around it", () => {
+    const rows: DiffRow[] = [{ kind: "gap", from: 1, to: 10 }, { kind: "ctx", n: 11, text: "line 11;" }];
+    const html = renderDiffRows(rows, {
+      width: 2,
+      lang: "ts",
+      entry,
+      decorations: new Map([
+        [4, { marks: [{ start: 0, end: 4, cls: "csite", attrs: 'data-target="t"' }] }],
+        [5, { cls: ["hl"] }],
+      ]),
+    });
+    expect(html).toContain('data-from="1" data-to="3"');
+    expect(html).toContain('<span class="csite" data-target="t">line</span> <span class="tok-num">4</span>;');
+    expect(html).toContain('<span class="line hl"><span class="lineno"> 5</span>');
+    expect(html).toContain('data-from="6" data-to="10"');
+    // A decoration at the very edge of a gap leaves no empty gap behind.
+    const edge = renderDiffRows([{ kind: "gap", from: 1, to: 3 }], {
+      width: 2,
+      lang: "ts",
+      entry,
+      decorations: new Map([[1, { cls: ["hl"] }]]),
+    });
+    expect(edge).not.toContain('data-from="1" data-to="0"');
+    expect(edge).toContain('data-from="2" data-to="3"');
+    // Without the file there is no text to pin, and the gap stays a fixed bar.
+    expect(renderDiffRows(rows, { width: 2, lang: "ts", decorations: new Map([[4, { cls: ["hl"] }]]) })).toContain(
+      'class="gap static"',
+    );
+  });
+
   it("gives every head-side row identifier spans, whether or not the file backs it", () => {
     const rows: DiffRow[] = [
       { kind: "ctx", n: 4, text: "line 4;" }, // the file's own text
