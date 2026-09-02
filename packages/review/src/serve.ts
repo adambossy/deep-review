@@ -13,10 +13,12 @@
 
 import { createRequire } from "node:module";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import process from "node:process";
 import type { AddressInfo } from "node:net";
 import { renderSliceExplorerHtml, type SliceExplorerInput } from "@deep-review/call-graph";
 import { renderBuildingPage, renderIndexPage } from "./indexPage.js";
 import {
+  parsePrPath,
   PrRegistry,
   prKey,
   prMountPath,
@@ -37,6 +39,13 @@ export const VERSION: string = (() => {
 export interface NavServerOptions {
   /** Turns a PR into a built page; see `BuildPr`. */
   build: BuildPr;
+  /**
+   * Where a PR's head is right now, asked when an already-built PR is added
+   * again: a head that moved means the build is stale and is rebuilt rather
+   * than returned. Absent (or answering null — rate limit, no token), the
+   * existing build is trusted.
+   */
+  currentHeadSha?: ((ref: PrRef) => Promise<string | null>) | undefined;
   /** Port to listen on; 0 (the default) picks a free one. */
   port?: number | undefined;
   /** How many PRs may build at once. */
@@ -98,35 +107,40 @@ async function readJsonBody(req: IncomingMessage, limit = 1 << 20): Promise<unkn
     chunks.push(buf);
   }
   if (size === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("request body is not JSON");
+  }
 }
 
 /**
- * A request under a PR's prefix, split into the PR it names and the rest of
- * the path. `/pr/vercel/swr/2950/panel` → that PR, `/panel`.
+ * Whether a state-changing request came from somewhere other than this
+ * server's own pages or a local program. The server is loopback-only, but
+ * any web page a browser visits can still *send* to 127.0.0.1 (CSRF needs
+ * no CORS approval to fire), so a POST carrying a foreign Origin — or a
+ * Host that is not this server — could stop the server or spend the model
+ * budget from a drive-by tab. The CLI and the pages themselves pass: node
+ * sends no Origin, and the pages' own beacons are same-origin.
  */
-interface PrRoute {
-  key: string;
-  rest: string;
-  /** The request pointed at the PR itself without a trailing slash. */
-  needsSlash: boolean;
-  mount: string;
-}
-
-function routePr(pathname: string): PrRoute | null {
-  const parts = pathname.split("/").filter((p) => p !== "");
-  if (parts.length < 4 || parts[0] !== "pr") return null;
-  const owner = decodeURIComponent(parts[1]!);
-  const repo = decodeURIComponent(parts[2]!);
-  const number = Number(parts[3]);
-  if (!owner || !repo || !Number.isInteger(number) || number <= 0) return null;
-  const ref = { owner, repo, number };
-  return {
-    key: prKey(ref),
-    rest: `/${parts.slice(4).join("/")}`,
-    needsSlash: parts.length === 4 && !pathname.endsWith("/"),
-    mount: prMountPath(ref),
-  };
+function crossSite(req: IncomingMessage): boolean {
+  const port = req.socket.localPort;
+  const own = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const host = req.headers.host;
+  if (!host || !own.has(host.toLowerCase())) return true;
+  const origin = req.headers.origin;
+  if (origin) {
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      return true;
+    }
+    if (!own.has(originHost)) return true;
+  }
+  const site = req.headers["sec-fetch-site"];
+  if (typeof site === "string" && site !== "same-origin" && site !== "none") return true;
+  return false;
 }
 
 export async function startNavServer(options: NavServerOptions): Promise<NavServer> {
@@ -164,34 +178,33 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
     res: ServerResponse,
   ): Promise<void> => {
     switch (rest) {
-      case "/definition": {
+      case "/definition":
+      case "/references":
+      case "/panel": {
         const session = registry.sessionFor(key);
-        const file = url.searchParams.get("file");
-        const line = intParam(url, "line");
-        const col = intParam(url, "col");
-        if (!file || line === null || col === null) {
-          sendJson(res, 400, { why: "file, line and col are required" });
-          return;
-        }
         if (!session) {
           sendJson(res, 409, { why: "not built yet" });
           return;
         }
-        sendJson(res, 200, await session.definition(file, line, col));
-        return;
-      }
-      case "/references": {
-        const session = registry.sessionFor(key);
+        if (rest === "/definition") {
+          const file = url.searchParams.get("file");
+          const line = intParam(url, "line");
+          const col = intParam(url, "col");
+          if (!file || line === null || col === null) {
+            sendJson(res, 400, { why: "file, line and col are required" });
+            return;
+          }
+          sendJson(res, 200, await session.definition(file, line, col));
+          return;
+        }
         const id = url.searchParams.get("id");
-        const refs = session && id ? await session.references(id) : null;
-        if (!refs) sendJson(res, 404, { why: "unknown definition" });
-        else sendJson(res, 200, refs);
-        return;
-      }
-      case "/panel": {
-        const session = registry.sessionFor(key);
-        const id = url.searchParams.get("id");
-        const panel = session && id ? await session.panel(id) : null;
+        if (rest === "/references") {
+          const refs = id ? await session.references(id) : null;
+          if (!refs) sendJson(res, 404, { why: "unknown definition" });
+          else sendJson(res, 200, refs);
+          return;
+        }
+        const panel = id ? await session.panel(id) : null;
         if (!panel) sendJson(res, 404, { why: "no panel" });
         else sendJson(res, 200, panel);
         return;
@@ -220,6 +233,14 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
     const path = url.pathname;
     const method = req.method ?? "GET";
 
+    // Everything that changes state is a non-GET; none of it is for a
+    // foreign page. (GET responses are unreadable cross-origin anyway —
+    // no CORS headers are ever sent.)
+    if (method !== "GET" && method !== "HEAD" && crossSite(req)) {
+      sendJson(res, 403, { why: "not from this server's own pages" });
+      return;
+    }
+
     // Server-wide routes first; a PR can never be named `_`.
     if (method === "POST" && path === "/quit") {
       res.writeHead(204, NO_STORE);
@@ -233,7 +254,11 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
         ok: true,
         version: VERSION,
         pid: process.pid,
-        prs: registry.list().length,
+        prs: registry.count(),
+        // The server keeps the env of whichever shell spawned it; telling
+        // callers whether it holds a GitHub token lets a CLI whose shell
+        // has one warn that the server cannot see it.
+        hasGithubToken: Boolean(process.env.GITHUB_TOKEN),
       });
       return;
     }
@@ -243,21 +268,36 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
         return;
       }
       if (method === "POST") {
-        const body = (await readJsonBody(req)) as {
+        let parsed: unknown;
+        try {
+          parsed = await readJsonBody(req);
+        } catch (error) {
+          sendJson(res, 400, { why: error instanceof Error ? error.message : "bad body" });
+          return;
+        }
+        const body = parsed as {
           owner?: string;
           repo?: string;
           number?: number;
-          prUrl?: string;
           options?: AddOptions;
         };
-        if (!body.owner || !body.repo || !Number.isInteger(body.number) || !body.prUrl) {
-          sendJson(res, 400, { why: "owner, repo, number and prUrl are required" });
+        if (!body.owner || !body.repo || !Number.isInteger(body.number)) {
+          sendJson(res, 400, { why: "owner, repo and number are required" });
           return;
         }
-        const pr = registry.add(
-          { owner: body.owner, repo: body.repo, number: body.number!, prUrl: body.prUrl },
-          body.options ?? {},
-        );
+        const ref = { owner: body.owner, repo: body.repo, number: body.number! };
+        // Re-adding a PR normally returns the build already here — unless
+        // its head has moved since, in which case the reader is asking for
+        // a review of code the build no longer shows: drop it and rebuild.
+        const existing = registry.get(prKey(ref));
+        if (existing?.state === "ready" && existing.headSha && options.currentHeadSha) {
+          const live = await options.currentHeadSha(ref).catch(() => null);
+          if (live && live !== existing.headSha) {
+            log(`${existing.key}: head moved ${existing.headSha.slice(0, 8)} → ${live.slice(0, 8)}; rebuilding.`);
+            registry.remove(existing.key);
+          }
+        }
+        const pr = registry.add(ref, body.options ?? {});
         sendJson(res, 200, { pr });
         return;
       }
@@ -265,12 +305,19 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
       return;
     }
     if (path.startsWith("/prs/") && method === "DELETE") {
-      const key = decodeURIComponent(path.slice("/prs/".length));
+      let key: string;
+      try {
+        key = decodeURIComponent(path.slice("/prs/".length));
+      } catch {
+        // A malformed percent-escape is a bad address, not a server fault.
+        sendJson(res, 404, { why: "no such PR on this server" });
+        return;
+      }
       sendJson(res, 200, { removed: registry.remove(key) });
       return;
     }
 
-    const route = routePr(path);
+    const route = parsePrPath(path);
     if (route) {
       // The page's goodbye: this PR's session may go, the server stays.
       if (method === "POST" && route.rest === "/gone") {
@@ -279,6 +326,9 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
         res.end();
         return;
       }
+      // A mutating route under a PR prefix must be named above this line,
+      // as /gone is — anything else non-GET answers 405 here before any
+      // handler below could see it.
       if (method !== "GET" && method !== "HEAD") {
         sendText(res, 405, "text/plain", "method not allowed");
         return;
@@ -291,14 +341,14 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
       }
       const pr = registry.get(route.key);
       if (!pr) {
-        if (route.rest === "/" || route.rest === "") {
+        if (route.rest === "/") {
           sendHtml(res, 404, notHere(route.key));
           return;
         }
         sendJson(res, 404, { why: "no such PR on this server" });
         return;
       }
-      if (route.rest === "/" || route.rest === "") {
+      if (route.rest === "/") {
         const html = registry.html(route.key);
         if (html) {
           registry.pageAlive(route.key);
@@ -387,12 +437,7 @@ export async function serveExplorer(
   options: ServeOptions,
 ): Promise<NavServer & { pageUrl: string }> {
   const [owner = "unknown", repo = "unknown"] = options.input.repo.split("/");
-  const ref: PrRef = {
-    owner,
-    repo,
-    number: options.input.number,
-    prUrl: options.input.prUrl,
-  };
+  const ref: PrRef = { owner, repo, number: options.input.number };
   const server = await startNavServer({
     build: ({ navBase }) => {
       const input = { ...options.input, navBase };

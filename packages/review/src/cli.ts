@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, fstatSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
@@ -10,11 +10,11 @@ import {
   DEFAULT_MODEL,
   defaultOutFile,
   hasApiKeyForModel,
-  loadRenderEntry,
+  loadSliceReport,
   slicePr,
   writeSliceReport,
 } from "@deep-review/slicer";
-import { buildSliceExplorerInput } from "./build.js";
+import { explorerInputFromReport } from "./build.js";
 import {
   addPrToServer,
   ensureServer,
@@ -22,6 +22,7 @@ import {
   listServerPrs,
   logFile,
   runDaemon,
+  serverBusyOrAlive,
   stopServer,
 } from "./daemon.js";
 import {
@@ -33,8 +34,8 @@ import {
   uninstallAgent,
   watcherLogFile,
 } from "./launchAgent.js";
-import type { AddOptions, PrView } from "./registry.js";
-import { serveExplorer } from "./serve.js";
+import type { AddOptions, PrRef, PrView } from "./registry.js";
+import { serveExplorer, VERSION } from "./serve.js";
 import {
   DEFAULT_INTERVAL_MS,
   pidAlive,
@@ -135,22 +136,14 @@ function intFlag(raw: string | undefined, flag: string, min = 0): number | undef
   return value;
 }
 
-interface Target {
-  owner: string;
-  repo: string;
-  number: number;
-  prUrl: string;
-}
-
 /** The PR a saved slice JSON is about, without replaying the whole load. */
-function targetFromSlices(file: string): Target {
-  const pr = (JSON.parse(readFileSync(file, "utf8")) as {
-    pr?: { owner?: string; repo?: string; number?: number; url?: string };
-  }).pr;
-  if (!pr?.owner || !pr.repo || !pr.number || !pr.url) {
-    fail(`${file} does not name its PR; is it a slice report?`);
+function targetFromSlices(file: string): PrRef {
+  try {
+    const { pr } = loadSliceReport(file);
+    return { owner: pr.owner, repo: pr.repo, number: pr.number };
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
-  return { owner: pr.owner, repo: pr.repo, number: pr.number, prUrl: pr.url };
 }
 
 async function main(): Promise<void> {
@@ -317,12 +310,9 @@ async function main(): Promise<void> {
   // Everything else names PRs. A bare number is only meaningful once a
   // repo names it; --slices with no target names its own.
   const defaultRepo = values.repo ?? process.env.DEEP_REVIEW_REPO;
-  let targets: Target[];
+  let targets: PrRef[];
   try {
-    targets = positionals.map((p) => {
-      const ref = parsePrTarget(p, defaultRepo);
-      return { ...ref, prUrl: prUrl(ref) };
-    });
+    targets = positionals.map((p) => parsePrTarget(p, defaultRepo));
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
@@ -372,8 +362,18 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { url: serverUrl, started } = await ensureServer();
+  const { url: serverUrl, started, serverVersion, missingGithubToken } = await ensureServer();
   log(started ? `Started the server at ${serverUrl} (log: ${logFile()}).` : `Using the server at ${serverUrl}.`);
+  if (serverVersion) {
+    log(
+      `The running server is v${serverVersion}; this CLI is v${VERSION}. \`pr-review stop\` and re-add to match them.`,
+    );
+  }
+  if (missingGithubToken) {
+    log(
+      "GITHUB_TOKEN is set here but the running server started without it; private repos will fail until `pr-review stop` and re-add.",
+    );
+  }
 
   const added: PrView[] = [];
   for (const target of targets) {
@@ -388,9 +388,19 @@ async function main(): Promise<void> {
   if (!values.wait) return;
 
   // Stay attached: mirror each PR's build log here until all are settled.
+  // A poll can fail while the server's event loop is blocked on a long
+  // clone; that means busy, not gone, so keep polling while the process
+  // exists and give up only when it does not.
   const seen = new Map<string, number>(added.map((pr) => [pr.key, 0]));
   for (;;) {
-    const prs = await listServerPrs(serverUrl);
+    let prs: PrView[];
+    try {
+      prs = await listServerPrs(serverUrl);
+    } catch {
+      if (!serverBusyOrAlive()) fail("The server went away while building.");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      continue;
+    }
     const mine = prs.filter((pr) => seen.has(pr.key));
     for (const pr of mine) {
       const from = seen.get(pr.key)!;
@@ -423,7 +433,7 @@ interface LocalOptions {
  * terminal instead of outliving it.
  */
 async function runLocal(
-  target: Target,
+  target: PrRef,
   options: AddOptions,
   cli: LocalOptions,
 ): Promise<void> {
@@ -434,7 +444,7 @@ async function runLocal(
     log(`Using slices from ${reportFile}`);
   } else {
     const report = await slicePr({
-      prUrl: target.prUrl,
+      prUrl: prUrl(target),
       ...(options.workDir ? { workDir: options.workDir } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(cli.quiet ? {} : { onProgress: log }),
@@ -443,11 +453,7 @@ async function runLocal(
     log(`Slices written to ${reportFile}`);
   }
 
-  const { report, index, headDir } = await loadRenderEntry(reportFile, options.workDir);
-  const input = await buildSliceExplorerInput({
-    report,
-    index,
-    headDir,
+  const { input, headDir } = await explorerInputFromReport(reportFile, {
     ...(options.workDir ? { workDir: options.workDir } : {}),
     ...(options.maxGraphs !== undefined ? { maxGraphs: options.maxGraphs } : {}),
     ...(options.debugMarks ? { debugMarks: true } : {}),

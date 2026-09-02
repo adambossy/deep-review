@@ -130,15 +130,8 @@ export async function slicePr(options: SliceOptions): Promise<SliceReport> {
   };
 }
 
-/**
- * Rebuild the diff a saved report was produced from, so the report can be
- * re-rendered without re-running the agent. The checkout is cached, so this
- * is cheap on a PR that has been sliced before.
- */
-export async function loadRenderEntry(
-  reportFile: string,
-  workDir?: string,
-): Promise<RenderEntry> {
+/** Parse and validate a saved slice report, without touching the network. */
+export function loadSliceReport(reportFile: string): SliceReport {
   const parsed = sliceReportSchema.safeParse(
     JSON.parse(readFileSync(reportFile, "utf8")),
   );
@@ -149,7 +142,19 @@ export async function loadRenderEntry(
         .join("; ")}`,
     );
   }
-  const saved = parsed.data;
+  return parsed.data as SliceReport;
+}
+
+/**
+ * Rebuild the diff a saved report was produced from, so the report can be
+ * re-rendered without re-running the agent. The checkout is cached, so this
+ * is cheap on a PR that has been sliced before.
+ */
+export async function loadRenderEntry(
+  reportFile: string,
+  workDir?: string,
+): Promise<RenderEntry> {
+  const saved = loadSliceReport(reportFile);
   const info = await fetchPrInfo({
     owner: saved.pr.owner,
     repo: saved.pr.repo,
@@ -166,9 +171,11 @@ export async function loadRenderEntry(
     },
   } as SliceReport;
   const checkouts = prepareCheckouts(info, workDir);
+  const diff = parseUnifiedDiff(checkouts.diffText);
   return {
     report,
-    index: indexDiff(parseUnifiedDiff(checkouts.diffText)),
+    diff,
+    index: indexDiff(diff),
     baseDir: checkouts.baseDir,
     headDir: checkouts.headDir,
   };

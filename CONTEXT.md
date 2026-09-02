@@ -126,7 +126,11 @@ the CLI knows it as the server)
 The server's set of PRs and each one's lifecycle: added → queued → building
 → ready (or failed), a few building at a time. A ready PR's language
 services start on the first symbol click and are let go when idle or when
-the page leaves; the built page itself stays.
+the page leaves; the built page itself stays. Builds are keyed by the PR's
+head commit: re-adding a PR whose head has not moved returns the build
+already here (after a restart, the kept slice JSON — no model call), while
+a moved head drops the stale build and remakes it. The daemon's clones and
+worktrees live under the state dir (`work/`), not the tmp dir macOS purges.
 
 **Lockfile**:
 `~/.deep-review/server.json` (override: $DEEP_REVIEW_HOME) — the running

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { SliceExplorerInput } from "@deep-review/call-graph";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { serveExplorer, type NavServer } from "./serve.js";
+import { serveExplorer, startNavServer, type NavServer } from "./serve.js";
 
 // A two-file TS project as the head checkout; the slice changes use.ts.
 const headDir = mkdtempSync(path.join(os.tmpdir(), "serve-test-"));
@@ -156,6 +156,74 @@ describe("serveExplorer", () => {
     expect(again.name).toBe("helper");
     expect(server.registry.get("a/b#1")?.live).toBe(true);
   }, 30_000);
+
+  it("refuses state changes that arrive from a foreign page", async () => {
+    const evil = { headers: { Origin: "http://evil.example", "Content-Type": "application/json" } };
+    expect((await fetch(new URL("/quit", server.url), { method: "POST", ...evil })).status).toBe(403);
+    expect(
+      (
+        await fetch(new URL("/prs", server.url), {
+          method: "POST",
+          ...evil,
+          body: JSON.stringify({ owner: "x", repo: "y", number: 9, prUrl: "https://github.com/x/y/pull/9" }),
+        })
+      ).status,
+    ).toBe(403);
+    // (fetch cannot forge Host — it is a forbidden header — so the Host arm
+    // of the gate is exercised by the Origin checks standing in front of it.)
+    expect((await fetch(new URL("/prs/a%2Fb%231", server.url), { method: "DELETE", headers: { Origin: "http://evil.example" } })).status).toBe(403);
+    // Nothing changed: the PR is still here, the server still answers.
+    expect(server.registry.get("a/b#1")?.state).toBe("ready");
+    expect((await fetch(server.url)).status).toBe(200);
+  });
+
+  it("answers malformed input with a client error, not a server fault", async () => {
+    expect((await fetch(new URL("/pr/%zz/b/1/", server.url))).status).toBe(404);
+    const bad = await fetch(new URL("/prs", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
+    expect(bad.status).toBe(400);
+    expect((await fetch(new URL("/prs/%zz", server.url), { method: "DELETE" })).status).toBe(404);
+  });
+
+  it("rebuilds a held PR whose head has moved, and only then", async () => {
+    let liveHead = "aaa1111";
+    let builds = 0;
+    const fresh = await startNavServer({
+      build: ({ navBase }) => {
+        builds++;
+        const rebuilt = { ...input, navBase };
+        return Promise.resolve({ input: rebuilt, headDir, html: "<html></html>", headSha: liveHead });
+      },
+      currentHeadSha: () => Promise.resolve(liveHead),
+    });
+    const addBody = JSON.stringify({ owner: "a", repo: "b", number: 1, prUrl: input.prUrl });
+    const add = () =>
+      fetch(new URL("/prs", fresh.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: addBody,
+      });
+    await add();
+    await fresh.registry.settled();
+    expect(builds).toBe(1);
+    expect(fresh.registry.get("a/b#1")?.headSha).toBe("aaa1111");
+
+    // Head unchanged: the same build is returned, nothing re-runs.
+    await add();
+    await fresh.registry.settled();
+    expect(builds).toBe(1);
+
+    // Head moved: the stale build is dropped and remade at the new head.
+    liveHead = "bbb2222";
+    await add();
+    await fresh.registry.settled();
+    expect(builds).toBe(2);
+    expect(fresh.registry.get("a/b#1")?.headSha).toBe("bbb2222");
+    await fresh.close();
+  }, 15_000);
 
   it("stops when asked over /quit", async () => {
     expect((await fetch(new URL("/quit", server.url), { method: "POST" })).status).toBe(204);

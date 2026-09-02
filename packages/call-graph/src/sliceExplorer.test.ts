@@ -316,6 +316,34 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(html).toContain('data-view="description"');
   });
 
+  it("emits page scripts that actually parse", () => {
+    // A template literal quietly eats escapes (\/ becomes /), so a regex in
+    // the page script can turn into a line comment and take the whole script
+    // with it. Compile every emitted script the way the browser would.
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const [, src] of scripts) {
+      expect(() => new Function(src!)).not.toThrow();
+    }
+  });
+
+  it("restores a history step with the panels' anchors and lit pair, reusing panels still on the track", () => {
+    // Each step carries what every panel was opened for and which pair was
+    // lit, not just the node ids — and the restore hands them back.
+    expect(html).toContain("anchors: children.map(function (c) { return c.__anchor || null; })");
+    expect(html).toContain("anchors: step.anchors,");
+    expect(html).toContain("link: step.link,");
+    expect(html).toContain("__restore(step.ids, step.pos, step.anchors, step.link)");
+    expect(html).toContain("root.__restore = function (ids, newPos, anchors, link)");
+    // A panel still on the track keeps its scroll; a detached one is scrolled
+    // back to its anchor once re-attached.
+    expect(html).toContain("if (p.onTrack) { p.el.scrollTop = p.scrollTop; continue; }");
+    // A rebuilt panel scrolls to its anchor; the pair is re-lit through the
+    // same routine a live walk uses.
+    expect(html).toContain("if (el) revealInPanel(p.el, el);");
+    expect(html).toContain("if (from && to) applyLink(from, link.fromDesc, to, link.toDesc);");
+  });
+
   it("ships no debug hints unless asked", () => {
     expect(html).not.toContain("data-why");
     expect(html).not.toContain("debug-legend");

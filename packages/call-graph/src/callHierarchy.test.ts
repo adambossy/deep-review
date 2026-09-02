@@ -186,6 +186,18 @@ describe("incomingCallsAt / referencesAt", () => {
     expect([use.kind, use.line, use.column, use.startLine, use.endLine]).toEqual(["function", 3, 16, 3, 5]);
   });
 
+  it("lists a function's references without the import lines that bind its name", () => {
+    const refs = referencesAt(ps, path.join(dir, "main.ts"), offsetIn(mainText, 3, "target"));
+    const byFile = refs.map((r) => [path.basename(r.fileName), r.line, r.snippet]);
+    expect(byFile).not.toContainEqual(expect.arrayContaining([expect.stringMatching(/^import /)]));
+    expect(byFile).toEqual(
+      expect.arrayContaining([
+        ["consumer.ts", 4, "return target(1) + target(2);"],
+        ["big.ts", 74, "return target(3);"],
+      ]),
+    );
+  });
+
   it("returns null for a non-callable, so the caller falls back to references", () => {
     const helperFile = path.join(dir, "helper.ts");
     expect(incomingCallsAt(ps, helperFile, offsetIn(helperText, 1, "SCALE"))).toBeNull();

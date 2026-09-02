@@ -1,28 +1,13 @@
 /**
  * The two pages the server renders itself, rather than from a slicing run:
  * the index of every PR it holds, and the placeholder a PR's own URL shows
- * while it is still being built. Both poll `/prs`, so a PR added from
+ * while it is still being built. Both poll the server, so a PR added from
  * another terminal appears without a reload, and a building one turns into
  * its explorer as soon as it is ready.
  */
 
-import { REPORT_CSS } from "@deep-review/call-graph";
+import { escapeHtml as esc, REPORT_CSS } from "@deep-review/call-graph";
 import type { PrView } from "./registry.js";
-
-function esc(text: string): string {
-  return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-const STATE_LABEL: Record<PrView["state"], string> = {
-  queued: "queued",
-  building: "building",
-  ready: "ready",
-  failed: "failed",
-};
 
 const INDEX_CSS = `
   body { max-width: 60rem; }
@@ -65,8 +50,7 @@ const INDEX_CSS = `
 
 function facts(pr: PrView): string {
   if (pr.state === "ready") {
-    const graphs = pr.graphs ?? 0;
-    return `${pr.slices ?? 0} slices · ${graphs} with a walkable call graph`;
+    return `${pr.slices ?? 0} slices · ${pr.graphs ?? 0} with a walkable call graph`;
   }
   if (pr.state === "failed") return "";
   return "slicing and walking call graphs…";
@@ -78,70 +62,40 @@ function row(pr: PrView): string {
       ? `<a class="title" href="${esc(pr.path)}">${esc(pr.title ?? pr.key)}</a>`
       : `<span class="title">${esc(pr.title ?? pr.key)}</span>`;
   const last = pr.state === "building" ? (pr.log[pr.log.length - 1] ?? "") : "";
+  const f = facts(pr);
   return `<div class="row ${pr.state}" data-key="${esc(pr.key)}">
   <div>
     <div class="name"><a href="${esc(pr.prUrl)}">${esc(pr.key)}</a></div>
     ${heading}
-    ${facts(pr) ? `<div class="facts">${esc(facts(pr))}</div>` : ""}
+    ${f ? `<div class="facts">${esc(f)}</div>` : ""}
     ${pr.error ? `<div class="why">${esc(pr.error)}</div>` : ""}
     ${last ? `<div class="last">${esc(last)}</div>` : ""}
   </div>
   <div class="side-actions">
     ${pr.live ? '<span class="dot" title="language services warm"></span>' : ""}
-    <span class="pill ${pr.state}">${STATE_LABEL[pr.state]}</span>
+    <span class="pill ${pr.state}">${pr.state}</span>
     <button class="forget" type="button" title="Drop this PR from the server">forget</button>
   </div>
 </div>`;
 }
 
 /**
- * Keeps the list current without a reload: re-render from `/prs` on a timer,
- * and hand "forget" to the server. Written as a page script rather than a
- * bundle, like the rest of this tool's pages.
+ * Keeps the list current without a reload: the server is the only renderer
+ * of rows, so the poll fetches this same page and swaps the parts that
+ * change. "Forget" goes to the server, and the next poll shows the result.
  */
 const INDEX_JS = `
-var STATE_LABEL = ${JSON.stringify(STATE_LABEL)};
-function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
-function facts(pr) {
-  if (pr.state === "ready") return (pr.slices || 0) + " slices \\u00b7 " + (pr.graphs || 0) + " with a walkable call graph";
-  if (pr.state === "failed") return "";
-  return "slicing and walking call graphs\\u2026";
-}
-function rowHtml(pr) {
-  var heading = pr.state === "ready"
-    ? '<a class="title" href="' + esc(pr.path) + '">' + esc(pr.title || pr.key) + "</a>"
-    : '<span class="title">' + esc(pr.title || pr.key) + "</span>";
-  var last = pr.state === "building" && pr.log && pr.log.length ? pr.log[pr.log.length - 1] : "";
-  var f = facts(pr);
-  return '<div class="row ' + pr.state + '" data-key="' + esc(pr.key) + '">' +
-    "<div>" +
-      '<div class="name"><a href="' + esc(pr.prUrl) + '">' + esc(pr.key) + "</a></div>" +
-      heading +
-      (f ? '<div class="facts">' + esc(f) + "</div>" : "") +
-      (pr.error ? '<div class="why">' + esc(pr.error) + "</div>" : "") +
-      (last ? '<div class="last">' + esc(last) + "</div>" : "") +
-    "</div>" +
-    '<div class="side-actions">' +
-      (pr.live ? '<span class="dot" title="language services warm"></span>' : "") +
-      '<span class="pill ' + pr.state + '">' + STATE_LABEL[pr.state] + "</span>" +
-      '<button class="forget" type="button" title="Drop this PR from the server">forget</button>' +
-    "</div></div>";
-}
-function render(prs) {
-  var rows = document.querySelector(".rows");
-  var empty = document.querySelector(".empty");
-  if (!prs.length) {
-    if (rows) rows.innerHTML = "";
-    if (empty) empty.hidden = false;
-    return;
-  }
-  if (empty) empty.hidden = true;
-  if (rows) rows.innerHTML = prs.map(rowHtml).join("");
-}
 function poll() {
-  fetch("/prs", { cache: "no-store" })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (data) { if (data && data.prs) render(data.prs); })
+  fetch("/", { cache: "no-store" })
+    .then(function (r) { return r.ok ? r.text() : null; })
+    .then(function (html) {
+      if (!html) return;
+      var doc = new DOMParser().parseFromString(html, "text/html");
+      var rows = doc.querySelector(".rows");
+      var empty = doc.querySelector(".empty");
+      if (rows) document.querySelector(".rows").innerHTML = rows.innerHTML;
+      if (empty) document.querySelector(".empty").hidden = empty.hidden;
+    })
     .catch(function () { /* server gone; leave the last list up */ });
 }
 document.addEventListener("click", function (e) {

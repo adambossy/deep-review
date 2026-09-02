@@ -11,26 +11,22 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { renderSliceExplorerHtml } from "@deep-review/call-graph";
-import {
-  defaultOutFile,
-  loadRenderEntry,
-  slicePr,
-  writeSliceReport,
-} from "@deep-review/slicer";
-import { buildSliceExplorerInput } from "./build.js";
-import type { AddOptions, BuildPr, PrView } from "./registry.js";
+import { fetchPrInfo, parsePrUrl } from "@deep-review/pr";
+import { loadSliceReport, slicePr, writeSliceReport } from "@deep-review/slicer";
+import { explorerInputFromReport } from "./build.js";
+import type { AddOptions, BuildPr, PrRef, PrView } from "./registry.js";
 import { startNavServer, VERSION, type NavServer } from "./serve.js";
 
 export function stateDir(): string {
   return process.env.DEEP_REVIEW_HOME ?? path.join(os.homedir(), ".deep-review");
 }
 
-export function lockFile(): string {
+function lockFile(): string {
   return path.join(stateDir(), "server.json");
 }
 
@@ -38,7 +34,7 @@ export function logFile(): string {
   return path.join(stateDir(), "server.log");
 }
 
-export interface ServerLock {
+interface ServerLock {
   pid: number;
   port: number;
   url: string;
@@ -46,7 +42,7 @@ export interface ServerLock {
   startedAt: number;
 }
 
-export function readLock(): ServerLock | null {
+function readLock(): ServerLock | null {
   try {
     const lock = JSON.parse(readFileSync(lockFile(), "utf8")) as ServerLock;
     return Number.isInteger(lock.port) && Number.isInteger(lock.pid) ? lock : null;
@@ -55,17 +51,25 @@ export function readLock(): ServerLock | null {
   }
 }
 
-/** The lock's claim, verified: the server there answered `/health`. */
-export async function probe(url: string, timeoutMs = 1500): Promise<boolean> {
+/** The lock's claim, verified: what the server there says about itself, or null. */
+async function probe(
+  url: string,
+  timeoutMs = 1500,
+): Promise<{ version: string; hasGithubToken: boolean } | null> {
   try {
     const response = await fetch(new URL("/health", url), {
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!response.ok) return false;
-    const body = (await response.json()) as { ok?: boolean };
-    return body.ok === true;
+    if (!response.ok) return null;
+    const body = (await response.json()) as {
+      ok?: boolean;
+      version?: string;
+      hasGithubToken?: boolean;
+    };
+    if (body.ok !== true) return null;
+    return { version: body.version ?? "0.0.0", hasGithubToken: body.hasGithubToken === true };
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -77,46 +81,122 @@ export async function findServer(): Promise<string | null> {
 }
 
 /**
- * The build the daemon runs when a PR is added: slice it (or reuse a saved
- * slice JSON), walk each slice's call graph, render the page under the
- * prefix the server will mount it at. The slice JSON of a fresh run is kept
- * under the state dir so adding the same PR after a restart skips the model.
+ * Whether the lock's claimant exists as a process at all. The server runs
+ * builds on its own event loop, and a clone of a large repo blocks it for
+ * minutes — long enough for `/health` to time out. A dead probe with a live
+ * pid means busy, not gone; only both dead means gone.
  */
-export const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => {
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The running server's claim while it may be too busy to answer: its lock, pid-checked. */
+export function serverBusyOrAlive(): { url: string; pid: number } | null {
+  const lock = readLock();
+  if (!lock || !pidAlive(lock.pid)) return null;
+  return { url: lock.url, pid: lock.pid };
+}
+
+/**
+ * Where the daemon caches one PR's clone and worktrees when the add carries
+ * no --work-dir of its own. The library default is under os.tmpdir(), which
+ * macOS purges periodically — fine for a one-shot CLI run, a re-clone tax
+ * on a server that lives for weeks. Per PR, not shared: a work dir holds
+ * `repo/`, `base/` and `head/` for exactly one PR (see prepareCheckouts),
+ * and two PRs sharing one would swap each other's worktrees out from under
+ * their language services.
+ */
+function defaultDaemonWorkDir(ref: PrRef): string {
+  return path.join(
+    stateDir(),
+    "work",
+    `${safeName(ref.owner)}-${safeName(ref.repo)}-pr${ref.number}`,
+  );
+}
+
+/** One path-safe filename segment; GitHub names are tame, but the path must not care. */
+function safeName(part: string): string {
+  return part.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+/**
+ * The slice JSON a fresh run of this PR is kept at. Keyed by the PR's full
+ * identity — owner included, or `vercel/swr#100` and a fork's `swr#100`
+ * would share a file.
+ */
+function cachedSliceFile(owner: string, repo: string, number: number): string {
+  return path.join(
+    stateDir(),
+    "slices",
+    `slices-${safeName(owner)}-${safeName(repo)}-pr${number}.json`,
+  );
+}
+
+/** The head commit a saved slice report was made from, or null if unreadable. */
+function reportHeadSha(file: string): string | null {
+  try {
+    return loadSliceReport(file).pr.headSha;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The build the daemon runs when a PR is added: slice it, walk each slice's
+ * call graph, render the page under the prefix the server will mount it at.
+ * The slice JSON of a fresh run is kept under the state dir, and a kept one
+ * whose head commit still matches the PR's is reused instead of paying for
+ * the model again — a restart, or re-adding an unchanged PR, costs no slicing.
+ * An explicit slice JSON (--slices) is trusted as given, no head check.
+ */
+const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => {
+  const ref = parsePrUrl(prUrl);
+  const workDir = options.workDir ?? defaultDaemonWorkDir(ref);
+  mkdirSync(workDir, { recursive: true });
+
   let reportFile: string;
   if (options.slicesFile) {
     reportFile = options.slicesFile;
     log(`using slices from ${reportFile}`);
   } else {
-    const report = await slicePr({
-      prUrl,
-      ...(options.workDir ? { workDir: options.workDir } : {}),
-      ...(options.model ? { model: options.model } : {}),
-      onProgress: log,
-    });
-    const slicesDir = path.join(stateDir(), "slices");
-    mkdirSync(slicesDir, { recursive: true });
-    reportFile = writeSliceReport(
-      report,
-      options.save ?? path.join(slicesDir, defaultOutFile(report)),
-    );
-    log(`slices written to ${reportFile}`);
+    const info = await fetchPrInfo(ref);
+    const cached = cachedSliceFile(info.owner, info.repo, info.number);
+    if (existsSync(cached) && reportHeadSha(cached) === info.headSha) {
+      reportFile = cached;
+      log(`head unchanged at ${info.headSha.slice(0, 8)}; reusing slices from ${cached}`);
+    } else {
+      const report = await slicePr({
+        prUrl,
+        workDir,
+        ...(options.model ? { model: options.model } : {}),
+        onProgress: log,
+      });
+      mkdirSync(path.dirname(cached), { recursive: true });
+      reportFile = writeSliceReport(report, cached);
+      log(`slices written to ${reportFile}`);
+    }
+    // --save means "leave me the slice JSON" however the run was answered.
+    if (options.save) copyFileSync(reportFile, options.save);
   }
 
-  const { report, index, headDir } = await loadRenderEntry(reportFile, options.workDir);
-  const input = {
-    ...(await buildSliceExplorerInput({
-      report,
-      index,
-      headDir,
-      ...(options.workDir ? { workDir: options.workDir } : {}),
-      ...(options.maxGraphs !== undefined ? { maxGraphs: options.maxGraphs } : {}),
-      ...(options.debugMarks ? { debugMarks: true } : {}),
-      onProgress: log,
-    })),
-    navBase,
+  const built = await explorerInputFromReport(reportFile, {
+    workDir,
+    ...(options.maxGraphs !== undefined ? { maxGraphs: options.maxGraphs } : {}),
+    ...(options.debugMarks ? { debugMarks: true } : {}),
+    onProgress: log,
+  });
+  const input = { ...built.input, navBase };
+  return {
+    input,
+    headDir: built.headDir,
+    html: renderSliceExplorerHtml(input),
+    headSha: built.report.pr.headSha,
   };
-  return { input, headDir, html: renderSliceExplorerHtml(input) };
 };
 
 export interface RunDaemonOptions {
@@ -138,6 +218,8 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
   }
   const server = await startNavServer({
     build: daemonBuild,
+    // A re-added PR is only trusted while its head has not moved.
+    currentHeadSha: async (ref) => (await fetchPrInfo(ref)).headSha,
     ...(options.port !== undefined ? { port: options.port } : {}),
     ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
@@ -150,7 +232,40 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
     version: VERSION,
     startedAt: Date.now(),
   };
-  writeFileSync(lockFile(), JSON.stringify(lock, null, 2));
+  // The claim is contested through exclusive create: two first invocations
+  // that both found no server will both reach here, and check-then-write
+  // would leave the loser running forever with no lock pointing at it.
+  // A loser defers to a live claimant and shuts itself down; a dead
+  // claimant's file is cleared and the claim retried — but only while the
+  // file still holds the claim that failed the probe, so a rival who won
+  // the meantime is deferred to on the next pass, not deleted.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      writeFileSync(lockFile(), JSON.stringify(lock, null, 2), { flag: "wx" });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 5) {
+        await server.close();
+        throw error;
+      }
+      const claimant = readLock();
+      if (
+        claimant &&
+        claimant.pid !== process.pid &&
+        ((await probe(claimant.url)) || pidAlive(claimant.pid))
+      ) {
+        await server.close();
+        throw new Error(
+          `A server is already running at ${claimant.url} (pr-review stop to stop it).`,
+        );
+      }
+      const now = readLock();
+      if (now && claimant && (now.pid !== claimant.pid || now.port !== claimant.port)) {
+        continue; // someone else claimed while we probed; judge them next pass
+      }
+      rmSync(lockFile(), { force: true });
+    }
+  }
 
   const releaseLock = (): void => {
     // Only withdraw our own claim; a newer server may have overwritten it.
@@ -171,9 +286,39 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
  * spawned process is this same CLI with `serve`, so there is exactly one
  * code path a server starts through.
  */
-export async function ensureServer(): Promise<{ url: string; started: boolean }> {
-  const existing = await findServer();
-  if (existing) return { url: existing, started: false };
+export interface EnsuredServer {
+  url: string;
+  started: boolean;
+  /** Set when the running server's version differs from this CLI's, either way. */
+  serverVersion?: string;
+  /**
+   * Set when this process has GITHUB_TOKEN but the running server does not.
+   * The server keeps the env of whichever shell spawned it, so a token
+   * exported later never reaches it — private-repo builds then fail with a
+   * hint that blames the shell, which is the one place the token *is* set.
+   */
+  missingGithubToken?: boolean;
+}
+
+export async function ensureServer(): Promise<EnsuredServer> {
+  const lock = readLock();
+  if (lock) {
+    const health = await probe(lock.url);
+    if (health) {
+      return {
+        url: lock.url,
+        started: false,
+        ...(health.version !== VERSION ? { serverVersion: health.version } : {}),
+        ...(process.env.GITHUB_TOKEN && !health.hasGithubToken
+          ? { missingGithubToken: true }
+          : {}),
+      };
+    }
+    // Not answering but the process exists: a build is blocking its event
+    // loop. Use it — spawning a rival because the incumbent is busy is how
+    // two servers happen.
+    if (pidAlive(lock.pid)) return { url: lock.url, started: false };
+  }
 
   mkdirSync(stateDir(), { recursive: true });
   const log = openSync(logFile(), "a");
@@ -203,7 +348,7 @@ export async function ensureServer(): Promise<{ url: string; started: boolean }>
 /** Ask the running server to add a PR; it builds in the background there. */
 export async function addPrToServer(
   serverUrl: string,
-  ref: { owner: string; repo: string; number: number; prUrl: string },
+  ref: PrRef,
   options: AddOptions,
 ): Promise<PrView> {
   const response = await fetch(new URL("/prs", serverUrl), {
@@ -224,14 +369,26 @@ export async function listServerPrs(serverUrl: string): Promise<PrView[]> {
   return ((await response.json()) as { prs: PrView[] }).prs;
 }
 
-/** Stop the running server, if any. True when there was one to stop. */
+/**
+ * Stop the running server, if any, and wait until it is actually gone —
+ * "stopped" that returns while the port and lockfile are still live would
+ * make `pr-review stop && pr-review serve` flaky. True when there was one
+ * to stop.
+ */
 export async function stopServer(): Promise<boolean> {
-  const url = await findServer();
-  if (!url) {
-    // No live server; clear a stale claim so the next start is clean.
+  const lock = readLock();
+  if (!lock) return false;
+  const url = lock.url;
+  if (!(await probe(url)) && !pidAlive(lock.pid)) {
+    // Dead claim, dead process; clear it so the next start is clean.
     rmSync(lockFile(), { force: true });
     return false;
   }
   await fetch(new URL("/quit", url), { method: "POST" });
-  return true;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (!(await probe(url, 500))) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`The server at ${url} did not stop; kill pid ${readLock()?.pid ?? "?"} by hand.`);
 }

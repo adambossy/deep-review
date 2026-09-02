@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { NavSession, type DefinitionAnswer } from "./navSession.js";
 import type { SliceExplorerInput } from "./sliceExplorer.js";
-import type { CallPathResult, EmbeddedFile } from "./types.js";
+import type { CallPathResult, EmbeddedFile, FileDiff } from "./types.js";
 
 // A tiny TS project: the slice changes `use.ts`, which calls `helper` and
 // reads `LIMIT` from `lib.ts`; `helper` is also a call-graph node.
@@ -24,6 +24,10 @@ const useText = [
   "export function use(x: number): number {",
   "  const total = helper(x) + LIMIT;",
   "  return total + Math.max(total, 0);",
+  "}",
+  "",
+  "export function later(xs: number[]): number[] {",
+  "  return xs.map(helper);",
   "}",
 ];
 writeFileSync(path.join(dir, "lib.ts"), libText.join("\n"));
@@ -149,7 +153,12 @@ describe("NavSession.references", () => {
     const helper = await hit("use.ts", 4, 16);
     const refs = (await session.references(helper.id))!;
     expect(refs.kind).toBe("calls");
-    expect(refs.sites.map((s) => [s.file, s.line, s.startColumn, s.enclosingName])).toEqual([["use.ts", 4, 16, "use"]]);
+    // `later` hands `helper` to `map` without calling it: invisible to call
+    // hierarchy, found by the reference search, flagged as indirect.
+    expect(refs.sites.map((s) => [s.file, s.line, s.startColumn, s.enclosingName, s.indirect ?? false])).toEqual([
+      ["use.ts", 4, 16, "use", false],
+      ["use.ts", 9, 16, "later", true],
+    ]);
     // `use` is not a graph node: its panel is a definition panel, rendered when asked for.
     expect(refs.sites[0]!.panelId).toMatch(/^def:d\d+$/);
     expect(await session.references(helper.id)).toBe(refs);
@@ -159,7 +168,8 @@ describe("NavSession.references", () => {
     const limit = await hit("use.ts", 4, 28);
     const refs = (await session.references(limit.id))!;
     expect(refs.kind).toBe("references");
-    expect(refs.sites.map((s) => `${s.file}:${s.line}`).sort()).toEqual(["lib.ts:4", "use.ts:1", "use.ts:4"]);
+    // The import binding on use.ts:1 is not a use.
+    expect(refs.sites.map((s) => `${s.file}:${s.line}`).sort()).toEqual(["lib.ts:4", "use.ts:4"]);
     // A site inside a graph node walks up into that node's own panel.
     expect(refs.sites.find((s) => s.file === "lib.ts")!.panelId).toBe("lib.ts#helper");
   }, 30_000);
@@ -202,6 +212,39 @@ describe("NavSession.panel", () => {
       expect(panel.html).not.toContain('class="gap"');
     } finally {
       bare.dispose();
+    }
+  }, 30_000);
+
+  it("shades a definition from the PR's diff, whichever slice claimed the change", async () => {
+    // The only slice touches use.ts; `LIMIT` was added over in lib.ts, so
+    // its panel is shaded from the PR's diff or not at all.
+    const diff: FileDiff[] = [
+      {
+        oldPath: "lib.ts",
+        newPath: "lib.ts",
+        hunks: [
+          {
+            header: "@@ -0,0 +1,1 @@",
+            oldStart: 0,
+            oldLines: 0,
+            newStart: 1,
+            newLines: 1,
+            lines: [`+${libText[0]}`],
+          },
+        ],
+      },
+    ];
+    const withDiff = new NavSession(dir, { ...input, diff });
+    try {
+      const limit = await hit("use.ts", 4, 28, withDiff);
+      const panel = (await withDiff.panel(limit.panelId))!;
+      expect(panel.name).toBe("LIMIT");
+      expect(panel.html).toContain("diff-add");
+      // Without the diff the same panel has nothing to shade with.
+      const plain = (await session.panel((await hit("use.ts", 4, 28)).panelId))!;
+      expect(plain.html).not.toContain("diff-add");
+    } finally {
+      withDiff.dispose();
     }
   }, 30_000);
 

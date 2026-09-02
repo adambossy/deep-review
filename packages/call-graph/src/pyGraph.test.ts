@@ -20,7 +20,7 @@ writeFileSync(
 );
 writeFileSync(
   path.join(dir, "top.py"),
-  "from mid import mid\n\n\ndef top():\n    return mid(1)\n",
+  "from mid import mid\n\n\ndef top():\n    return mid(1)\n\n\ndef deferred():\n    return list(map(mid, [1]))\n",
 );
 writeFileSync(
   path.join(dir, "shapes.py"),
@@ -108,6 +108,17 @@ describe("pyright backend", () => {
     expect(await backend.incomingCallsAt({ fileName: path.join(dir, "leaf.py"), line: 1, column: 0 })).toBeNull();
     const refs = await backend.referencesAt({ fileName: path.join(dir, "leaf.py"), line: 1, column: 0 });
     expect(refs.map((r) => [r.enclosing?.name, r.line, r.startColumn, r.endColumn])).toEqual([["leaf", 5, 15, 19]]);
+  });
+
+  it("finds a function passed as a value among its references, but not its import line", { timeout: 30_000 }, async () => {
+    const mid = { fileName: path.join(dir, "mid.py"), line: 4, column: 4 };
+    const calls = await backend.incomingCallsAt(mid);
+    expect(calls!.map((c) => [c.enclosing?.name, c.line])).toEqual([["top", 5]]);
+    const refs = await backend.referencesAt(mid);
+    expect(refs.map((r) => [r.enclosing?.name, r.line, r.snippet])).toEqual([
+      ["top", 5, "return mid(1)"],
+      ["deferred", 9, "return list(map(mid, [1]))"],
+    ]);
   });
 
   it("flags a stdlib definition as external and a declaration as itself", { timeout: 30_000 }, async () => {

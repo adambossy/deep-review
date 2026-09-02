@@ -204,12 +204,64 @@ describe("renderDiffRows", () => {
     expect(html).toContain('class="line diff-del"');
   });
 
-  it("uses the embedded file's rendering for unmarked rows and expandable gaps for hidden ones", () => {
+  it("uses the embedded file's base rendering for unmarked rows and expandable gaps for hidden ones", () => {
     const rows: DiffRow[] = [{ kind: "gap", from: 1, to: 3 }, { kind: "ctx", n: 4, text: "line 4;" }];
     const html = renderDiffRows(rows, { width: 2, lang: "ts", entry });
     expect(html).toContain('data-key="after:x.ts" data-from="1" data-to="3"');
     expect(html).toContain(entry.html[3]);
     // Without the file, the gap is a fixed bar.
     expect(renderDiffRows(rows, { width: 2, lang: "ts" })).toContain('class="gap static"');
+  });
+
+  it("never leaves a decorated line inside a gap: the gap is cut around it", () => {
+    const rows: DiffRow[] = [{ kind: "gap", from: 1, to: 10 }, { kind: "ctx", n: 11, text: "line 11;" }];
+    const html = renderDiffRows(rows, {
+      width: 2,
+      lang: "ts",
+      entry,
+      decorations: new Map([
+        [4, { marks: [{ start: 0, end: 4, cls: "csite", attrs: 'data-target="t"' }] }],
+        [5, { cls: ["hl"] }],
+      ]),
+    });
+    expect(html).toContain('data-from="1" data-to="3"');
+    expect(html).toContain('<span class="csite" data-target="t">line</span> <span class="tok-num">4</span>;');
+    expect(html).toContain('<span class="line hl"><span class="lineno"> 5</span>');
+    expect(html).toContain('data-from="6" data-to="10"');
+    // A decoration at the very edge of a gap leaves no empty gap behind.
+    const edge = renderDiffRows([{ kind: "gap", from: 1, to: 3 }], {
+      width: 2,
+      lang: "ts",
+      entry,
+      decorations: new Map([[1, { cls: ["hl"] }]]),
+    });
+    expect(edge).not.toContain('data-from="1" data-to="0"');
+    expect(edge).toContain('data-from="2" data-to="3"');
+    // Without the file there is no text to pin, and the gap stays a fixed bar.
+    expect(renderDiffRows(rows, { width: 2, lang: "ts", decorations: new Map([[4, { cls: ["hl"] }]]) })).toContain(
+      'class="gap static"',
+    );
+  });
+
+  it("never leaves a focused line inside a gap, so the focus stripe is never broken by an expander", () => {
+    const rows: DiffRow[] = [{ kind: "gap", from: 1, to: 10 }, { kind: "ctx", n: 11, text: "line 11;" }];
+    const html = renderDiffRows(rows, { width: 2, lang: "ts", entry, focus: { startLine: 8, endLine: 12 } });
+    expect(html).toContain('data-from="1" data-to="7"');
+    for (const n of [8, 9, 10, 11]) {
+      expect(html).toContain(`<span class="line in-focus"><span class="lineno">${String(n).padStart(2)}</span>`);
+    }
+    expect(html).not.toContain('data-from="8"');
+  });
+
+  it("gives every head-side row identifier spans, whether or not the file backs it", () => {
+    const rows: DiffRow[] = [
+      { kind: "ctx", n: 4, text: "line 4;" }, // the file's own text
+      { kind: "ctx", n: 5, text: "stale(hunk);" }, // a stale hunk: not what the file says
+      { kind: "del", text: "gone(1);" }, // removed: no head-side position to ask about
+    ];
+    const html = renderDiffRows(rows, { width: 2, lang: "ts", entry });
+    expect(html).toContain('<span class="id">line</span> <span class="tok-num">4</span>;');
+    expect(html).toContain('<span class="tok-fn id">stale</span>(<span class="id">hunk</span>)');
+    expect(html).toContain('<span class="tok-fn">gone</span>');
   });
 });

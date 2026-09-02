@@ -6,12 +6,20 @@ import {
   type SliceExplorerInput,
   type SliceInput,
 } from "@deep-review/call-graph";
+import type { FileDiff } from "@deep-review/pr";
+import { loadRenderEntry } from "@deep-review/slicer";
 import type { DiffIndex } from "@deep-review/slicer";
 import type { Fragment, SliceReport } from "@deep-review/slicer";
 
 export interface BuildOptions {
   report: SliceReport;
   index: DiffIndex;
+  /**
+   * The PR's diff, whole. The slices carry their own fragments of it; this
+   * is what a panel opened by a symbol click is shaded from, so a
+   * declaration reads as changed no matter which slice claimed the change.
+   */
+  diff?: FileDiff[];
   /** Where the clone/worktrees are cached, shared with the slicing run. */
   workDir?: string;
   /** The head worktree, read for the context around each fragment. */
@@ -169,9 +177,43 @@ export async function buildSliceExplorerInput(
     prDescription: report.pr.description,
     prAuthor: report.pr.author,
     slices,
+    ...(options.diff ? { diff: options.diff } : {}),
     files: options.headDir
       ? await readChangedFiles(report, options.headDir, log)
       : [],
     ...(options.debugMarks ? { debugMarks: true } : {}),
   };
+}
+
+export interface ReportBuildOptions {
+  /** Where the clone/worktrees are cached, shared with the slicing run. */
+  workDir?: string | undefined;
+  maxGraphs?: number | undefined;
+  debugMarks?: boolean | undefined;
+  onProgress?: ((message: string) => void) | undefined;
+}
+
+/**
+ * The stretch every consumer of a slice report shares: re-derive the diff
+ * and checkout from the report, then build the explorer's input. How the
+ * report was obtained (a fresh slicing run, a head-keyed cache, an explicit
+ * --slices file) and what the input becomes (a served page, a static copy)
+ * stay with the caller.
+ */
+export async function explorerInputFromReport(
+  reportFile: string,
+  options: ReportBuildOptions = {},
+): Promise<{ input: SliceExplorerInput; headDir: string; report: SliceReport }> {
+  const { report, diff, index, headDir } = await loadRenderEntry(reportFile, options.workDir);
+  const input = await buildSliceExplorerInput({
+    report,
+    diff,
+    index,
+    headDir,
+    ...(options.workDir ? { workDir: options.workDir } : {}),
+    ...(options.maxGraphs !== undefined ? { maxGraphs: options.maxGraphs } : {}),
+    ...(options.debugMarks ? { debugMarks: true } : {}),
+    ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+  });
+  return { input, headDir, report };
 }

@@ -2,9 +2,12 @@ import { renderCodePane } from "./codePane.js";
 import { fileDiffRows, hunkRows, markIntraLine, renderDiffBlock, rowsWidth, segmentRows } from "./diffView.js";
 import {
   escapeHtml as esc,
+  identifierMarks,
+  identifiersOf,
   languageOf,
   renderLine,
   tokenizeLines,
+  type IdentifierToken,
   type Language,
   type Mark,
   type Token,
@@ -30,29 +33,72 @@ export interface FileEntry {
   lang: Language;
   lines: string[];
   tokens: Token[][];
-  /** Per-line pre-highlighted HTML (no marks). */
+  /** Identifier spans per line, scanned over the whole file so a word inside
+   *  a multi-line string or comment is never one. */
+  ids: IdentifierToken[][];
+  /**
+   * The base rendering of each line: syntax tokens plus a bare `.id` span on
+   * every identifier. This exact string is what the page's expander inserts
+   * for the line and what a pane shows for any row it does not decorate, so
+   * a row reads — and navigates — the same whether it was rendered here or
+   * revealed later.
+   */
   html: string[];
   symbols: SymbolRange[];
+  /** Debug builds: the baked `.id` spans say they have not been asked yet. */
+  debug: boolean;
 }
 
 export type FileIndex = Map<string, FileEntry>;
 
-export function buildFileIndex(files: EmbeddedFile[]): FileIndex {
+export interface FileIndexOptions {
+  /** Debug builds: every `.id` span explains itself (`data-why`). */
+  debug?: boolean | undefined;
+}
+
+export function buildFileIndex(files: EmbeddedFile[], options: FileIndexOptions = {}): FileIndex {
+  const debug = options.debug ?? false;
   const index: FileIndex = new Map();
   for (const file of files) {
     const key = `${file.side}:${file.path}`;
     const lang = languageOf(file.path);
     const tokens = tokenizeLines(file.lines, lang);
+    const ids = identifiersOf(file.lines, lang);
     index.set(key, {
       key,
       lang,
       lines: file.lines,
       tokens,
-      html: file.lines.map((line, i) => renderLine(line, tokens[i]!, [])),
+      ids,
+      html: file.lines.map((line, i) => lineHtml(line, tokens[i]!, ids[i]!, [], debug)),
       symbols: file.symbols,
+      debug,
     });
   }
   return index;
+}
+
+function lineHtml(
+  text: string,
+  tokens: readonly Token[],
+  ids: readonly IdentifierToken[],
+  marks: readonly Mark[],
+  debug: boolean,
+): string {
+  return renderLine(text, tokens, [...marks, ...identifierMarks(ids, marks, debug)]);
+}
+
+/**
+ * Head line `n` of an embedded file with a pane's marks layered in; an
+ * identifier a mark covers keeps the mark's span rather than gaining an
+ * `.id`. With no marks this is the base rendering itself, `entry.html[n-1]`.
+ * A line outside the file renders as nothing, as the expander does.
+ */
+export function fileLineHtml(entry: FileEntry, n: number, marks: readonly Mark[] = []): string {
+  const i = n - 1;
+  if (i < 0 || i >= entry.lines.length) return "";
+  if (!marks.length) return entry.html[i]!;
+  return lineHtml(entry.lines[i]!, entry.tokens[i]!, entry.ids[i]!, marks, entry.debug);
 }
 
 function symbolLabel(symbol: SymbolRange): string {
@@ -167,14 +213,9 @@ export function renderCodeBlock(segments: SourceSegment[], opts: BlockOptions): 
         const html = renderLine(deleted, tokenizeLines([deleted], lang)[0]!, []);
         rows.push(lineRow("−", width, html, ["diff-del"]));
       }
-      const content =
-        entry && !deco?.marks
-          ? (entry.html[n - 1] ?? esc(text))
-          : renderLine(
-              text,
-              entry ? (entry.tokens[n - 1] ?? []) : localTokens![i]!,
-              deco?.marks ?? [],
-            );
+      const content = entry
+        ? fileLineHtml(entry, n, deco?.marks ?? []) || esc(text)
+        : renderLine(text, localTokens![i]!, deco?.marks ?? []);
       rows.push(lineRow(n, width, content, deco?.cls ?? []));
     });
     previousEnd = segment.startLine + segment.lines.length - 1;

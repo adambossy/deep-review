@@ -16,7 +16,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { listAssignedPrs, prUrl, type AssignedPr } from "@deep-review/pr";
+import { listAssignedPrs, type AssignedPr } from "@deep-review/pr";
 import { addPrToServer, ensureServer, stateDir } from "./daemon.js";
 import { prKey, type AddOptions, type PrKey, type PrView } from "./registry.js";
 
@@ -150,7 +150,7 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
       const { url } = await ensureServer();
       return addPrToServer(
         url,
-        { owner: pr.owner, repo: pr.repo, number: pr.number, prUrl: prUrl(pr) },
+        { owner: pr.owner, repo: pr.repo, number: pr.number },
         { workDir: defaultWatcherWorkDir(), ...deps.options },
       );
     });
