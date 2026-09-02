@@ -143,7 +143,7 @@ vertical counterpart of a track.
 _Avoid_: carousel, stack (overloaded), pager
 
 **Description view**:
-What the sidebar's Description entry shows in place of the deck: the PR as
+What the sidebar's PR Description entry shows in place of the deck: the PR as
 its author wrote it, rendered from Markdown, plus the slicer's own overview
 of what the PR does. The one view of the page that is not code, and the
 sidebar's other kind of destination — a slice, or this.

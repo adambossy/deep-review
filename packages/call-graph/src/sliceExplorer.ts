@@ -627,7 +627,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   </div>
   <nav>
     <div class="slice-nav">
-      <button class="side-link doc-link" type="button">Description</button>
+      <button class="side-link doc-link" type="button">PR Description</button>
     </div>
     <div class="side-label">Slices · <span class="progress-label"></span></div>
     <div class="slice-nav">${sliceLinks}</div>

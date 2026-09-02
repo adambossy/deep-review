@@ -294,7 +294,7 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
 
   it("names the description in the sidebar, alongside the slices", () => {
     const side = html.slice(html.indexOf('<aside class="side">'), html.indexOf("</aside>"));
-    expect(side).toContain('<button class="side-link doc-link" type="button">Description</button>');
+    expect(side).toContain('<button class="side-link doc-link" type="button">PR Description</button>');
     // Both kinds of destination are the same kind of tappable sidebar link.
     expect([...side.matchAll(/class="side-link/g)]).toHaveLength(3);
     expect(html).not.toContain("view-tab");
