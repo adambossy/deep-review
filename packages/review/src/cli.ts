@@ -77,7 +77,7 @@ Options:
   --interval <s>    watch: seconds between checks (default: ${DEFAULT_INTERVAL_MS / 1000})
   --foreground      watch: run the loop here instead of in the background
   --force           watch: install even from a path that may not outlive today
-  --port <n>        serve/--no-daemon: listen on this port (default: a free one)
+  --port <n>        serve/--no-daemon: listen on this port (default: $DEEP_REVIEW_PORT, else 64940)
   --concurrency <n> serve: how many PRs may build at once (default: 2)
   --max-graphs <n>  Analyze at most n slices' call graphs (default: all)
   --debug-marks     Hold Shift on the page to see why each symbol is marked as it is
@@ -92,6 +92,7 @@ Environment:
   GROK_API_KEY       Required for grok-* models.
   GITHUB_TOKEN       Needed for private repos.
   DEEP_REVIEW_REPO   <owner>/<repo> a bare PR number refers to.
+  DEEP_REVIEW_PORT   Port the server binds by default (default: 64940).
   DEEP_REVIEW_HOME   Where the server keeps its lockfile, log and slice JSONs
                      (default: ~/.deep-review).
   LINEAR_API_KEY     Optional; enables linked-ticket context.

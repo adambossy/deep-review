@@ -26,6 +26,21 @@ export function stateDir(): string {
   return process.env.DEEP_REVIEW_HOME ?? path.join(os.homedir(), ".deep-review");
 }
 
+/**
+ * The port a server binds when nothing more specific is asked for. Fixed
+ * rather than OS-assigned so the same URL works across restarts, and so it's
+ * obvious from the port alone whether a server is already up.
+ */
+export function defaultPort(): number {
+  const env = process.env.DEEP_REVIEW_PORT;
+  if (env === undefined) return 64940;
+  const parsed = Number.parseInt(env, 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`DEEP_REVIEW_PORT must be a port number, got ${JSON.stringify(env)}.`);
+  }
+  return parsed;
+}
+
 function lockFile(): string {
   return path.join(stateDir(), "server.json");
 }
@@ -220,7 +235,7 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
     build: daemonBuild,
     // A re-added PR is only trusted while its head has not moved.
     currentHeadSha: async (ref) => (await fetchPrInfo(ref)).headSha,
-    ...(options.port !== undefined ? { port: options.port } : {}),
+    port: options.port ?? defaultPort(),
     ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
   });
