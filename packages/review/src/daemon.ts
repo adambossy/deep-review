@@ -81,6 +81,28 @@ export async function findServer(): Promise<string | null> {
 }
 
 /**
+ * Whether the lock's claimant exists as a process at all. The server runs
+ * builds on its own event loop, and a clone of a large repo blocks it for
+ * minutes — long enough for `/health` to time out. A dead probe with a live
+ * pid means busy, not gone; only both dead means gone.
+ */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The running server's claim while it may be too busy to answer: its lock, pid-checked. */
+export function serverBusyOrAlive(): { url: string; pid: number } | null {
+  const lock = readLock();
+  if (!lock || !pidAlive(lock.pid)) return null;
+  return { url: lock.url, pid: lock.pid };
+}
+
+/**
  * Where the daemon caches one PR's clone and worktrees when the add carries
  * no --work-dir of its own. The library default is under os.tmpdir(), which
  * macOS purges periodically — fine for a one-shot CLI run, a re-clone tax
@@ -227,7 +249,11 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
         throw error;
       }
       const claimant = readLock();
-      if (claimant && claimant.pid !== process.pid && (await probe(claimant.url))) {
+      if (
+        claimant &&
+        claimant.pid !== process.pid &&
+        ((await probe(claimant.url)) || pidAlive(claimant.pid))
+      ) {
         await server.close();
         throw new Error(
           `A server is already running at ${claimant.url} (pr-review stop to stop it).`,
@@ -288,6 +314,10 @@ export async function ensureServer(): Promise<EnsuredServer> {
           : {}),
       };
     }
+    // Not answering but the process exists: a build is blocking its event
+    // loop. Use it — spawning a rival because the incumbent is busy is how
+    // two servers happen.
+    if (pidAlive(lock.pid)) return { url: lock.url, started: false };
   }
 
   mkdirSync(stateDir(), { recursive: true });
@@ -346,9 +376,11 @@ export async function listServerPrs(serverUrl: string): Promise<PrView[]> {
  * to stop.
  */
 export async function stopServer(): Promise<boolean> {
-  const url = await findServer();
-  if (!url) {
-    // No live server; clear a stale claim so the next start is clean.
+  const lock = readLock();
+  if (!lock) return false;
+  const url = lock.url;
+  if (!(await probe(url)) && !pidAlive(lock.pid)) {
+    // Dead claim, dead process; clear it so the next start is clean.
     rmSync(lockFile(), { force: true });
     return false;
   }

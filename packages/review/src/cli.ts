@@ -22,6 +22,7 @@ import {
   listServerPrs,
   logFile,
   runDaemon,
+  serverBusyOrAlive,
   stopServer,
 } from "./daemon.js";
 import type { AddOptions, PrRef, PrView } from "./registry.js";
@@ -279,9 +280,19 @@ async function main(): Promise<void> {
   if (!values.wait) return;
 
   // Stay attached: mirror each PR's build log here until all are settled.
+  // A poll can fail while the server's event loop is blocked on a long
+  // clone; that means busy, not gone, so keep polling while the process
+  // exists and give up only when it does not.
   const seen = new Map<string, number>(added.map((pr) => [pr.key, 0]));
   for (;;) {
-    const prs = await listServerPrs(serverUrl);
+    let prs: PrView[];
+    try {
+      prs = await listServerPrs(serverUrl);
+    } catch {
+      if (!serverBusyOrAlive()) fail("The server went away while building.");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      continue;
+    }
     const mine = prs.filter((pr) => seen.has(pr.key));
     for (const pr of mine) {
       const from = seen.get(pr.key)!;
