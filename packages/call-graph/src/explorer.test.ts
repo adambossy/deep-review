@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { panelRange, renderCallPathExplorerHtml, renderDefinitionPanel } from "./explorer.js";
+import { panelRange, renderCallPathExplorerHtml, renderDefinitionPanel, EXPLORER_NAV_JS } from "./explorer.js";
 import { buildFileIndex } from "./html.js";
 import type { CallPathResult, DefinitionTarget, FunctionSnapshot, PathNode } from "./types.js";
 
@@ -351,5 +351,22 @@ describe("renderDefinitionPanel", () => {
     const debug = renderDefinitionPanel(internal, index, { debug: true });
     expect(debug).toContain('data-why="decl · leaf (function) leaf.ts:20:9"');
     expect(debug).toContain('data-why="id · not asked yet"');
+  });
+});
+
+describe("EXPLORER_NAV_JS", () => {
+  /**
+   * The page's script is written inside a template literal, where a stray
+   * `\/` is an escape the compiler eats before it ever reaches the page —
+   * leaving a script the browser cannot parse and a page with no behavior
+   * at all. Nothing else notices: the HTML still renders, the tests still
+   * pass, and only a browser tells you. So parse it here.
+   */
+  it("parses as JavaScript", () => {
+    expect(() => new Function(EXPLORER_NAV_JS)).not.toThrow();
+  });
+
+  it("keeps the trailing-slash regex intact through the template literal", () => {
+    expect(EXPLORER_NAV_JS).toContain('.replace(/\\/$/, "")');
   });
 });

@@ -340,7 +340,7 @@ window.DEFNAMES = window.DEFNAMES || {};
 /* Where this page's PR is mounted on the navigation server. Every question
    below is asked relative to it, so one server can hold several PRs. A
    static copy leaves it empty and asks nothing. */
-function navUrl(path) { return (window.NAV_BASE || "").replace(/\/$/, "") + path; }
+function navUrl(path) { return (window.NAV_BASE || "").replace(/\\/$/, "") + path; }
 /* One round trip to the navigation server; null when there is none. */
 function navFetch(url) {
   if (location.protocol !== "http:" && location.protocol !== "https:") return Promise.resolve(null);
