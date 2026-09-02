@@ -212,6 +212,22 @@ export function identifiersOf(lines: readonly string[], lang: Language = "ts"): 
   });
 }
 
+/**
+ * A bare `.id` mark over every identifier no other mark covers — a marked
+ * span (a call mark, the declared name) already says what it is. Identifier
+ * spans are how the page asks the navigation server about a name, so they
+ * belong to every rendering of a line; the marks vary per pane.
+ */
+export function identifierMarks(
+  ids: readonly IdentifierToken[],
+  marks: readonly Mark[],
+  debug = false,
+): Mark[] {
+  return ids
+    .filter((id) => !marks.some((m) => m.start < id.end && id.start < m.end))
+    .map((id) => ({ start: id.start, end: id.end, cls: "id", ...(debug ? { why: "id · not asked yet" } : {}) }));
+}
+
 export function escapeHtml(text: string): string {
   return text
     .replaceAll("&", "&amp;")

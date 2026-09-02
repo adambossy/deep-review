@@ -80,7 +80,9 @@ export interface SliceExplorerInput {
  * renders later matches the page.
  */
 export function explorerFileIndex(input: SliceExplorerInput): FileIndex {
-  return buildFileIndex([...input.files, ...input.slices.flatMap((s) => s.graph?.files ?? [])]);
+  return buildFileIndex([...input.files, ...input.slices.flatMap((s) => s.graph?.files ?? [])], {
+    debug: input.debugMarks,
+  });
 }
 
 /** The slice's own panel: everything the PR changed for this one purpose. */
