@@ -103,6 +103,8 @@ export function planPoll(
 export interface PollDeps {
   /** The PRs assigned to you right now. */
   list?: (() => Promise<AssignedPr[]>) | undefined;
+  /** Watch one `owner/repo` instead of every repo the token can see. */
+  repo?: string | undefined;
   /** Hand one PR to the server. Defaults to starting/finding it and adding. */
   add?: ((pr: AssignedPr, options: AddOptions) => Promise<PrView>) | undefined;
   options?: AddOptions | undefined;
@@ -119,7 +121,8 @@ export interface PollDeps {
  */
 export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
   const log = deps.onProgress ?? (() => {});
-  const list = deps.list ?? listAssignedPrs;
+  const list =
+    deps.list ?? (() => listAssignedPrs(deps.repo ? { repo: deps.repo } : {}));
   const before = readWatcherState();
 
   let assigned: AssignedPr[];
@@ -182,6 +185,8 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
 export interface RunWatcherOptions {
   /** How long to wait between polls. */
   intervalMs?: number | undefined;
+  /** Watch one `owner/repo` instead of every repo the token can see. */
+  repo?: string | undefined;
   onProgress?: ((message: string) => void) | undefined;
   /** Stop after this many polls; for tests, which cannot loop forever. */
   maxPolls?: number | undefined;
@@ -211,7 +216,7 @@ export async function runWatcher(options: RunWatcherOptions = {}): Promise<void>
   process.once("SIGTERM", release);
 
   for (let polls = 0; options.maxPolls === undefined || polls < options.maxPolls; polls += 1) {
-    await pollOnce({ onProgress: log });
+    await pollOnce({ onProgress: log, ...(options.repo ? { repo: options.repo } : {}) });
     if (options.maxPolls !== undefined && polls + 1 >= options.maxPolls) break;
     await new Promise((resolve) => setTimeout(resolve, interval));
   }

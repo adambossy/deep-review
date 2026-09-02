@@ -80,18 +80,46 @@ interface SearchResponse {
 
 const REPO_URL = /\/repos\/([^/]+)\/([^/]+)$/;
 
+export interface AssignedPrQuery {
+  /** Limit to one `owner/repo`. Without it, every repo the token can see. */
+  repo?: string | undefined;
+}
+
 /**
- * The open PRs currently assigned to the token's owner.
+ * The search for "PRs waiting on me", as GitHub spells it.
+ *
+ * Assigned and open is not the same as needing review, and the difference is
+ * most of the list: a draft is not ready to be read, and one already approved
+ * has been read. Both are excluded, so what comes back is work outstanding
+ * rather than everything with your name on it.
+ */
+export function assignedPrsQuery(options: AssignedPrQuery = {}): string {
+  return [
+    "is:open",
+    "is:pr",
+    "assignee:@me",
+    "archived:false",
+    // Ready to review, and not yet signed off.
+    "-is:draft",
+    "-review:approved",
+    ...(options.repo ? [`repo:${options.repo}`] : []),
+  ].join(" ");
+}
+
+/**
+ * The open PRs waiting on the token's owner for review.
  *
  * This asks for *state*, not for events: every call reports the full set, so
  * a caller that has been asleep for a night catches up on one poll and needs
  * no cursor arithmetic to do it. Requires a token — `assignee:@me` has no
  * meaning without one.
  */
-export async function listAssignedPrs(): Promise<AssignedPr[]> {
+export async function listAssignedPrs(
+  options: AssignedPrQuery = {},
+): Promise<AssignedPr[]> {
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN is not set; it is needed to find your assigned PRs.");
-  const query = encodeURIComponent("is:open is:pr assignee:@me archived:false");
+  const query = encodeURIComponent(assignedPrsQuery(options));
   const res = await fetch(`https://api.github.com/search/issues?q=${query}&per_page=100`, {
     headers: {
       Accept: "application/vnd.github+json",

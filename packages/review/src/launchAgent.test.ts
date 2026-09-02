@@ -7,6 +7,7 @@ import {
   captureEnv,
   inheritableExecArgv,
   transientPaths,
+  watcherArgv,
   loadEnvFile,
   missingEnv,
   renderAgentPlist,
@@ -136,6 +137,20 @@ describe("inheritableExecArgv", () => {
 
   it("drops the other flags that describe this invocation only", () => {
     expect(inheritableExecArgv(["-p", "1+1", "--interactive"])).toEqual([]);
+  });
+});
+
+describe("watcherArgv", () => {
+  it("spells the repo into the agent's argv", () => {
+    // The agent must watch what was asked for, not what some later shell
+    // happens to export into its environment.
+    expect(watcherArgv(300_000, "acme/widgets")).toEqual(
+      expect.arrayContaining(["--repo", "acme/widgets"]),
+    );
+  });
+
+  it("omits the repo when watching everything", () => {
+    expect(watcherArgv(300_000)).not.toContain("--repo");
   });
 });
 

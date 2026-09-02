@@ -57,8 +57,9 @@ into the explorer when ready.
 
 Commands:
   <pr>...           Add these PRs to the server (starting it if needed).
-  watch             Review PRs as they are assigned to you. Turns itself on
-                    at login and after a reboot; --off turns it back off.
+  watch             Review PRs as they come to wait on you: assigned, ready
+                    to review, not yet approved. Scoped by --repo when given.
+                    Turns itself on at login and after a reboot; --off stops it.
   serve             Run the server in the foreground.
   status            What is being watched and what the server holds.
   stop              Stop watching, and stop the server.
@@ -191,6 +192,10 @@ async function main(): Promise<void> {
   if (command === "watch") {
     const intervalMs = intFlag(values.interval, "--interval", 30);
     const running = readWatcherState().runner;
+    // The same repo the rest of the CLI means by --repo; without one, every
+    // repo the token can see.
+    const watchRepo = values.repo ?? process.env.DEEP_REVIEW_REPO;
+    const scope = watchRepo ? `in ${watchRepo}` : "in every repo you can see";
 
     if (values.off) {
       uninstallAgent();
@@ -210,9 +215,16 @@ async function main(): Promise<void> {
       // Started by launchd, which sources no profile: the keys captured at
       // install time are the only ones this process will ever see.
       loadWatcherEnv();
-      log(`Watching PRs assigned to you every ${intervalMs ?? DEFAULT_INTERVAL_MS / 1000}s.`);
+      // launchd carries the repo in the agent's argv, but a plain
+      // --foreground run falls back to the environment it was given.
+      const repo = watchRepo ?? process.env.DEEP_REVIEW_REPO;
+      log(
+        `Watching PRs waiting on your review ${repo ? `in ${repo}` : "in every repo you can see"}, ` +
+          `every ${intervalMs ?? DEFAULT_INTERVAL_MS / 1000}s.`,
+      );
       await runWatcher({
         ...(intervalMs !== undefined ? { intervalMs: intervalMs * 1000 } : {}),
+        ...(repo ? { repo } : {}),
         onProgress: log,
       });
       return;
@@ -220,10 +232,12 @@ async function main(): Promise<void> {
 
     const result = installAgent({
       ...(intervalMs !== undefined ? { intervalMs: intervalMs * 1000 } : {}),
+      ...(watchRepo ? { repo: watchRepo } : {}),
       ...(values.force ? { force: true } : {}),
     });
     log(
-      `Watching PRs assigned to you, every ${intervalMs ?? DEFAULT_INTERVAL_MS / 1000}s.\n` +
+      `Watching PRs waiting on your review ${scope}, ` +
+        `every ${intervalMs ?? DEFAULT_INTERVAL_MS / 1000}s.\n` +
         `Reviews appear at the server's index as they build; pr-review status shows both.\n` +
         `Carried into the background: ${result.captured.join(", ")}.\n` +
         `Log: ${watcherLogFile()}`,

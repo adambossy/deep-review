@@ -1,5 +1,12 @@
 export { parsePrTarget, parsePrUrl, prUrl, type PrRef } from "./prUrl.js";
-export { fetchPrInfo, listAssignedPrs, type PrInfo, type AssignedPr } from "./github.js";
+export {
+  fetchPrInfo,
+  listAssignedPrs,
+  assignedPrsQuery,
+  type PrInfo,
+  type AssignedPr,
+  type AssignedPrQuery,
+} from "./github.js";
 export {
   parseUnifiedDiff,
   hunksOverlapping,

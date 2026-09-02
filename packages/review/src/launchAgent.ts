@@ -171,7 +171,7 @@ export function inheritableExecArgv(execArgv: string[] = process.execArgv): stri
  * checkout runs, and absolute because launchd has no working directory or
  * PATH worth relying on.
  */
-export function watcherArgv(intervalMs?: number): string[] {
+export function watcherArgv(intervalMs?: number, repo?: string): string[] {
   const argv = [
     process.execPath,
     ...inheritableExecArgv(),
@@ -180,6 +180,9 @@ export function watcherArgv(intervalMs?: number): string[] {
     "--foreground",
   ];
   if (intervalMs !== undefined) argv.push("--interval", String(Math.round(intervalMs / 1000)));
+  // Spelled out rather than left to the environment: the agent should watch
+  // what you asked it to watch, not what a later shell happens to export.
+  if (repo) argv.push("--repo", repo);
   return argv;
 }
 
@@ -224,7 +227,11 @@ export interface InstallResult {
 
 /** Write the plist and hand it to launchd, replacing any earlier one. */
 export function installAgent(
-  options: { intervalMs?: number | undefined; force?: boolean | undefined } = {},
+  options: {
+    intervalMs?: number | undefined;
+    repo?: string | undefined;
+    force?: boolean | undefined;
+  } = {},
 ): InstallResult {
   const captured = captureEnv();
   const missing = missingEnv(captured);
@@ -235,7 +242,7 @@ export function installAgent(
         "can only ever have what is captured here. Export them and run this again.",
     );
   }
-  const argv = watcherArgv(options.intervalMs);
+  const argv = watcherArgv(options.intervalMs, options.repo);
   const transient = transientPaths(argv);
   if (transient.length > 0 && !options.force) {
     throw new Error(

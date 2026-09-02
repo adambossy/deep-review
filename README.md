@@ -185,21 +185,33 @@ pr-review status         # what is being watched, and what the server holds
 pr-review watch --off    # off
 ```
 
-It checks GitHub every five minutes (`--interval <seconds>`) for the open PRs
-assigned to you, and hands each new one to the same long-lived server every
-other invocation uses — starting it if it is not up, so there is never a
-server to start yourself. New PRs simply appear on the server's index, built
-and ready.
+It checks GitHub every five minutes (`--interval <seconds>`) for the PRs
+waiting on your review, and hands each new one to the same long-lived server
+every other invocation uses — starting it if it is not up, so there is never
+a server to start yourself. New PRs simply appear on the server's index,
+built and ready.
 
-The check asks for the *current* set of assigned PRs rather than for events,
+"Waiting on your review" is narrower than "assigned to you", and deliberately:
+a draft is not ready to be read, and one you have already approved has been
+read. Both are excluded, so the list is work outstanding rather than
+everything carrying your name. `--repo <owner>/<repo>` (or `DEEP_REVIEW_REPO`,
+the same one a bare PR number uses) narrows it to a single repo; without one
+it watches every repo your token can see. The query is exactly:
+
+```
+is:open is:pr assignee:@me archived:false -is:draft -review:approved [repo:<owner>/<repo>]
+```
+
+The check asks for the *current* set of such PRs rather than for events,
 which is what makes a laptop the right place to run it: a webhook delivered to
 a sleeping machine is lost, but one poll after the lid opens sees everything
 that happened overnight. Missing a check costs nothing by construction.
 
-A PR is handed over once, when it first appears assigned to you — not every
-time it changes, because `updated_at` moves on every comment and a rebuild
-means a paid slicing run. Unassigning and reassigning is therefore the
-deliberate way to ask for it again.
+A PR is handed over once, when it first appears in that list — not every time
+it changes, because `updated_at` moves on every comment and a rebuild means a
+paid slicing run. Anything that drops out of the list is forgotten, so
+approving a PR and having it reassigned, or unassigning and reassigning, is
+the deliberate way to ask for it again.
 
 Turning it on installs a launchd agent (`com.deep-review.watcher`), which is
 what carries it across reboots. Two consequences worth knowing:
