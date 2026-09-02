@@ -448,33 +448,43 @@ function initExplorer(root, NAMES, onNavigate) {
      as much as ten. Left untouched by the reveal-in-place shortcut below,
      since that's a pure "look left", not a new pick. */
   var freshCaller = false;
-  /* The slice panel (when this track has one) is server-rendered directly
-     into the track, not duplicated into the defs — its diff content can be
-     large, and there's only ever one. Keep a live reference so a history
-     restore can move it back in without needing a def to clone. */
-  var pinnedNode = track.children[0] && track.children[0].dataset.node === "__slice__" ? track.children[0] : null;
+  /* One live element per node this track has shown. A panel walked away
+     from is detached, not discarded: the gaps the reader expanded and the
+     answers its spans have collected come back with it on the next visit.
+     The defs stay pristine templates — the first visit clones one, every
+     later visit returns the same element. The slice panel is here from the
+     start: it is server-rendered straight into the track, never duplicated
+     into the defs, since its diff can be large and there is only ever one. */
+  var live = Object.create(null);
+  if (track.children[0] && track.children[0].dataset.node === "__slice__") live.__slice__ = track.children[0];
+  function keep(id, panel) { live[id] = panel; return panel; }
   function esc1(id) { return window.CSS && CSS.escape ? CSS.escape(id) : id; }
-  /* This track's own graph panels, then page-wide definition panels, then —
-     a graph node walked only in another slice, e.g. a function reached by
-     that slice's own call path but not this one's — every other track's
-     panel-defs. All tracks render their panels into the DOM up front (just
-     hidden), so a cross-slice node is still right there. Only a definition
-     the page has never shown goes to the server, and it is kept in
-     #shared-defs for next time. */
-  function panelFor(id) {
-    if (pinnedNode && id === "__slice__") return Promise.resolve(pinnedNode);
+  /* The panel for a node. One already shown comes back as it was — unless
+     it is still on the track (a recursive walk revisits a node in view), in
+     which case a copy joins it rather than tearing it out of the deck; a
+     rebuild of the whole track is about to detach everything and takes the
+     element itself. A first visit looks in this track's own graph panels,
+     then page-wide definition panels, then — a graph node walked only in
+     another slice, e.g. a function reached by that slice's own call path
+     but not this one's — every other track's panel-defs. All tracks render
+     their panels into the DOM up front (just hidden), so a cross-slice node
+     is still right there. Only a definition the page has never shown goes
+     to the server, and it is kept in #shared-defs for next time. */
+  function panelFor(id, rebuilding) {
+    var kept = live[id];
+    if (kept) return Promise.resolve(kept.parentNode === track && !rebuilding ? kept.cloneNode(true) : kept);
     var sel = '[data-node="' + esc1(id) + '"]';
     var def = (defs && defs.querySelector(sel))
       || (sharedDefs && sharedDefs.querySelector(sel))
       || document.querySelector(".panel-defs " + sel);
-    if (def) return Promise.resolve(def.cloneNode(true));
+    if (def) return Promise.resolve(keep(id, def.cloneNode(true)));
     if (!sharedDefs) return Promise.resolve(null);
     return navFetch("/panel?id=" + encodeURIComponent(id)).then(function (answer) {
       if (!answer || !answer.html) return null;
       if (!sharedDefs.querySelector(sel)) sharedDefs.insertAdjacentHTML("beforeend", answer.html);
       window.DEFNAMES[id] = answer.name;
       var got = sharedDefs.querySelector(sel);
-      return got ? got.cloneNode(true) : null;
+      return got ? keep(id, got.cloneNode(true)) : null;
     });
   }
   function nameOf(id) { return NAMES[id] || window.DEFNAMES[id]; }
@@ -756,17 +766,25 @@ function initExplorer(root, NAMES, onNavigate) {
   }
   /* External restore point for a history entry: rebuild the track from a
      saved list of node ids and re-settle the viewport at the saved slot.
-     Panels come back through the same lookup a walk uses, so one the server
-     rendered earlier is still there (or fetched again). */
+     Panels come back through the same lookup a walk uses — the live element
+     each node already has, or a fetch for one the page has never shown. A
+     node listed twice (a recursive walk) gets a copy for its second slot.
+     Symbol links are cleared once the deck stands: they paired a tap with
+     its destination, and a panel that was detached when its partner went
+     still wears its half. */
   root.__restore = function (ids, newPos) {
     var panels = [];
     return ids.reduce(function (chain, id) {
       return chain.then(function () {
-        return panelFor(id).then(function (panel) { if (panel) panels.push(panel); });
+        return panelFor(id, true).then(function (panel) {
+          if (!panel) return;
+          panels.push(panels.indexOf(panel) >= 0 ? panel.cloneNode(true) : panel);
+        });
       });
     }, Promise.resolve()).then(function () {
       track.innerHTML = "";
       for (var r = 0; r < panels.length; r++) track.appendChild(panels[r]);
+      clearLinks();
       setPos(Math.max(0, Math.min(newPos, track.children.length - 2)), true);
     });
   };

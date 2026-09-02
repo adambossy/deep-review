@@ -242,6 +242,13 @@ describe("renderCallPathExplorerHtml", () => {
     expect(html).toContain("--pos");
   });
 
+  it("keeps one live element per panel, so a revisited panel comes back as the reader left it", () => {
+    // The defs are templates cloned once; after that the same element returns.
+    expect(html).toContain("var live = Object.create(null)");
+    expect(html).toContain("keep(id, def.cloneNode(true))");
+    expect(html).toContain("kept.parentNode === track && !rebuilding ? kept.cloneNode(true) : kept");
+  });
+
   it("includes the clicked-symbol linking styles and behavior", () => {
     expect(html).toContain(".sym-link");
     expect(html).toContain(".sym-link.sym-dim");
