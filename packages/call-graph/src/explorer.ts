@@ -496,13 +496,12 @@ function initExplorer(root, NAMES, onNavigate) {
   function updateRails() {
     var count = track.children.length;
     track.style.setProperty("--pos", String(pos));
-    /* The pinned slice panel always sits at index 0, and every lateral
-       caller swap collapses back to right beside it — so "behind" is the
-       slice itself right after a caller pick, and that's not a real
-       waypoint (the sidebar already reaches the slice). But once a walk
-       down has happened since, the slice sitting behind reflects genuine
-       accumulated depth, not a swap — show the rail regardless of what's
-       immediately behind it. */
+    /* Every lateral caller swap collapses back to right beside the pinned
+       slice — so "behind" is the slice itself right after a caller pick,
+       and that's not a real waypoint (the sidebar already reaches the
+       slice). But once a walk down has happened since, the slice sitting
+       behind reflects genuine accumulated depth, not a swap — show the
+       rail regardless of what's immediately behind it. */
     var behind = pos > 0 && (nodeAt(pos - 1) !== "__slice__" || !freshCaller);
     viewport.classList.toggle("can-back", behind);
     viewport.classList.toggle("can-fwd", count > pos + 2);
@@ -526,12 +525,23 @@ function initExplorer(root, NAMES, onNavigate) {
       return panel;
     });
   }
-  /* Caller direction: reveal the caller on the LEFT and slide right, so the
-     track always reads caller → callee. The slice panel is pinned at the
-     head of the track — the caller slots in after it, so the way back to
-     the slice is never lost. Only the panels between the pin and the tapped
-     one go: they were a different caller chain, and each stays one tap away
-     in its callee's "called by" rows. */
+  /* Where the pinned slice panel sits, or -1. It is never removed — every
+     walk keeps a way back to the diff that started the trail — but it does
+     not always sit at the head: a caller reached from the slice's own code
+     belongs to the slice's left. */
+  function sliceSlot() {
+    for (var i = 0; i < track.children.length; i++) {
+      if (track.children[i].dataset.node === "__slice__") return i;
+    }
+    return -1;
+  }
+  /* Caller direction: the caller slides in on the LEFT of the tapped panel
+     and the deck slides right, so the track always reads caller → callee —
+     including when the tapped panel is the slice itself, which then sits to
+     the right of its own caller. The panels the caller displaces on that
+     side were a different caller chain and go; the pinned slice is the one
+     that stays, so the way back to it is never lost. Each dropped panel is
+     still one tap away in its callee's "called by" rows. */
   function walkUp(id, fromIndex) {
     if (fromIndex > 0 && nodeAt(fromIndex - 1) === id) {
       setPos(fromIndex - 1, true);
@@ -539,24 +549,23 @@ function initExplorer(root, NAMES, onNavigate) {
     }
     return panelFor(id).then(function (panel) {
       if (!panel) return null;
-      var pin = nodeAt(0) === "__slice__" ? 1 : 0;
+      /* The stale chain runs from the tapped panel back to its anchor: the
+         slice when the tapped panel sits to the slice's right, the head of
+         the track when it is the slice or something already left of it. */
+      var slice = sliceSlot();
+      var anchor = slice >= 0 && slice < fromIndex ? slice + 1 : 0;
       var oldSlot = fromIndex - pos;
-      while (fromIndex > pin) { track.removeChild(track.children[pin]); fromIndex--; }
-      /* Normally the tapped panel is still sitting at pin, ready to be
-         pushed right as the new caller's pair partner. The one time nothing
-         is there — walking up for the very first time, straight from the
-         pinned slice — there's nothing to its right yet; pair it with the
-         slice on the left instead of leaving the other half of the deck
-         blank. */
-      var hasPartner = !!track.children[pin];
-      track.insertBefore(panel, track.children[pin] || null);
+      while (fromIndex > anchor) { track.removeChild(track.children[anchor]); fromIndex--; }
+      track.insertBefore(panel, track.children[anchor]);
       freshCaller = true;
-      var showAt = hasPartner ? pin : Math.max(0, pin - 1);
+      /* The tapped panel is now the caller's pair partner on the right. If
+         it had been in the left slot, start the deck there so it visibly
+         slides across as the caller takes its place. */
       if (oldSlot <= 0) {
-        setPos(showAt + 1, false);
-        setPos(showAt, true);
+        setPos(anchor + 1, false);
+        setPos(anchor, true);
       } else {
-        setPos(showAt, false);
+        setPos(anchor, false);
       }
       return panel;
     });
