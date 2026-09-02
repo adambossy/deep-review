@@ -204,12 +204,24 @@ describe("renderDiffRows", () => {
     expect(html).toContain('class="line diff-del"');
   });
 
-  it("uses the embedded file's rendering for unmarked rows and expandable gaps for hidden ones", () => {
+  it("uses the embedded file's base rendering for unmarked rows and expandable gaps for hidden ones", () => {
     const rows: DiffRow[] = [{ kind: "gap", from: 1, to: 3 }, { kind: "ctx", n: 4, text: "line 4;" }];
     const html = renderDiffRows(rows, { width: 2, lang: "ts", entry });
     expect(html).toContain('data-key="after:x.ts" data-from="1" data-to="3"');
     expect(html).toContain(entry.html[3]);
     // Without the file, the gap is a fixed bar.
     expect(renderDiffRows(rows, { width: 2, lang: "ts" })).toContain('class="gap static"');
+  });
+
+  it("gives every head-side row identifier spans, whether or not the file backs it", () => {
+    const rows: DiffRow[] = [
+      { kind: "ctx", n: 4, text: "line 4;" }, // the file's own text
+      { kind: "ctx", n: 5, text: "stale(hunk);" }, // a stale hunk: not what the file says
+      { kind: "del", text: "gone(1);" }, // removed: no head-side position to ask about
+    ];
+    const html = renderDiffRows(rows, { width: 2, lang: "ts", entry });
+    expect(html).toContain('<span class="id">line</span> <span class="tok-num">4</span>;');
+    expect(html).toContain('<span class="tok-fn id">stale</span>(<span class="id">hunk</span>)');
+    expect(html).toContain('<span class="tok-fn">gone</span>');
   });
 });

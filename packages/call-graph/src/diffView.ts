@@ -11,6 +11,7 @@
 import { diffWordsWithSpace } from "diff";
 import {
   escapeHtml as esc,
+  identifierMarks,
   identifiersOf,
   renderLine,
   tokenizeLines,
@@ -20,6 +21,7 @@ import {
 import {
   addedLines,
   deletedLinesByPosition,
+  fileLineHtml,
   gapRow,
   lineRow,
   staticGapRow,
@@ -392,42 +394,30 @@ export interface DiffRenderOptions {
   entry?: FileEntry | undefined;
   /** Row classes and marks keyed by head line (call marks, self-sym, …). */
   decorations?: Decorations | undefined;
-  /** Extra marks for a row from its text; the head line is null for a removed row. */
-  marksFor?: ((text: string, headLine: number | null) => Mark[]) | undefined;
   /** Head span outlined as the focused declaration. */
   focus?: LineSpan | undefined;
-  /**
-   * Wrap every identifier on a head-side line that no other mark covers in
-   * a bare `.id` span, so the page can ask the navigation server about it
-   * when it is clicked.
-   */
-  identifiers?: boolean | undefined;
-  /** Debug builds: `.id` spans say they have not been asked about yet. */
+  /** Debug builds: `.id` spans on rows the file does not back say they have not been asked yet. */
   debug?: boolean | undefined;
 }
 
-/** Identifier spans over the names of a line that no other mark covers. */
-function identifierMarks(text: string, lang: Language, marks: readonly Mark[], debug: boolean): Mark[] {
-  const ids = identifiersOf([text], lang)[0] ?? [];
-  return ids
-    .filter((id) => !marks.some((m) => m.start < id.end && id.start < m.end))
-    .map((id) => ({ start: id.start, end: id.end, cls: "id", ...(debug ? { why: "id · not asked yet" } : {}) }));
-}
-
-/** Render rows to `<span class="line">`s; the caller wraps them in a `<pre>`. */
+/**
+ * Render rows to `<span class="line">`s; the caller wraps them in a `<pre>`.
+ * Every head-side row carries a bare `.id` span on each identifier no mark
+ * covers — the page asks the navigation server about a name through it. A
+ * row the embedded file backs is the file's own base rendering (the same
+ * string an expander inserts) with the pane's marks layered in; a row it
+ * does not back is scanned here. Removed lines have no head-side position,
+ * so nothing can be asked about them and they get none.
+ */
 export function renderDiffRows(rows: readonly DiffRow[], options: DiffRenderOptions): string {
-  const { width, lang, entry, decorations, marksFor, focus, identifiers } = options;
+  const { width, lang, entry, decorations, focus } = options;
   const debug = options.debug ?? false;
-  // Removed lines have no head-side position, so nothing can be asked about them.
-  const withIds = (text: string, marks: Mark[]): Mark[] =>
-    identifiers ? [...marks, ...identifierMarks(text, lang, marks, debug)] : marks;
   // Rows without an embedded file are tokenized together so multi-line
   // strings and comments carry across them; removed rows always are, since
   // the embedded file (head side) has no tokens for them.
-  const localTokens = tokenizeLines(
-    rows.map((r) => (r.kind === "ctx" || r.kind === "add" || r.kind === "del" ? r.text : "")),
-    lang,
-  );
+  const texts = rows.map((r) => (r.kind === "ctx" || r.kind === "add" || r.kind === "del" ? r.text : ""));
+  const localTokens = tokenizeLines(texts, lang);
+  const localIds = identifiersOf(texts, lang);
   const out: string[] = [];
   rows.forEach((row, i) => {
     switch (row.kind) {
@@ -437,25 +427,18 @@ export function renderDiffRows(rows: readonly DiffRow[], options: DiffRenderOpti
       case "meta":
         out.push(lineRow("", width, esc(row.text)));
         return;
-      case "del": {
-        const marks = [...(row.marks ?? []), ...(marksFor?.(row.text, null) ?? [])];
-        out.push(lineRow("−", width, renderLine(row.text, localTokens[i]!, marks), ["diff-del"]));
+      case "del":
+        out.push(lineRow("−", width, renderLine(row.text, localTokens[i]!, row.marks ?? []), ["diff-del"]));
         return;
-      }
       default: {
         const deco = decorations?.get(row.n);
-        const marks = withIds(row.text, [
-          ...(row.kind === "add" ? row.marks ?? [] : []),
-          ...(deco?.marks ?? []),
-          ...(marksFor?.(row.text, row.n) ?? []),
-        ]);
-        // The embedded file's pre-rendered line is reusable only when it is
-        // this row's text; a row from a stale hunk falls back to its own tokens.
-        const fromFile = entry && entry.lines[row.n - 1] === row.text ? entry : undefined;
+        const marks = [...(row.kind === "add" ? row.marks ?? [] : []), ...(deco?.marks ?? [])];
+        // The embedded file backs this row only when it is this row's text;
+        // a row from a stale hunk falls back to its own tokens.
         const html =
-          fromFile && !marks.length
-            ? fromFile.html[row.n - 1]!
-            : renderLine(row.text, fromFile ? fromFile.tokens[row.n - 1]! : localTokens[i]!, marks);
+          entry && entry.lines[row.n - 1] === row.text
+            ? fileLineHtml(entry, row.n, marks)
+            : renderLine(row.text, localTokens[i]!, [...marks, ...identifierMarks(localIds[i]!, marks, debug)]);
         const cls = [
           ...(row.kind === "add" ? ["diff-add"] : []),
           ...(deco?.cls ?? []),
