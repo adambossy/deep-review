@@ -281,6 +281,17 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(html).toContain('window.NAV_BASE = ""');
   });
 
+  it("emits page scripts that actually parse", () => {
+    // A template literal quietly eats escapes (\/ becomes /), so a regex in
+    // the page script can turn into a line comment and take the whole script
+    // with it. Compile every emitted script the way the browser would.
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const [, src] of scripts) {
+      expect(() => new Function(src!)).not.toThrow();
+    }
+  });
+
   it("ships no debug hints unless asked", () => {
     expect(html).not.toContain("data-why");
     expect(html).not.toContain("debug-legend");
