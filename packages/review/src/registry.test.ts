@@ -3,13 +3,18 @@ import os from "node:os";
 import path from "node:path";
 import type { SliceExplorerInput } from "@deep-review/call-graph";
 import { afterAll, describe, expect, it } from "vitest";
-import { PrRegistry, prKey, prMountPath, type BuiltPr, type PrRef } from "./registry.js";
+import { parsePrPath, PrRegistry, prKey, prMountPath, type BuiltPr, type PrRef } from "./registry.js";
 
 const headDir = mkdtempSync(path.join(os.tmpdir(), "registry-test-"));
 afterAll(() => rmSync(headDir, { recursive: true, force: true }));
 
 function ref(number: number): PrRef {
-  return { owner: "a", repo: "b", number, prUrl: `https://github.com/a/b/pull/${number}` };
+  return { owner: "a", repo: "b", number };
+}
+
+/** The URL the registry derives for `ref(n)` — what the build fn is keyed by. */
+function urlOf(number: number): string {
+  return `https://github.com/a/b/pull/${number}`;
 }
 
 function built(number: number, navBase: string): BuiltPr {
@@ -43,9 +48,17 @@ function manualBuild() {
 const tick = () => new Promise((r) => setTimeout(r, 10));
 
 describe("PrRegistry", () => {
-  it("names a PR's key and mount stably", () => {
+  it("names a PR's key and mount stably, and parses its own mount back", () => {
     expect(prKey(ref(7))).toBe("a/b#7");
     expect(prMountPath(ref(7))).toBe("/pr/a/b/7/");
+    // The codec pair roundtrips, so the builder and parser cannot drift.
+    const spiky: PrRef = { owner: "we ird", repo: "re/po", number: 12 };
+    const route = parsePrPath(prMountPath(spiky));
+    expect(route?.ref).toEqual(spiky);
+    expect(route?.rest).toBe("/");
+    expect(parsePrPath(`${prMountPath(spiky)}panel`)?.rest).toBe("/panel");
+    expect(parsePrPath("/pr/%zz/b/1/")).toBeNull();
+    expect(parsePrPath("/elsewhere")).toBeNull();
   });
 
   it("builds what it is given, at most `concurrency` at a time, in order", async () => {
@@ -57,15 +70,15 @@ describe("PrRegistry", () => {
     await tick();
     // Two slots: 1 and 2 build, 3 waits.
     expect(registry.list().map((p) => p.state)).toEqual(["building", "building", "queued"]);
-    pending.get(ref(1).prUrl)!.resolve();
+    pending.get(urlOf(1))!.resolve();
     await tick();
     expect(registry.get("a/b#1")?.state).toBe("ready");
     expect(registry.get("a/b#3")?.state).toBe("building");
     expect(registry.html("a/b#1")).toBe("<html>1</html>");
     // The build was told where its page will live.
     expect(registry.get("a/b#1")?.path).toBe("/pr/a/b/1/");
-    pending.get(ref(2).prUrl)!.resolve();
-    pending.get(ref(3).prUrl)!.resolve();
+    pending.get(urlOf(2))!.resolve();
+    pending.get(urlOf(3))!.resolve();
     await registry.settled();
     registry.dispose();
   });
@@ -77,15 +90,15 @@ describe("PrRegistry", () => {
     registry.add(ref(1));
     await tick();
     expect(registry.list()).toHaveLength(1);
-    pending.get(ref(1).prUrl)!.reject(new Error("no key"));
+    pending.get(urlOf(1))!.reject(new Error("no key"));
     await registry.settled();
     expect(registry.get("a/b#1")).toMatchObject({ state: "failed", error: "no key" });
 
-    pending.delete(ref(1).prUrl);
+    pending.delete(urlOf(1));
     registry.add(ref(1));
     await tick();
     expect(registry.get("a/b#1")?.state).toBe("building");
-    pending.get(ref(1).prUrl)!.resolve();
+    pending.get(urlOf(1))!.resolve();
     await registry.settled();
     expect(registry.get("a/b#1")?.state).toBe("ready");
     registry.dispose();
@@ -115,7 +128,7 @@ describe("PrRegistry", () => {
     await tick();
     expect(registry.remove("a/b#2")).toBe(true);
     expect(registry.remove("a/b#2")).toBe(false);
-    pending.get(ref(1).prUrl)!.resolve();
+    pending.get(urlOf(1))!.resolve();
     await registry.settled();
     expect(registry.list().map((p) => p.key)).toEqual(["a/b#1"]);
     registry.dispose();
@@ -126,7 +139,7 @@ describe("PrRegistry", () => {
     const registry = new PrRegistry({ build, sessionGraceMs: 30 });
     registry.add(ref(1));
     await tick();
-    pending.get(ref(1).prUrl)!.resolve();
+    pending.get(urlOf(1))!.resolve();
     await registry.settled();
 
     // Not built ≠ built-but-cold: an unknown key has no session to start.

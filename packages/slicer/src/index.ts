@@ -3,6 +3,7 @@ export {
   prepare,
   buildSlicePrompt,
   loadRenderEntry,
+  loadSliceReport,
   writeSliceReport,
   defaultOutFile,
   type SliceOptions,

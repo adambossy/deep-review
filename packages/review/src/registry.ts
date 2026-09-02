@@ -11,24 +11,58 @@
  */
 
 import { NavSession, type SliceExplorerInput } from "@deep-review/call-graph";
+import { prUrl, type PrRef } from "@deep-review/pr";
+
+export type { PrRef } from "@deep-review/pr";
 
 /** A PR's identity across everything here: `owner/repo#number`. */
 export type PrKey = string;
 
-export interface PrRef {
-  owner: string;
-  repo: string;
-  number: number;
-  prUrl: string;
-}
-
-export function prKey(ref: Pick<PrRef, "owner" | "repo" | "number">): PrKey {
+export function prKey(ref: PrRef): PrKey {
   return `${ref.owner}/${ref.repo}#${ref.number}`;
 }
 
 /** Where a PR's page and its navigation endpoints are mounted, with a trailing slash. */
-export function prMountPath(ref: Pick<PrRef, "owner" | "repo" | "number">): string {
+export function prMountPath(ref: PrRef): string {
   return `/pr/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/${ref.number}/`;
+}
+
+/**
+ * The parse half of `prMountPath`: which PR a request path names, and the
+ * rest of the path under its prefix. `/pr/vercel/swr/2950/panel` → that PR,
+ * `/panel`. Null for paths that are not under a PR prefix — including a
+ * malformed percent-escape, which is a bad address, not a server fault.
+ */
+export interface PrRoute {
+  ref: PrRef;
+  key: PrKey;
+  rest: string;
+  /** The request pointed at the PR itself without a trailing slash. */
+  needsSlash: boolean;
+  mount: string;
+}
+
+export function parsePrPath(pathname: string): PrRoute | null {
+  const parts = pathname.split("/").filter((p) => p !== "");
+  if (parts.length < 4 || parts[0] !== "pr") return null;
+  let owner: string;
+  let repo: string;
+  try {
+    owner = decodeURIComponent(parts[1]!);
+    repo = decodeURIComponent(parts[2]!);
+  } catch {
+    return null;
+  }
+  const number = Number(parts[3]);
+  if (!owner || !repo || !Number.isInteger(number) || number <= 0) return null;
+  const ref = { owner, repo, number };
+  return {
+    ref,
+    key: prKey(ref),
+    rest: `/${parts.slice(4).join("/")}`,
+    needsSlash: parts.length === 4 && !pathname.endsWith("/"),
+    mount: prMountPath(ref),
+  };
 }
 
 /**
@@ -40,6 +74,7 @@ export type PrState = "queued" | "building" | "ready" | "failed";
 
 /** What a PR looks like from outside: the index page and `/prs` both read this. */
 export interface PrView extends PrRef {
+  prUrl: string;
   key: PrKey;
   state: PrState;
   /** Mount path, so a caller can build the page URL without knowing the scheme. */
@@ -109,6 +144,7 @@ export interface RegistryOptions {
 }
 
 interface Entry extends PrRef {
+  prUrl: string;
   key: PrKey;
   state: PrState;
   options: AddOptions;
@@ -176,6 +212,7 @@ export class PrRegistry {
 
     const entry: Entry = {
       ...ref,
+      prUrl: prUrl(ref),
       key,
       state: "queued",
       options,
@@ -198,6 +235,11 @@ export class PrRegistry {
     return [...this.entries.values()]
       .sort((a, b) => a.addedAt - b.addedAt)
       .map((e) => this.view(e));
+  }
+
+  /** How many PRs are held, without building a view of each. */
+  count(): number {
+    return this.entries.size;
   }
 
   /** The rendered page, or null while the PR is not ready. */

@@ -17,16 +17,16 @@ import path from "node:path";
 import process from "node:process";
 import { renderSliceExplorerHtml } from "@deep-review/call-graph";
 import { fetchPrInfo, parsePrUrl } from "@deep-review/pr";
-import { loadRenderEntry, slicePr, writeSliceReport } from "@deep-review/slicer";
-import { buildSliceExplorerInput } from "./build.js";
-import type { AddOptions, BuildPr, PrView } from "./registry.js";
+import { loadSliceReport, slicePr, writeSliceReport } from "@deep-review/slicer";
+import { explorerInputFromReport } from "./build.js";
+import type { AddOptions, BuildPr, PrRef, PrView } from "./registry.js";
 import { startNavServer, VERSION, type NavServer } from "./serve.js";
 
-export function stateDir(): string {
+function stateDir(): string {
   return process.env.DEEP_REVIEW_HOME ?? path.join(os.homedir(), ".deep-review");
 }
 
-export function lockFile(): string {
+function lockFile(): string {
   return path.join(stateDir(), "server.json");
 }
 
@@ -34,7 +34,7 @@ export function logFile(): string {
   return path.join(stateDir(), "server.log");
 }
 
-export interface ServerLock {
+interface ServerLock {
   pid: number;
   port: number;
   url: string;
@@ -42,7 +42,7 @@ export interface ServerLock {
   startedAt: number;
 }
 
-export function readLock(): ServerLock | null {
+function readLock(): ServerLock | null {
   try {
     const lock = JSON.parse(readFileSync(lockFile(), "utf8")) as ServerLock;
     return Number.isInteger(lock.port) && Number.isInteger(lock.pid) ? lock : null;
@@ -52,7 +52,7 @@ export function readLock(): ServerLock | null {
 }
 
 /** The lock's claim, verified: what the server there says about itself, or null. */
-export async function probe(
+async function probe(
   url: string,
   timeoutMs = 1500,
 ): Promise<{ version: string; hasGithubToken: boolean } | null> {
@@ -111,8 +111,7 @@ function cachedSliceFile(owner: string, repo: string, number: number): string {
 /** The head commit a saved slice report was made from, or null if unreadable. */
 function reportHeadSha(file: string): string | null {
   try {
-    const report = JSON.parse(readFileSync(file, "utf8")) as { pr?: { headSha?: string } };
-    return report.pr?.headSha ?? null;
+    return loadSliceReport(file).pr.headSha;
   } catch {
     return null;
   }
@@ -126,7 +125,7 @@ function reportHeadSha(file: string): string | null {
  * the model again — a restart, or re-adding an unchanged PR, costs no slicing.
  * An explicit slice JSON (--slices) is trusted as given, no head check.
  */
-export const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => {
+const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => {
   const workDir = options.workDir ?? defaultDaemonWorkDir();
   mkdirSync(workDir, { recursive: true });
 
@@ -140,8 +139,6 @@ export const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => 
     if (existsSync(cached) && reportHeadSha(cached) === info.headSha) {
       reportFile = cached;
       log(`head unchanged at ${info.headSha.slice(0, 8)}; reusing slices from ${cached}`);
-      // --save means "leave me the slice JSON" however the run was answered.
-      if (options.save) copyFileSync(cached, options.save);
     } else {
       const report = await slicePr({
         prUrl,
@@ -152,28 +149,23 @@ export const daemonBuild: BuildPr = async ({ prUrl, navBase, options }, log) => 
       mkdirSync(path.dirname(cached), { recursive: true });
       reportFile = writeSliceReport(report, cached);
       log(`slices written to ${reportFile}`);
-      if (options.save) writeSliceReport(report, options.save);
     }
+    // --save means "leave me the slice JSON" however the run was answered.
+    if (options.save) copyFileSync(reportFile, options.save);
   }
 
-  const { report, index, headDir } = await loadRenderEntry(reportFile, workDir);
-  const input = {
-    ...(await buildSliceExplorerInput({
-      report,
-      index,
-      headDir,
-      workDir,
-      ...(options.maxGraphs !== undefined ? { maxGraphs: options.maxGraphs } : {}),
-      ...(options.debugMarks ? { debugMarks: true } : {}),
-      onProgress: log,
-    })),
-    navBase,
-  };
+  const built = await explorerInputFromReport(reportFile, {
+    workDir,
+    ...(options.maxGraphs !== undefined ? { maxGraphs: options.maxGraphs } : {}),
+    ...(options.debugMarks ? { debugMarks: true } : {}),
+    onProgress: log,
+  });
+  const input = { ...built.input, navBase };
   return {
     input,
-    headDir,
+    headDir: built.headDir,
     html: renderSliceExplorerHtml(input),
-    headSha: report.pr.headSha,
+    headSha: built.report.pr.headSha,
   };
 };
 
@@ -318,7 +310,7 @@ export async function ensureServer(): Promise<EnsuredServer> {
 /** Ask the running server to add a PR; it builds in the background there. */
 export async function addPrToServer(
   serverUrl: string,
-  ref: { owner: string; repo: string; number: number; prUrl: string },
+  ref: PrRef,
   options: AddOptions,
 ): Promise<PrView> {
   const response = await fetch(new URL("/prs", serverUrl), {

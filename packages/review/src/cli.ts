@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, fstatSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
@@ -10,11 +10,11 @@ import {
   DEFAULT_MODEL,
   defaultOutFile,
   hasApiKeyForModel,
-  loadRenderEntry,
+  loadSliceReport,
   slicePr,
   writeSliceReport,
 } from "@deep-review/slicer";
-import { buildSliceExplorerInput } from "./build.js";
+import { explorerInputFromReport } from "./build.js";
 import {
   addPrToServer,
   ensureServer,
@@ -24,7 +24,7 @@ import {
   runDaemon,
   stopServer,
 } from "./daemon.js";
-import type { AddOptions, PrView } from "./registry.js";
+import type { AddOptions, PrRef, PrView } from "./registry.js";
 import { serveExplorer, VERSION } from "./serve.js";
 
 const USAGE = `Usage: pr-review <pr-url|pr-number>... [options]
@@ -112,22 +112,14 @@ function intFlag(raw: string | undefined, flag: string, min = 0): number | undef
   return value;
 }
 
-interface Target {
-  owner: string;
-  repo: string;
-  number: number;
-  prUrl: string;
-}
-
 /** The PR a saved slice JSON is about, without replaying the whole load. */
-function targetFromSlices(file: string): Target {
-  const pr = (JSON.parse(readFileSync(file, "utf8")) as {
-    pr?: { owner?: string; repo?: string; number?: number; url?: string };
-  }).pr;
-  if (!pr?.owner || !pr.repo || !pr.number || !pr.url) {
-    fail(`${file} does not name its PR; is it a slice report?`);
+function targetFromSlices(file: string): PrRef {
+  try {
+    const { pr } = loadSliceReport(file);
+    return { owner: pr.owner, repo: pr.repo, number: pr.number };
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
-  return { owner: pr.owner, repo: pr.repo, number: pr.number, prUrl: pr.url };
 }
 
 async function main(): Promise<void> {
@@ -209,12 +201,9 @@ async function main(): Promise<void> {
   // Everything else names PRs. A bare number is only meaningful once a
   // repo names it; --slices with no target names its own.
   const defaultRepo = values.repo ?? process.env.DEEP_REVIEW_REPO;
-  let targets: Target[];
+  let targets: PrRef[];
   try {
-    targets = positionals.map((p) => {
-      const ref = parsePrTarget(p, defaultRepo);
-      return { ...ref, prUrl: prUrl(ref) };
-    });
+    targets = positionals.map((p) => parsePrTarget(p, defaultRepo));
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
@@ -325,7 +314,7 @@ interface LocalOptions {
  * terminal instead of outliving it.
  */
 async function runLocal(
-  target: Target,
+  target: PrRef,
   options: AddOptions,
   cli: LocalOptions,
 ): Promise<void> {
@@ -336,7 +325,7 @@ async function runLocal(
     log(`Using slices from ${reportFile}`);
   } else {
     const report = await slicePr({
-      prUrl: target.prUrl,
+      prUrl: prUrl(target),
       ...(options.workDir ? { workDir: options.workDir } : {}),
       ...(options.model ? { model: options.model } : {}),
       ...(cli.quiet ? {} : { onProgress: log }),
@@ -345,11 +334,7 @@ async function runLocal(
     log(`Slices written to ${reportFile}`);
   }
 
-  const { report, index, headDir } = await loadRenderEntry(reportFile, options.workDir);
-  const input = await buildSliceExplorerInput({
-    report,
-    index,
-    headDir,
+  const { input, headDir } = await explorerInputFromReport(reportFile, {
     ...(options.workDir ? { workDir: options.workDir } : {}),
     ...(options.maxGraphs !== undefined ? { maxGraphs: options.maxGraphs } : {}),
     ...(options.debugMarks ? { debugMarks: true } : {}),

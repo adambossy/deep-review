@@ -18,6 +18,7 @@ import type { AddressInfo } from "node:net";
 import { renderSliceExplorerHtml, type SliceExplorerInput } from "@deep-review/call-graph";
 import { renderBuildingPage, renderIndexPage } from "./indexPage.js";
 import {
+  parsePrPath,
   PrRegistry,
   prKey,
   prMountPath,
@@ -142,41 +143,6 @@ function crossSite(req: IncomingMessage): boolean {
   return false;
 }
 
-/**
- * A request under a PR's prefix, split into the PR it names and the rest of
- * the path. `/pr/vercel/swr/2950/panel` → that PR, `/panel`.
- */
-interface PrRoute {
-  key: string;
-  rest: string;
-  /** The request pointed at the PR itself without a trailing slash. */
-  needsSlash: boolean;
-  mount: string;
-}
-
-function routePr(pathname: string): PrRoute | null {
-  const parts = pathname.split("/").filter((p) => p !== "");
-  if (parts.length < 4 || parts[0] !== "pr") return null;
-  let owner: string;
-  let repo: string;
-  try {
-    owner = decodeURIComponent(parts[1]!);
-    repo = decodeURIComponent(parts[2]!);
-  } catch {
-    // A malformed percent-escape is a bad address, not a server fault.
-    return null;
-  }
-  const number = Number(parts[3]);
-  if (!owner || !repo || !Number.isInteger(number) || number <= 0) return null;
-  const ref = { owner, repo, number };
-  return {
-    key: prKey(ref),
-    rest: `/${parts.slice(4).join("/")}`,
-    needsSlash: parts.length === 4 && !pathname.endsWith("/"),
-    mount: prMountPath(ref),
-  };
-}
-
 export async function startNavServer(options: NavServerOptions): Promise<NavServer> {
   const log = options.onProgress ?? (() => {});
   const registry = new PrRegistry({
@@ -212,34 +178,33 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
     res: ServerResponse,
   ): Promise<void> => {
     switch (rest) {
-      case "/definition": {
+      case "/definition":
+      case "/references":
+      case "/panel": {
         const session = registry.sessionFor(key);
-        const file = url.searchParams.get("file");
-        const line = intParam(url, "line");
-        const col = intParam(url, "col");
-        if (!file || line === null || col === null) {
-          sendJson(res, 400, { why: "file, line and col are required" });
-          return;
-        }
         if (!session) {
           sendJson(res, 409, { why: "not built yet" });
           return;
         }
-        sendJson(res, 200, await session.definition(file, line, col));
-        return;
-      }
-      case "/references": {
-        const session = registry.sessionFor(key);
+        if (rest === "/definition") {
+          const file = url.searchParams.get("file");
+          const line = intParam(url, "line");
+          const col = intParam(url, "col");
+          if (!file || line === null || col === null) {
+            sendJson(res, 400, { why: "file, line and col are required" });
+            return;
+          }
+          sendJson(res, 200, await session.definition(file, line, col));
+          return;
+        }
         const id = url.searchParams.get("id");
-        const refs = session && id ? await session.references(id) : null;
-        if (!refs) sendJson(res, 404, { why: "unknown definition" });
-        else sendJson(res, 200, refs);
-        return;
-      }
-      case "/panel": {
-        const session = registry.sessionFor(key);
-        const id = url.searchParams.get("id");
-        const panel = session && id ? await session.panel(id) : null;
+        if (rest === "/references") {
+          const refs = id ? await session.references(id) : null;
+          if (!refs) sendJson(res, 404, { why: "unknown definition" });
+          else sendJson(res, 200, refs);
+          return;
+        }
+        const panel = id ? await session.panel(id) : null;
         if (!panel) sendJson(res, 404, { why: "no panel" });
         else sendJson(res, 200, panel);
         return;
@@ -289,7 +254,7 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
         ok: true,
         version: VERSION,
         pid: process.pid,
-        prs: registry.list().length,
+        prs: registry.count(),
         // The server keeps the env of whichever shell spawned it; telling
         // callers whether it holds a GitHub token lets a CLI whose shell
         // has one warn that the server cannot see it.
@@ -314,14 +279,13 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
           owner?: string;
           repo?: string;
           number?: number;
-          prUrl?: string;
           options?: AddOptions;
         };
-        if (!body.owner || !body.repo || !Number.isInteger(body.number) || !body.prUrl) {
-          sendJson(res, 400, { why: "owner, repo, number and prUrl are required" });
+        if (!body.owner || !body.repo || !Number.isInteger(body.number)) {
+          sendJson(res, 400, { why: "owner, repo and number are required" });
           return;
         }
-        const ref = { owner: body.owner, repo: body.repo, number: body.number!, prUrl: body.prUrl };
+        const ref = { owner: body.owner, repo: body.repo, number: body.number! };
         // Re-adding a PR normally returns the build already here — unless
         // its head has moved since, in which case the reader is asking for
         // a review of code the build no longer shows: drop it and rebuild.
@@ -353,7 +317,7 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
       return;
     }
 
-    const route = routePr(path);
+    const route = parsePrPath(path);
     if (route) {
       // The page's goodbye: this PR's session may go, the server stays.
       if (method === "POST" && route.rest === "/gone") {
@@ -377,14 +341,14 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
       }
       const pr = registry.get(route.key);
       if (!pr) {
-        if (route.rest === "/" || route.rest === "") {
+        if (route.rest === "/") {
           sendHtml(res, 404, notHere(route.key));
           return;
         }
         sendJson(res, 404, { why: "no such PR on this server" });
         return;
       }
-      if (route.rest === "/" || route.rest === "") {
+      if (route.rest === "/") {
         const html = registry.html(route.key);
         if (html) {
           registry.pageAlive(route.key);
@@ -473,12 +437,7 @@ export async function serveExplorer(
   options: ServeOptions,
 ): Promise<NavServer & { pageUrl: string }> {
   const [owner = "unknown", repo = "unknown"] = options.input.repo.split("/");
-  const ref: PrRef = {
-    owner,
-    repo,
-    number: options.input.number,
-    prUrl: options.input.prUrl,
-  };
+  const ref: PrRef = { owner, repo, number: options.input.number };
   const server = await startNavServer({
     build: ({ navBase }) => {
       const input = { ...options.input, navBase };
