@@ -1,3 +1,4 @@
+import type { FileDiff } from "@deep-review/pr";
 import type { DiffIndex, IndexedHunk } from "./annotate.js";
 import type { Fragment, Slice, SliceReport } from "./types.js";
 
@@ -12,6 +13,12 @@ function esc(text: string): string {
 /** One PR's report paired with the diff it was produced from. */
 export interface RenderEntry {
   report: SliceReport;
+  /**
+   * The diff as parsed, before it was indexed and cut into fragments. Kept
+   * alongside the index because a renderer sometimes needs a file's changes
+   * whole, rather than the slice-sized pieces the report addresses.
+   */
+  diff: FileDiff[];
   index: DiffIndex;
   /** The worktrees the diff was taken between. */
   baseDir: string;

@@ -5,7 +5,7 @@ import { escapeHtml as esc, languageOf } from "./highlight.js";
 import { buildFileIndex, CSS, GAP_JS, renderDataBlob, SCOPE_JS, WRAP_JS, type FileIndex } from "./html.js";
 
 export { fileBlockRanges } from "./diffView.js";
-import type { CallPathResult, EmbeddedFile } from "./types.js";
+import type { CallPathResult, EmbeddedFile, FileDiff } from "./types.js";
 
 /**
  * One fragment of a slice: a contiguous run of diff lines. Given
@@ -71,6 +71,15 @@ export interface SliceExplorerInput {
    */
   navBase?: string | undefined;
   /**
+   * The PR's diff, whole. Slices partition the diff between them, but a
+   * panel opened by a symbol click is about a declaration, not a slice —
+   * a function added by slice 1 has to read as added when it is reached
+   * from slice 2, so panels are shaded from the PR's changes rather than
+   * from the fragments of whichever slice the reader walked in from.
+   * Absent, opened panels show plain source.
+   */
+  diff?: FileDiff[] | undefined;
+  /**
    * Debug builds: every marked symbol says why it is marked, and every
    * identifier what the navigation server said about it, in a hint shown
    * while Shift is held.
@@ -87,7 +96,9 @@ export interface SliceExplorerInput {
  * renders later matches the page.
  */
 export function explorerFileIndex(input: SliceExplorerInput): FileIndex {
-  return buildFileIndex([...input.files, ...input.slices.flatMap((s) => s.graph?.files ?? [])]);
+  return buildFileIndex([...input.files, ...input.slices.flatMap((s) => s.graph?.files ?? [])], {
+    debug: input.debugMarks,
+  });
 }
 
 /** The slice's own panel: everything the PR changed for this one purpose. */
@@ -417,7 +428,7 @@ const HISTORY_JS = `
   views.forEach(function (view) {
     var sliceIndex = Number(view.dataset.slice);
     var names = JSON.parse(view.dataset.names);
-    trails[sliceIndex] = [{ id: "__slice__", ids: ["__slice__"], pos: 0, label: TITLES[sliceIndex] }];
+    trails[sliceIndex] = [{ id: "__slice__", ids: ["__slice__"], anchors: [null], link: null, pos: 0, label: TITLES[sliceIndex] }];
     render(sliceIndex);
     initExplorer(view, names, function (step) {
       var trail = trails[sliceIndex];
@@ -434,7 +445,17 @@ const HISTORY_JS = `
       }
       trails[sliceIndex] = foundIdx >= 0
         ? trail.slice(0, foundIdx + 1)
-        : trail.concat([{ id: step.id, ids: step.ids, pos: step.pos, label: names[step.id] || (window.DEFNAMES || {})[step.id] || step.id }]);
+        : trail.concat([{
+          id: step.id,
+          ids: step.ids,
+          // Per-panel anchors and the lit pair: what each panel was opened
+          // for, so a restore can scroll a rebuilt panel to the same spot
+          // and light the same symbols, not just line the panels up.
+          anchors: step.anchors,
+          link: step.link,
+          pos: step.pos,
+          label: names[step.id] || (window.DEFNAMES || {})[step.id] || step.id,
+        }]);
       render(sliceIndex);
     });
   });
@@ -446,7 +467,7 @@ const HISTORY_JS = `
       var sliceIndex = Number(panel.dataset.slice);
       var idx = Number(entry.dataset.idx);
       var step = trails[sliceIndex][idx];
-      views[sliceIndex].__restore(step.ids, step.pos);
+      views[sliceIndex].__restore(step.ids, step.pos, step.anchors, step.link);
       trails[sliceIndex] = trails[sliceIndex].slice(0, idx + 1);
       render(sliceIndex);
       return;

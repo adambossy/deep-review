@@ -124,6 +124,22 @@ export interface LspBackendConfig {
   declPattern: (name: string) => RegExp;
 }
 
+/**
+ * Whether the 0-based `line` belongs to an import statement — a line that
+ * brings a name into scope without using it. The statement may start
+ * earlier: a parenthesized or backslash-continued import spans several
+ * lines, each naming one binding.
+ */
+export function isImportStatement(lines: readonly string[], line: number): boolean {
+  const opensImport = /^\s*(from\s+\S+\s+import\b|import\b)/;
+  for (let n = line; n >= 0; n--) {
+    if (opensImport.test(lines[n] ?? "")) return true;
+    const previous = (lines[n - 1] ?? "").replace(/#.*$/, "").trimEnd();
+    if (!/[(,\\]$/.test(previous)) return false;
+  }
+  return false;
+}
+
 function escapeRegExp(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -545,7 +561,9 @@ export class LspBackend implements LanguageBackend {
     });
     const refs: IncomingReference[] = [];
     for (const loc of locations ?? []) {
-      if (!this.isProjectFile(fileURLToPath(loc.uri))) continue;
+      const fileName = fileURLToPath(loc.uri);
+      if (!this.isProjectFile(fileName)) continue;
+      if (isImportStatement(this.linesOf(fileName), loc.range.start.line)) continue;
       refs.push(await this.referenceAt(loc.uri, loc.range));
     }
     return refs;

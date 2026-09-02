@@ -159,9 +159,11 @@ export async function loadRenderEntry(
     number: report.pr.number,
   });
   const checkouts = prepareCheckouts(info, workDir);
+  const diff = parseUnifiedDiff(checkouts.diffText);
   return {
     report,
-    index: indexDiff(parseUnifiedDiff(checkouts.diffText)),
+    diff,
+    index: indexDiff(diff),
     baseDir: checkouts.baseDir,
     headDir: checkouts.headDir,
   };
