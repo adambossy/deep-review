@@ -63,6 +63,10 @@ export interface SliceReport {
     repo: string;
     number: number;
     title: string;
+    /** The PR description as authored, Markdown and all. Empty when it has none. */
+    description: string;
+    /** The PR's author, as a GitHub login. Empty when GitHub reports none. */
+    author: string;
     /** The tip of the base branch, as GitHub reports it. */
     baseSha: string;
     /** The commit the PR branched from; the diff's "before". */

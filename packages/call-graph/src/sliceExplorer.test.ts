@@ -125,6 +125,19 @@ function render(overrides: Partial<SliceInput> = {}): string {
   });
 }
 
+/** The same page for a PR that has a description, for the description tab. */
+const describedHtml = renderSliceExplorerHtml({
+  prUrl: "https://github.com/a/b/pull/1",
+  prTitle: "A PR",
+  repo: "a/b",
+  number: 1,
+  overview: "does a thing",
+  prDescription: "# Why\n\nIt **hoists** `retry` out of the loop.",
+  prAuthor: "octocat",
+  files,
+  slices: [{ id: "slice-1", title: "First", summary: "s", rationale: "r", fragments: [fragment] }],
+});
+
 describe("renderSliceExplorerHtml", () => {
   const html = render();
 
@@ -279,6 +292,28 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(html).toContain('fetch(navUrl("/alive")');
     // Rendered without a navBase — a static copy — the page asks at the root.
     expect(html).toContain('window.NAV_BASE = ""');
+  });
+
+  it("offers the description as a second view, with the code selected first", () => {
+    expect(html).toContain('<button class="view-tab" role="tab" data-view="slices" aria-selected="true">Slices</button>');
+    expect(html).toContain('data-view="description" aria-selected="false">Description</button>');
+    // The code view is what the page opens on; the prose waits, hidden.
+    expect(html).toContain('<div class="stage" data-view="slices">');
+    expect(html).toContain('<section class="doc-view" data-view="description" hidden>');
+  });
+
+  it("renders the description as markdown, alongside the model's overview", () => {
+    const doc = describedHtml.slice(describedHtml.indexOf('class="doc-view"'));
+    expect(doc).toContain(`<h3 class="md-h">Why</h3>`);
+    expect(doc).toContain(`<strong>hoists</strong>`);
+    expect(doc).toContain(`<code class="md-inline-code">retry</code>`);
+    expect(doc).toContain("opened by octocat");
+    expect(doc).toContain(`<p class="doc-overview">does a thing</p>`);
+  });
+
+  it("says a PR has no description rather than dropping the tab", () => {
+    expect(html).toContain('class="doc-empty">This PR has no description.');
+    expect(html).toContain('data-view="description"');
   });
 
   it("ships no debug hints unless asked", () => {

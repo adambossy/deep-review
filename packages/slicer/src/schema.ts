@@ -70,6 +70,11 @@ export const sliceReportSchema = z.object({
     repo: z.string(),
     number: z.number().int().positive(),
     title: z.string(),
+    // Optional: reports written before the description was persisted are
+    // still readable, and loadRenderEntry fills these from the fetch it
+    // already makes.
+    description: z.string().optional(),
+    author: z.string().optional(),
     baseSha: z.string(),
     mergeBaseSha: z.string(),
     headSha: z.string(),

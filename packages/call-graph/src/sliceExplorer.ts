@@ -2,6 +2,7 @@ import { EXPLORER_CSS, EXPLORER_NAV_JS, renderPanel } from "./explorer.js";
 import { renderCodePane } from "./codePane.js";
 import { fragmentDiffRows } from "./diffView.js";
 import { escapeHtml as esc, languageOf } from "./highlight.js";
+import { renderMarkdown } from "./markdown.js";
 import { buildFileIndex, CSS, GAP_JS, renderDataBlob, SCOPE_JS, WRAP_JS, type FileIndex } from "./html.js";
 
 export { fileBlockRanges } from "./diffView.js";
@@ -54,6 +55,15 @@ export interface SliceExplorerInput {
   repo: string;
   number: number;
   overview: string;
+  /**
+   * The PR description as authored, Markdown and all. Shown on its own tab:
+   * what the author says the change is for, next to what it actually does.
+   * Absent or empty renders the tab with a note that the PR has no
+   * description, rather than hiding it — its absence is itself worth seeing.
+   */
+  prDescription?: string | undefined;
+  /** The PR's author, shown alongside the description. */
+  prAuthor?: string | undefined;
   slices: SliceInput[];
   /**
    * Head-side text of every file the slices touch. This is what lets a
@@ -143,8 +153,8 @@ const SLICE_CSS = `
     max-width: none; margin: 0; padding: 0;
     display: grid; grid-template-columns: 240px 1fr;
   }
-  .main { padding: 0.8rem 1rem; min-width: 0; }
-  .stage { position: relative; overflow: hidden; height: calc(100vh - 1.6rem); }
+  .main { padding: 0.8rem 1rem; min-width: 0; --tab-bar: 2.1rem; }
+  .stage { position: relative; overflow: hidden; height: calc(100vh - 1.6rem - var(--tab-bar)); }
   .deck {
     display: flex; flex-direction: column; height: 100%;
     transform: translateY(calc(var(--slice, 0) * -100%));
@@ -232,6 +242,105 @@ const SLICE_CSS = `
   .hint { font-size: 0.7rem; color: var(--ink-faint); margin-left: 0.3rem; }
 
   .slice-panel .code-pane { margin: 0 0 1.1rem; }
+
+  /* The two views of the PR: what it changed, and what its author says
+     about it. The tab bar sits above both and is the only thing that
+     switches between them. */
+  .view-tabs { display: flex; gap: 0.3rem; align-items: center; height: var(--tab-bar); }
+  .view-tab {
+    appearance: none; border: none; border-radius: 999px; background: none;
+    color: var(--ink-soft); font: 600 0.74rem ui-sans-serif, system-ui, sans-serif;
+    padding: 0.22rem 0.75rem; cursor: pointer;
+  }
+  .view-tab:hover { background: var(--panel-2); color: var(--ink); }
+  .view-tab[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
+
+  .doc-view {
+    height: calc(100vh - 1.6rem - var(--tab-bar));
+    overflow-y: auto; padding-right: 0.8rem;
+  }
+  .doc-view[hidden] { display: none; }
+  .doc-title { font-size: 1.35rem; font-weight: 650; letter-spacing: -0.015em;
+               margin: 0 0 0.4rem; max-width: 48rem; }
+  .doc-meta { font-size: 0.74rem; color: var(--ink-faint); margin-bottom: 1.4rem; }
+  .doc-meta a { color: var(--accent); text-decoration: none; font-family: var(--mono); }
+  .doc-block { max-width: 48rem; margin-bottom: 1.8rem; }
+  .doc-overview { margin: 0; font-size: 0.88rem; color: var(--ink-soft); line-height: 1.6; }
+  .doc-empty { font-size: 0.85rem; color: var(--ink-faint); font-style: italic; }
+
+  .md-h { margin: 1.3rem 0 0.5rem; font-weight: 650; letter-spacing: -0.01em; }
+  .md-p { margin: 0 0 0.75rem; font-size: 0.88rem; line-height: 1.6; }
+  .md-list { margin: 0 0 0.8rem; padding-left: 1.25rem; font-size: 0.88rem; line-height: 1.6; }
+  .md-list .md-list { margin: 0.2rem 0; }
+  /* A task item carries its own box, so the bullet would be a second marker. */
+  .md-list li:has(> .md-task) { list-style: none; margin-left: -1rem; }
+  .md-task { font-family: var(--mono); color: var(--ink-faint); }
+  .md-task.done { color: var(--add-edge); }
+  .md-quote { margin: 0 0 0.8rem; padding: 0.1rem 0 0.1rem 0.8rem;
+              border-left: 2px solid var(--line-c); color: var(--ink-soft); }
+  .md-rule { border: none; border-top: 1px solid var(--line-c); margin: 1.2rem 0; }
+  .md-code {
+    margin: 0 0 0.9rem; padding: 0.6rem 0.8rem; overflow-x: auto;
+    border: 1px solid var(--line-c); border-radius: 6px; background: var(--panel-2);
+    font-family: var(--mono); font-size: 0.76rem; line-height: 1.5;
+  }
+  .md-inline-code { font-family: var(--mono); font-size: 0.82em; padding: 0.08em 0.32em;
+                    border-radius: 4px; background: var(--panel-2); }
+  .md-a { color: var(--accent); }
+  .md-img { max-width: 100%; border: 1px solid var(--line-c); border-radius: 6px; }
+  .doc-block > :last-child { margin-bottom: 0; }
+`;
+
+/**
+ * The description tab: the PR as its author wrote it, plus the slicing
+ * model's own one-paragraph read of it. Neither is code — the point of the
+ * tab is to be able to check the claim against the diff without leaving the
+ * page for GitHub.
+ */
+function renderDescriptionView(input: SliceExplorerInput): string {
+  const description = (input.prDescription ?? "").trim();
+  return `<section class="doc-view" data-view="description" hidden>
+    <span class="eyebrow">Pull request</span>
+    <h3 class="doc-title">${esc(input.prTitle)}</h3>
+    <div class="doc-meta">
+      <a href="${esc(input.prUrl)}">${esc(input.repo)}#${input.number}</a>
+      ${input.prAuthor ? ` · opened by ${esc(input.prAuthor)}` : ""}
+    </div>
+    <div class="doc-block">
+      <div class="side-label">Description</div>
+      ${description ? renderMarkdown(description, { baseUrl: input.prUrl }) : `<p class="doc-empty">This PR has no description.</p>`}
+    </div>
+    <div class="doc-block">
+      <div class="side-label">Overview · what the slicer read</div>
+      <p class="doc-overview">${esc(input.overview)}</p>
+    </div>
+  </section>`;
+}
+
+/**
+ * Switching views, and nothing else: each view keeps its own scroll state
+ * and the slice deck keeps its position, so coming back to the code lands
+ * where the reader left it.
+ */
+const TABS_JS = `
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll(".view-tab"));
+  var views = {};
+  Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (el) {
+    if (!el.classList.contains("view-tab")) views[el.dataset.view] = el;
+  });
+
+  function show(name) {
+    tabs.forEach(function (t) {
+      t.setAttribute("aria-selected", String(t.dataset.view === name));
+    });
+    Object.keys(views).forEach(function (key) { views[key].hidden = key !== name; });
+  }
+
+  tabs.forEach(function (tab) {
+    tab.addEventListener("click", function () { show(tab.dataset.view); });
+  });
+})();
 `;
 
 /**
@@ -365,6 +474,9 @@ const DECK_JS = `
   }, { passive: false });
 
   document.addEventListener("keydown", function (e) {
+    /* Paging belongs to the slice deck; on the description tab the keys
+       should scroll the prose the reader is actually looking at. */
+    if (stage.hidden) return;
     if (e.key === "PageDown") { e.preventDefault(); go(current + 1, "above"); }
     else if (e.key === "PageUp") { e.preventDefault(); go(current - 1, "below"); }
   });
@@ -538,11 +650,16 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 </aside>
 
 <div class="main">
-<div class="stage">
+<div class="view-tabs" role="tablist">
+  <button class="view-tab" role="tab" data-view="slices" aria-selected="true">Slices</button>
+  <button class="view-tab" role="tab" data-view="description" aria-selected="false">Description</button>
+</div>
+<div class="stage" data-view="slices">
   <button class="vrail vrail-up"></button>
   <button class="vrail vrail-down"></button>
   <div class="deck">${views}</div>
 </div>
+${renderDescriptionView(input)}
 </div>
 
 ${input.debugMarks ? DEBUG_MARKS_LEGEND : ""}
@@ -559,6 +676,7 @@ ${SCOPE_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}
 ${DECK_JS}
+${TABS_JS}
 ${input.debugMarks ? DEBUG_MARKS_JS : ""}
 </script>
 </body>
