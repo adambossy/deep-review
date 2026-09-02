@@ -421,7 +421,7 @@ const HISTORY_JS = `
   views.forEach(function (view) {
     var sliceIndex = Number(view.dataset.slice);
     var names = JSON.parse(view.dataset.names);
-    trails[sliceIndex] = [{ id: "__slice__", ids: ["__slice__"], pos: 0, label: TITLES[sliceIndex] }];
+    trails[sliceIndex] = [{ id: "__slice__", ids: ["__slice__"], anchors: [null], link: null, pos: 0, label: TITLES[sliceIndex] }];
     render(sliceIndex);
     initExplorer(view, names, function (step) {
       var trail = trails[sliceIndex];
@@ -438,7 +438,17 @@ const HISTORY_JS = `
       }
       trails[sliceIndex] = foundIdx >= 0
         ? trail.slice(0, foundIdx + 1)
-        : trail.concat([{ id: step.id, ids: step.ids, pos: step.pos, label: names[step.id] || (window.DEFNAMES || {})[step.id] || step.id }]);
+        : trail.concat([{
+          id: step.id,
+          ids: step.ids,
+          // Per-panel anchors and the lit pair: what each panel was opened
+          // for, so a restore can scroll a rebuilt panel to the same spot
+          // and light the same symbols, not just line the panels up.
+          anchors: step.anchors,
+          link: step.link,
+          pos: step.pos,
+          label: names[step.id] || (window.DEFNAMES || {})[step.id] || step.id,
+        }]);
       render(sliceIndex);
     });
   });
@@ -450,7 +460,7 @@ const HISTORY_JS = `
       var sliceIndex = Number(panel.dataset.slice);
       var idx = Number(entry.dataset.idx);
       var step = trails[sliceIndex][idx];
-      views[sliceIndex].__restore(step.ids, step.pos);
+      views[sliceIndex].__restore(step.ids, step.pos, step.anchors, step.link);
       trails[sliceIndex] = trails[sliceIndex].slice(0, idx + 1);
       render(sliceIndex);
       return;
