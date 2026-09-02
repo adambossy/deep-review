@@ -64,6 +64,13 @@ export interface SliceExplorerInput {
    */
   files: EmbeddedFile[];
   /**
+   * The path prefix the navigation server mounts this PR under, with a
+   * trailing slash (`/pr/vercel/swr/2950/`). Every question the page asks
+   * about a symbol is resolved against it, which is what lets one server
+   * answer for several PRs. Absent in a static copy — nothing to ask.
+   */
+  navBase?: string | undefined;
+  /**
    * Debug builds: every marked symbol says why it is marked, and every
    * identifier what the navigation server said about it, in a hint shown
    * while Shift is held.
@@ -545,6 +552,7 @@ ${input.debugMarks ? DEBUG_MARKS_LEGEND : ""}
 <script type="application/json" id="slice-titles">${JSON.stringify(titles).replaceAll("</", "<\\/")}</script>
 <script type="application/json" id="render-data">${renderDataBlob(index)}</script>
 <script>
+window.NAV_BASE = ${JSON.stringify(input.navBase ?? "")};
 ${GAP_JS}
 ${WRAP_JS}
 ${SCOPE_JS}

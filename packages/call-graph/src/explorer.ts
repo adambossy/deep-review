@@ -315,7 +315,9 @@ export const EXPLORER_CSS = `
  *
  * Every question about a symbol goes to the local navigation server when it
  * is first asked: where is this defined (\`/definition\`), who calls it
- * (\`/references\`), what does its panel look like (\`/panel\`). Answers are
+ * (\`/references\`), what does its panel look like (\`/panel\`). Those paths
+ * are resolved against \`window.NAV_BASE\` — the prefix the server mounts
+ * this PR under, so one server can answer for several PRs at once. Answers are
  * kept on the spans and in \`#shared-defs\`, so the page learns as it is
  * read. Without a server — a static copy — every question comes back empty
  * and the page still reads; the call-graph marks baked into function panels
@@ -335,10 +337,14 @@ document.addEventListener("keydown", function (e) { if (e.key === "Escape") clos
 document.addEventListener("wheel", function (e) { if (!e.target.closest(".ref-menu")) closeRefMenu(); }, { passive: true });
 /* Names of panels opened through the server, for the rails and history. */
 window.DEFNAMES = window.DEFNAMES || {};
+/* Where this page's PR is mounted on the navigation server. Every question
+   below is asked relative to it, so one server can hold several PRs. A
+   static copy leaves it empty and asks nothing. */
+function navUrl(path) { return (window.NAV_BASE || "").replace(/\/$/, "") + path; }
 /* One round trip to the navigation server; null when there is none. */
 function navFetch(url) {
   if (location.protocol !== "http:" && location.protocol !== "https:") return Promise.resolve(null);
-  return fetch(url, { cache: "no-store" })
+  return fetch(navUrl(url), { cache: "no-store" })
     .then(function (r) { return r.ok ? r.json() : null; })
     .catch(function () { return null; });
 }
@@ -349,7 +355,7 @@ function navFetch(url) {
    not remembered as a permanent miss. */
 function navFetchTried(url) {
   if (location.protocol !== "http:" && location.protocol !== "https:") return Promise.resolve({ ok: true, data: null });
-  return fetch(url, { cache: "no-store" })
+  return fetch(navUrl(url), { cache: "no-store" })
     .then(function (r) { if (!r.ok) throw new Error("bad status"); return r.json(); })
     .then(function (data) { return { ok: true, data: data }; })
     .catch(function () { return { ok: false, data: null }; });
@@ -359,9 +365,9 @@ function navFetchTried(url) {
    the server waits a moment for the new page to say hello before taking the
    goodbye at its word. */
 window.addEventListener("pagehide", function () {
-  try { if (navigator.sendBeacon && location.protocol.indexOf("http") === 0) navigator.sendBeacon("/shutdown"); } catch (err) { /* nothing to tell */ }
+  try { if (navigator.sendBeacon && location.protocol.indexOf("http") === 0) navigator.sendBeacon(navUrl("/gone")); } catch (err) { /* nothing to tell */ }
 });
-if (location.protocol.indexOf("http") === 0) fetch("/alive", { cache: "no-store" }).catch(function () { /* no server */ });
+if (location.protocol.indexOf("http") === 0) fetch(navUrl("/alive"), { cache: "no-store" }).catch(function () { /* no server */ });
 /* Column of a span within its row's text: everything between the gutter
    and the span, counted as characters. */
 function columnOf(row, span) {

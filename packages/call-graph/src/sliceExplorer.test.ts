@@ -272,11 +272,13 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(html).not.toContain("more</div>");
   });
 
-  it("keeps the in-place shortcut and lets the server go when the page does", () => {
+  it("keeps the in-place shortcut and tells the server when the page goes", () => {
     expect(html).toContain("inView");
     expect(html).toContain("linkInPlace");
-    expect(html).toContain('sendBeacon("/shutdown")');
-    expect(html).toContain('fetch("/alive"');
+    expect(html).toContain('sendBeacon(navUrl("/gone"))');
+    expect(html).toContain('fetch(navUrl("/alive")');
+    // Rendered without a navBase — a static copy — the page asks at the root.
+    expect(html).toContain('window.NAV_BASE = ""');
   });
 
   it("ships no debug hints unless asked", () => {

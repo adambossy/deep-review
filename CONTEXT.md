@@ -107,14 +107,32 @@ own. Only the files the slices touch and the call graphs reach are embedded;
 anything else is fetched from the navigation server as a window.
 
 **Navigation server**:
-The local loopback HTTP server `pr-review` runs behind an explorer page. It
-keeps the language services warm over the PR's head checkout and answers
-the page's questions as symbols are clicked: where a symbol is defined
-(`/definition`), who calls it (`/references`), and the rendered panel for a
-definition (`/panel`). Nothing is resolved ahead of time and nothing is
-capped; the page starts small and learns as it is read. It stops on Ctrl-C
-or shortly after the page goes away.
-_Avoid_: backend (collides with language backend), API
+The local loopback HTTP server behind every explorer page. One long-lived
+server holds every PR being read: the first `pr-review` invocation starts it
+detached, later ones add their PRs to it, and each PR's page lives under its
+own prefix (`/pr/<owner>/<repo>/<number>/`), with an index of them all at
+`/`. Per PR it keeps the language services warm over that PR's head checkout
+and answers the page's questions as symbols are clicked: where a symbol is
+defined (`/definition`), who calls it (`/references`), and the rendered
+panel for a definition (`/panel`). Nothing is resolved ahead of time and
+nothing is capped; the page starts small and learns as it is read. A page
+going away lets go of that PR's language services only (`/gone`, after a
+grace for reloads); the server itself stops when asked (`pr-review stop`,
+`/quit`, Ctrl-C in the foreground), never on its own.
+_Avoid_: backend (collides with language backend), API, daemon (in prose —
+the CLI knows it as the server)
+
+**Registry**:
+The server's set of PRs and each one's lifecycle: added → queued → building
+→ ready (or failed), a few building at a time. A ready PR's language
+services start on the first symbol click and are let go when idle or when
+the page leaves; the built page itself stays.
+
+**Lockfile**:
+`~/.deep-review/server.json` (override: $DEEP_REVIEW_HOME) — the running
+server's claim to exist: pid, port, URL. The claim is only believed after
+`/health` answers, so a stale file from a killed server is overwritten, not
+obeyed.
 
 ### Report UI
 

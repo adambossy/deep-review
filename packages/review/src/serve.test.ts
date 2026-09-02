@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { renderSliceExplorerHtml, type SliceExplorerInput } from "@deep-review/call-graph";
+import type { SliceExplorerInput } from "@deep-review/call-graph";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { serveExplorer, type NavServer } from "./serve.js";
 
@@ -46,29 +46,55 @@ const input: SliceExplorerInput = {
     },
   ],
 };
-const html = renderSliceExplorerHtml(input);
 
-let server: NavServer;
+let server: NavServer & { pageUrl: string };
 beforeAll(async () => {
-  server = await serveExplorer({ headDir, input, html, shutdownGraceMs: 60 });
+  server = await serveExplorer({ headDir, input, sessionGraceMs: 60 });
 });
 afterAll(async () => {
   await server.close();
   rmSync(headDir, { recursive: true, force: true });
 });
 
-const get = (route: string) => fetch(new URL(route, server.url));
+// PR routes are relative to the page's own prefix, as the page asks them.
+const get = (route: string) => fetch(new URL(route.replace(/^\//, ""), server.pageUrl));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const json = async (route: string): Promise<any> => (await get(route)).json();
 
 describe("serveExplorer", () => {
-  it("listens on loopback on a free port and serves the page uncached", async () => {
+  it("mounts the PR under its own prefix and serves the page uncached", async () => {
     expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+    expect(server.pageUrl).toBe(`${server.url}pr/a/b/1/`);
     const res = await get("/");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(await res.text()).toBe(html);
+    // The page knows its own mount, so its questions come back here.
+    expect(await res.text()).toContain('window.NAV_BASE = "/pr/a/b/1/"');
+  });
+
+  it("redirects the PR's URL without its trailing slash", async () => {
+    const res = await fetch(server.pageUrl.replace(/\/$/, ""), { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/pr/a/b/1/");
+  });
+
+  it("serves an index of what it holds at the root", async () => {
+    const res = await fetch(server.url);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("a/b#1");
+    expect(body).toContain('href="/pr/a/b/1/"');
+  });
+
+  it("says what it is over /health and /prs", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const health: any = await (await fetch(new URL("/health", server.url))).json();
+    expect(health.ok).toBe(true);
+    expect(health.prs).toBe(1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { prs }: any = await (await fetch(new URL("/prs", server.url))).json();
+    expect(prs.map((p: { key: string; state: string }) => [p.key, p.state])).toEqual([["a/b#1", "ready"]]);
   });
 
   it("answers /definition with a stable id and the panel to open", async () => {
@@ -103,17 +129,37 @@ describe("serveExplorer", () => {
     expect((await get("/nope")).status).toBe(404);
   }, 30_000);
 
-  it("stops after a shutdown request unless the page comes back first", async () => {
-    const post = () => fetch(new URL("/shutdown", server.url), { method: "POST" });
-    expect((await post()).status).toBe(204);
+  it("404s a PR it does not hold", async () => {
+    expect((await fetch(new URL("/pr/a/b/2/", server.url))).status).toBe(404);
+    expect((await fetch(new URL("/pr/a/b/2/panel?id=x", server.url))).status).toBe(404);
+  });
+
+  it("lets a page's language services go when it leaves, without stopping", async () => {
+    // Warm the session, then say goodbye.
+    await json("/definition?file=use.ts&line=4&col=9");
+    expect(server.registry.get("a/b#1")?.live).toBe(true);
+    const gone = () => fetch(new URL("gone", server.pageUrl), { method: "POST" });
+    expect((await gone()).status).toBe(204);
     // A reload: the new page says hello inside the grace period.
     expect((await get("/alive")).status).toBe(204);
     await new Promise((r) => setTimeout(r, 120));
+    expect(server.registry.get("a/b#1")?.live).toBe(true);
+
+    // Nobody comes back: the session goes, the server stays.
+    await gone();
+    await new Promise((r) => setTimeout(r, 120));
+    expect(server.registry.get("a/b#1")?.live).toBe(false);
     expect((await get("/")).status).toBe(200);
 
-    // Nobody comes back: the server goes.
-    await post();
+    // The next question simply starts them again.
+    const again = await json("/definition?file=use.ts&line=4&col=9");
+    expect(again.name).toBe("helper");
+    expect(server.registry.get("a/b#1")?.live).toBe(true);
+  }, 30_000);
+
+  it("stops when asked over /quit", async () => {
+    expect((await fetch(new URL("/quit", server.url), { method: "POST" })).status).toBe(204);
     await Promise.race([server.closed, new Promise((_, reject) => setTimeout(() => reject(new Error("still up")), 2000))]);
-    await expect(get("/")).rejects.toThrow();
+    await expect(fetch(server.url)).rejects.toThrow();
   }, 10_000);
 });

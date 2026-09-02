@@ -12,7 +12,7 @@ export {
   type Report,
   type ReportOptions,
 } from "./report.js";
-export { renderCallGraphHtml, renderCallGraphColumnsHtml } from "./html.js";
+export { renderCallGraphHtml, renderCallGraphColumnsHtml, CSS as REPORT_CSS } from "./html.js";
 export { renderCallPathExplorerHtml } from "./explorer.js";
 export {
   NavSession,
