@@ -200,7 +200,7 @@ Two rows here are new, created by the server's own longevity.
 
 | Failure | Reader sees | Store does |
 | --- | --- | --- |
-| **Server started without a token** — it inherits the env of whichever shell spawned it, which may not be the one you are in | "This server has no GitHub token — `pr-review stop`, then re-run from a shell that has one" | read-only; drafts still writable |
+| **Server started without a token** — it inherits the env of whichever shell spawned it, which may not be the one you are in | "This server has no GitHub token — restart it to pick yours up". Detection is free: `/health` carries `hasGithubToken` (being added on the server's branch in response to this plan), so the page reads it rather than inferring from a 404 | read-only; drafts still writable |
 | **Token expired under a long-lived server** — a process that runs for weeks outlives credentials | the 401 named plainly, not "sync failed" | read the token per request, not once at boot |
 | No PR-write scope | submit disabled, with the reason | drafts persist |
 | Rate-limited | "Resuming at 14:32" | back off to the reset timestamp |
@@ -269,11 +269,29 @@ slot beside them, in the same house style.
 5. GraphQL reads from day one, or a REST-only V0 blind to resolution state?
    _Assumed: GraphQL._
 
-## Fed back to the server's author
+## Fed back to the server's author — both accepted
 
-The env-inheritance point is worth their attention independently of this
-plan: a server spawned by `ensureServer()` keeps the environment of whichever
-invocation spawned it, so `GITHUB_TOKEN` is frozen at spawn time. That is
-already true for the private-repo path in `fetchPrInfo`, not just for
-comments — a reader who exports a token and re-runs `pr-review` will still be
-served by a tokenless server started earlier, with no signal saying why.
+Two findings went to the `worktree-multi-pr-server` session; both are being
+fixed on that branch before PR #3 merges, so this plan can assume them.
+
+1. **`GITHUB_TOKEN` is frozen at spawn time.** A server spawned by
+   `ensureServer()` keeps the environment of whichever invocation spawned it.
+   That already affects the private-repo path in `fetchPrInfo`, not just
+   comments: a reader who exports a token and re-runs `pr-review` is still
+   served by a tokenless server started earlier, and the resulting
+   "private repo? set GITHUB_TOKEN" hint is actively misleading, because the
+   token *is* set in the shell that ran the command. With no idle timeout the
+   window is unbounded. Fix landing: `/health` gains `hasGithubToken`, and the
+   CLI warns when its own env has a token the running server lacks. They
+   declined forwarding tokens through `POST /prs` — per-build credential
+   plumbing over loopback HTTP is more machinery, and more places a token
+   lives, than the mismatch warrants. Agreed.
+2. **`/gone` is allowlisted before the blanket 405** under a PR prefix, so the
+   next mutating per-PR route trips on it. Fix landing: a comment at that 405.
+
+Contract points confirmed settled by that session: `NAV_BASE` injection,
+`navUrl()`, the `/gone` beacon, and the `/pr/:owner/:repo/:number/` shape. A
+simplify pass is landing on their branch but is internal only (moving the path
+parser next to `prMountPath`, extracting a shared build tail, a
+`registry.count()` for `/health`). They will ping this branch if any of the
+four contract points moves.
