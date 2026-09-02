@@ -435,11 +435,13 @@ function pinRows(rows: readonly DiffRow[], entry: FileEntry, pinned: (n: number)
 export function renderDiffRows(input: readonly DiffRow[], options: DiffRenderOptions): string {
   const { width, lang, entry, decorations, focus } = options;
   const debug = options.debug ?? false;
-  // A decorated line is one the reader is meant to see — a call mark, the
-  // declared name — so it is never left inside a gap for the expander to
-  // reveal as a plain base row. Pinning it here makes that a property of
-  // this renderer rather than of every row builder that feeds it.
-  const pinned = (n: number): boolean => Boolean(decorations?.has(n));
+  // A decorated or focused line is one the reader is meant to see — a call
+  // mark, the declared name, the declaration's own rows with their stripe —
+  // so it is never left inside a gap for the expander to reveal as a plain
+  // base row. Pinning it here makes that a property of this renderer rather
+  // than of every row builder that feeds it.
+  const pinned = (n: number): boolean =>
+    Boolean(decorations?.has(n)) || (focus !== undefined && n >= focus.startLine && n <= focus.endLine);
   const rows = entry ? pinRows(input, entry, pinned) : input;
   // Rows without an embedded file are tokenized together so multi-line
   // strings and comments carry across them; removed rows always are, since

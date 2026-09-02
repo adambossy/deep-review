@@ -243,6 +243,16 @@ describe("renderDiffRows", () => {
     );
   });
 
+  it("never leaves a focused line inside a gap, so the focus stripe is never broken by an expander", () => {
+    const rows: DiffRow[] = [{ kind: "gap", from: 1, to: 10 }, { kind: "ctx", n: 11, text: "line 11;" }];
+    const html = renderDiffRows(rows, { width: 2, lang: "ts", entry, focus: { startLine: 8, endLine: 12 } });
+    expect(html).toContain('data-from="1" data-to="7"');
+    for (const n of [8, 9, 10, 11]) {
+      expect(html).toContain(`<span class="line in-focus"><span class="lineno">${String(n).padStart(2)}</span>`);
+    }
+    expect(html).not.toContain('data-from="8"');
+  });
+
   it("gives every head-side row identifier spans, whether or not the file backs it", () => {
     const rows: DiffRow[] = [
       { kind: "ctx", n: 4, text: "line 4;" }, // the file's own text
