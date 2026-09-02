@@ -56,3 +56,67 @@ export async function fetchPrInfo(ref: PrRef): Promise<PrInfo> {
     htmlUrl: pr.html_url,
   };
 }
+
+/** One open PR assigned to the authenticated user, as the search API reports it. */
+export interface AssignedPr extends PrRef {
+  title: string;
+  htmlUrl: string;
+  /** When the PR was last touched, ISO 8601 — the watcher's re-dispatch signal. */
+  updatedAt: string;
+  draft: boolean;
+}
+
+interface SearchResponse {
+  items: {
+    number: number;
+    title: string;
+    html_url: string;
+    updated_at: string;
+    draft?: boolean;
+    /** `https://api.github.com/repos/<owner>/<repo>` — the only place the search result names the repo. */
+    repository_url: string;
+  }[];
+}
+
+const REPO_URL = /\/repos\/([^/]+)\/([^/]+)$/;
+
+/**
+ * The open PRs currently assigned to the token's owner.
+ *
+ * This asks for *state*, not for events: every call reports the full set, so
+ * a caller that has been asleep for a night catches up on one poll and needs
+ * no cursor arithmetic to do it. Requires a token — `assignee:@me` has no
+ * meaning without one.
+ */
+export async function listAssignedPrs(): Promise<AssignedPr[]> {
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (!token) throw new Error("GITHUB_TOKEN is not set; it is needed to find your assigned PRs.");
+  const query = encodeURIComponent("is:open is:pr assignee:@me archived:false");
+  const res = await fetch(`https://api.github.com/search/issues?q=${query}&per_page=100`, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub search returned ${res.status}`);
+  }
+  const body = (await res.json()) as SearchResponse;
+  const prs: AssignedPr[] = [];
+  for (const item of body.items) {
+    const match = REPO_URL.exec(item.repository_url);
+    // A result whose repo we cannot name is one we could never build; skip
+    // it rather than failing the whole poll over one odd row.
+    if (!match) continue;
+    prs.push({
+      owner: match[1]!,
+      repo: match[2]!,
+      number: item.number,
+      title: item.title,
+      htmlUrl: item.html_url,
+      updatedAt: item.updated_at,
+      draft: item.draft ?? false,
+    });
+  }
+  return prs;
+}

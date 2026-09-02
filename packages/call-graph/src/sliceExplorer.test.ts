@@ -285,11 +285,13 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(html).not.toContain("more</div>");
   });
 
-  it("keeps the in-place shortcut and lets the server go when the page does", () => {
+  it("keeps the in-place shortcut and tells the server when the page goes", () => {
     expect(html).toContain("inView");
     expect(html).toContain("linkInPlace");
-    expect(html).toContain('sendBeacon("/shutdown")');
-    expect(html).toContain('fetch("/alive"');
+    expect(html).toContain('sendBeacon(navUrl("/gone"))');
+    expect(html).toContain('fetch(navUrl("/alive")');
+    // Rendered without a navBase — a static copy — the page asks at the root.
+    expect(html).toContain('window.NAV_BASE = ""');
   });
 
   it("names the description in the sidebar, alongside the slices", () => {
@@ -338,6 +340,17 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
   it("says a PR has no description rather than dropping the sidebar entry", () => {
     expect(html).toContain('class="doc-empty">This PR has no description.');
     expect(html).toContain('class="side-link doc-link"');
+  });
+
+  it("emits page scripts that actually parse", () => {
+    // A template literal quietly eats escapes (\/ becomes /), so a regex in
+    // the page script can turn into a line comment and take the whole script
+    // with it. Compile every emitted script the way the browser would.
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const [, src] of scripts) {
+      expect(() => new Function(src!)).not.toThrow();
+    }
   });
 
   it("restores a history step with the panels' anchors and lit pair, reusing panels still on the track", () => {
