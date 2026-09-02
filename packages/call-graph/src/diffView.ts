@@ -245,15 +245,21 @@ export function segmentRows(segments: readonly SourceSegment[], hunks: DiffHunk[
   return rows;
 }
 
+type DelRow = Extract<DiffRow, { kind: "del" }>;
+type AddRow = Extract<DiffRow, { kind: "add" }>;
+
 /**
  * GitHub's within-line highlighting: a run of removed lines is paired up
  * with the run of added lines that follows it, and the words that differ
  * inside each pair are marked. Equal-length runs pair by position, the way
  * GitHub does; runs of different length — one line rewritten as a paragraph,
  * say — pair by how much the lines share, so the one line that really was
- * edited still gets marked.
+ * edited still gets marked. Before any of that, lines equal but for their
+ * whitespace pair up across the runs of a whole visible stretch, so a
+ * re-indented block shows an indentation change on every moved line.
  */
 export function markIntraLine(rows: DiffRow[]): void {
+  const paired = markReindented(rows);
   let i = 0;
   while (i < rows.length) {
     if (rows[i]!.kind !== "del") {
@@ -264,8 +270,8 @@ export function markIntraLine(rows: DiffRow[]): void {
     while (j < rows.length && rows[j]!.kind === "del") j++;
     let k = j;
     while (k < rows.length && rows[k]!.kind === "add") k++;
-    const dels = rows.slice(i, j) as Array<Extract<DiffRow, { kind: "del" }>>;
-    const adds = rows.slice(j, k) as Array<Extract<DiffRow, { kind: "add" }>>;
+    const dels = (rows.slice(i, j) as DelRow[]).filter((r) => !paired.has(r));
+    const adds = (rows.slice(j, k) as AddRow[]).filter((r) => !paired.has(r));
     for (const [d, a] of pairLines(dels.map((r) => r.text), adds.map((r) => r.text))) {
       const del = dels[d]!;
       const add = adds[a]!;
@@ -277,6 +283,39 @@ export function markIntraLine(rows: DiffRow[]): void {
     }
     i = k;
   }
+}
+
+/**
+ * A re-indented block arrives as removed lines and added lines identical but
+ * for whitespace — and rarely as one neat run pair: any line inside it whose
+ * indentation happened not to change is kept by git as context, splitting the
+ * block into lopsided runs that can each pair no more lines than their shorter
+ * side. So content pairing looks across a whole visible stretch (gap to gap):
+ * removed and added lines equal after trimming pair up without crossing, get
+ * their whitespace change marked, and step aside from word pairing.
+ */
+function markReindented(rows: readonly DiffRow[]): Set<DiffRow> {
+  const paired = new Set<DiffRow>();
+  let start = 0;
+  for (let end = 0; end <= rows.length; end++) {
+    if (end < rows.length && rows[end]!.kind !== "gap") continue;
+    const stretch = rows.slice(start, end);
+    const dels = stretch.filter((r): r is DelRow => r.kind === "del");
+    const adds = stretch.filter((r): r is AddRow => r.kind === "add");
+    for (const [d, a] of pairByContent(dels.map((r) => r.text), adds.map((r) => r.text))) {
+      const del = dels[d]!;
+      const add = adds[a]!;
+      const marks = intraLineMarks(del.text, add.text);
+      if (marks) {
+        del.marks = marks.del;
+        add.marks = marks.add;
+      }
+      paired.add(del);
+      paired.add(add);
+    }
+    start = end + 1;
+  }
+  return paired;
 }
 
 /**
@@ -324,6 +363,49 @@ function pairLines(dels: readonly string[], adds: readonly string[]): Array<[num
   while (d > 0 && a > 0) {
     const pair = shared[d - 1]![a - 1]!;
     if (pair >= MIN_SIMILARITY && best[d]![a] === best[d - 1]![a - 1]! + pair) {
+      pairs.push([d - 1, a - 1]);
+      d--;
+      a--;
+    } else if (best[d - 1]![a]! >= best[d]![a - 1]!) d--;
+    else a--;
+  }
+  return pairs.reverse();
+}
+
+/** Content pairing costs one string comparison per cell, so it affords a far larger table than word pairing. */
+const MAX_CONTENT_CELLS = 250_000;
+
+/**
+ * Which removed line is which added line re-indented: the non-crossing
+ * pairing of removed and added lines with equal trimmed text that covers the
+ * most content. Blank lines would pair with any other blank line, so they
+ * anchor nothing and stay out. Returned as `[removed index, added index]` in
+ * top-to-bottom order.
+ */
+function pairByContent(dels: readonly string[], adds: readonly string[]): Array<[number, number]> {
+  const m = dels.length;
+  const n = adds.length;
+  if (!m || !n || m * n > MAX_CONTENT_CELLS) return [];
+  const left = dels.map((text) => text.trim() || null);
+  const right = adds.map((text) => text.trim() || null);
+  const matched = (d: number, a: number): number =>
+    left[d] !== null && left[d] === right[a] ? left[d]!.length : 0;
+  const best: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+  for (let d = 1; d <= m; d++) {
+    for (let a = 1; a <= n; a++) {
+      best[d]![a] = Math.max(
+        best[d - 1]![a]!,
+        best[d]![a - 1]!,
+        best[d - 1]![a - 1]! + matched(d - 1, a - 1),
+      );
+    }
+  }
+  const pairs: Array<[number, number]> = [];
+  let d = m;
+  let a = n;
+  while (d > 0 && a > 0) {
+    const match = matched(d - 1, a - 1);
+    if (match && best[d]![a] === best[d - 1]![a - 1]! + match) {
       pairs.push([d - 1, a - 1]);
       d--;
       a--;

@@ -163,6 +163,57 @@ describe("markIntraLine", () => {
     expect(rewritten.every((r) => !("marks" in r && r.marks))).toBe(true);
   });
 
+  it("marks a re-indented block whose runs are split by a matched context line", () => {
+    // A dedented block where one line kept its indentation: git matches it
+    // as context, leaving a lopsided run on each side. Every moved line must
+    // still show its indentation change.
+    const rows: DiffRow[] = [
+      { kind: "del", text: "        alpha()" },
+      { kind: "del", text: "        beta()" },
+      { kind: "add", n: 1, text: "    try:" },
+      { kind: "ctx", n: 2, text: "        anchor()" },
+      { kind: "del", text: "        gamma()" },
+      { kind: "add", n: 3, text: "    alpha()" },
+      { kind: "add", n: 4, text: "    beta()" },
+      { kind: "add", n: 5, text: "    gamma()" },
+    ];
+    markIntraLine(rows);
+    const indent = (cls: string): Mark[] => [{ start: 0, end: cls === "diff-del-inner" ? 8 : 4, cls }];
+    expect((rows[0] as { marks?: Mark[] }).marks).toEqual(indent("diff-del-inner"));
+    expect((rows[1] as { marks?: Mark[] }).marks).toEqual(indent("diff-del-inner"));
+    expect((rows[4] as { marks?: Mark[] }).marks).toEqual(indent("diff-del-inner"));
+    expect((rows[5] as { marks?: Mark[] }).marks).toEqual(indent("diff-add-inner"));
+    expect((rows[6] as { marks?: Mark[] }).marks).toEqual(indent("diff-add-inner"));
+    expect((rows[7] as { marks?: Mark[] }).marks).toEqual(indent("diff-add-inner"));
+    expect((rows[2] as { marks?: Mark[] }).marks).toBeUndefined();
+  });
+
+  it("marks a re-indented run too large for word pairing", () => {
+    const dels: DiffRow[] = Array.from({ length: 20 }, (_, i): DiffRow => ({ kind: "del", text: `    line_${i}()` }));
+    const adds: DiffRow[] = Array.from({ length: 21 }, (_, i): DiffRow => ({ kind: "add", n: i + 1, text: `        line_${i}()` }));
+    const rows = [...dels, ...adds];
+    markIntraLine(rows);
+    // 20 × 21 candidate pairs is past word pairing's budget; content pairing
+    // still matches every moved line, and only the truly new one goes plain.
+    for (const row of rows.slice(0, 20)) {
+      expect((row as { marks?: Mark[] }).marks).toEqual([{ start: 0, end: 4, cls: "diff-del-inner" }]);
+    }
+    for (const row of rows.slice(20, 40)) {
+      expect((row as { marks?: Mark[] }).marks).toEqual([{ start: 0, end: 8, cls: "diff-add-inner" }]);
+    }
+    expect((rows[40] as { marks?: Mark[] }).marks).toBeUndefined();
+  });
+
+  it("never pairs content across a gap", () => {
+    const rows: DiffRow[] = [
+      { kind: "del", text: "    solo()" },
+      { kind: "gap", from: 2, to: 40 },
+      { kind: "add", n: 41, text: "        solo()" },
+    ];
+    markIntraLine(rows);
+    expect(rows.every((r) => !("marks" in r && r.marks))).toBe(true);
+  });
+
   it("joins marks separated only by whitespace into one band", () => {
     const del = "- pickup: outbound calls without an event";
     const add = "- pickup: see the outcomes listed below";
