@@ -133,10 +133,8 @@ export async function slicePr(options: SliceOptions): Promise<SliceReport> {
  * re-rendered without re-running the agent. The checkout is cached, so this
  * is cheap on a PR that has been sliced before.
  */
-export async function loadRenderEntry(
-  reportFile: string,
-  workDir?: string,
-): Promise<RenderEntry> {
+/** Parse and validate a saved slice report, without touching the network. */
+export function loadSliceReport(reportFile: string): SliceReport {
   const parsed = sliceReportSchema.safeParse(
     JSON.parse(readFileSync(reportFile, "utf8")),
   );
@@ -147,7 +145,14 @@ export async function loadRenderEntry(
         .join("; ")}`,
     );
   }
-  const report = parsed.data as SliceReport;
+  return parsed.data as SliceReport;
+}
+
+export async function loadRenderEntry(
+  reportFile: string,
+  workDir?: string,
+): Promise<RenderEntry> {
+  const report = loadSliceReport(reportFile);
   const info = await fetchPrInfo({
     owner: report.pr.owner,
     repo: report.pr.repo,
