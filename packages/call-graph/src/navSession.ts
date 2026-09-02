@@ -7,7 +7,7 @@
  */
 
 import path from "node:path";
-import type { DeclRef, EnclosingDeclaration, LanguageBackend } from "./backend.js";
+import type { DeclRef, EnclosingDeclaration, IncomingReference, LanguageBackend } from "./backend.js";
 import { Backends } from "./backends.js";
 import { definitionPanelId, renderDefinitionPanel } from "./explorer.js";
 import type { FileIndex } from "./html.js";
@@ -212,6 +212,12 @@ export class NavSession {
    * Who calls a definition — or, for a class or constant that call hierarchy
    * does not answer for, who references it. Every site, uncapped, each with
    * the panel to walk up into. Null for an id this session never handed out.
+   *
+   * Call hierarchy only reports call expressions, so a function handed to
+   * `functools.partial`, `asyncio.to_thread`, `map`, or a callback parameter
+   * is invisible to it — and a function whose only production use is such a
+   * hand-off would read as called by nothing but its tests. The reference
+   * search does see those sites, so they are folded in and flagged indirect.
    */
   references(id: DefinitionId): Promise<ReferenceList | null> {
     let pending = this.refs.get(id);
@@ -228,9 +234,11 @@ export class NavSession {
     const backend: LanguageBackend | null = this.backends.for(def.file);
     if (!backend) return { kind: "references", sites: [] };
     const ref: DeclRef = { fileName: this.absolute(def.file), line: def.nameLine, column: def.nameColumn };
-    const calls = await backend.incomingCallsAt(ref).catch(() => null);
-    const found = calls ?? (await backend.referencesAt(ref).catch(() => []));
-    const sites: ReferenceSite[] = found.map((r) => ({
+    const [calls, uses] = await Promise.all([
+      backend.incomingCallsAt(ref).catch(() => null),
+      backend.referencesAt(ref).catch((): IncomingReference[] => []),
+    ]);
+    const site = (r: IncomingReference): ReferenceSite => ({
       file: toRelative(this.headDir, r.fileName),
       line: r.line,
       startColumn: r.startColumn,
@@ -238,8 +246,15 @@ export class NavSession {
       snippet: r.snippet,
       enclosingName: r.enclosing?.name ?? path.basename(r.fileName),
       ...(r.enclosing ? { panelId: this.enclosingPanel(r.enclosing) } : {}),
-    }));
-    return { kind: calls ? "calls" : "references", sites };
+    });
+    if (!calls) return { kind: "references", sites: uses.map(site) };
+    const at = (r: IncomingReference) => `${r.fileName}:${r.line}:${r.startColumn}`;
+    const called = new Set(calls.map(at));
+    const sites = [
+      ...calls.map(site),
+      ...uses.filter((r) => !called.has(at(r))).map((r) => ({ ...site(r), indirect: true as const })),
+    ].sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.startColumn - b.startColumn);
+    return { kind: "calls", sites };
   }
 
   /**

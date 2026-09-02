@@ -306,6 +306,7 @@ export const EXPLORER_CSS = `
   }
   .ref-menu .call-sites-label { margin: 0 0.5rem 0.2rem; }
   .ref-menu .ref-more { padding: 0.2rem 0.5rem; font-size: 0.72rem; color: var(--ink-faint); }
+  .ref-menu .ref-tag { margin-left: 0.35rem; padding: 0 0.3rem; border-radius: 3px; font-size: 0.66rem; color: var(--ink-faint); background: var(--accent-soft); }
 `;
 
 /**
@@ -757,7 +758,9 @@ function initExplorer(root, NAMES, onNavigate) {
           (site.panelId ? ' data-target="' + escAttr(site.panelId) + '"' : " disabled") +
           ' data-ref-def="' + escAttr(found.id) + '" data-ref-file="' + escAttr(site.file) + '"' +
           ' data-ref-line="' + site.line + '" data-ref-col="' + site.startColumn + '">\\u2196 <code class="fn-name">' + escText(site.enclosingName) +
-          '</code> <span class="loc">L' + site.line + "</span> <code>" + escText(site.snippet) + "</code></button>";
+          '</code> <span class="loc">L' + site.line + "</span>" +
+          (site.indirect ? '<span class="ref-tag" title="passed as a value, not called here">passed</span>' : "") +
+          " <code>" + escText(site.snippet) + "</code></button>";
       }
       menu.innerHTML = html;
       left = Math.max(0, Math.min(left, panel.scrollLeft + panel.clientWidth - menu.offsetWidth - 8));

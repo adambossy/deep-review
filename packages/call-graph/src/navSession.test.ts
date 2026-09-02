@@ -25,6 +25,10 @@ const useText = [
   "  const total = helper(x) + LIMIT;",
   "  return total + Math.max(total, 0);",
   "}",
+  "",
+  "export function later(xs: number[]): number[] {",
+  "  return xs.map(helper);",
+  "}",
 ];
 writeFileSync(path.join(dir, "lib.ts"), libText.join("\n"));
 writeFileSync(path.join(dir, "use.ts"), useText.join("\n"));
@@ -149,7 +153,12 @@ describe("NavSession.references", () => {
     const helper = await hit("use.ts", 4, 16);
     const refs = (await session.references(helper.id))!;
     expect(refs.kind).toBe("calls");
-    expect(refs.sites.map((s) => [s.file, s.line, s.startColumn, s.enclosingName])).toEqual([["use.ts", 4, 16, "use"]]);
+    // `later` hands `helper` to `map` without calling it: invisible to call
+    // hierarchy, found by the reference search, flagged as indirect.
+    expect(refs.sites.map((s) => [s.file, s.line, s.startColumn, s.enclosingName, s.indirect ?? false])).toEqual([
+      ["use.ts", 4, 16, "use", false],
+      ["use.ts", 9, 16, "later", true],
+    ]);
     // `use` is not a graph node: its panel is a definition panel, rendered when asked for.
     expect(refs.sites[0]!.panelId).toMatch(/^def:d\d+$/);
     expect(await session.references(helper.id)).toBe(refs);
@@ -159,7 +168,8 @@ describe("NavSession.references", () => {
     const limit = await hit("use.ts", 4, 28);
     const refs = (await session.references(limit.id))!;
     expect(refs.kind).toBe("references");
-    expect(refs.sites.map((s) => `${s.file}:${s.line}`).sort()).toEqual(["lib.ts:4", "use.ts:1", "use.ts:4"]);
+    // The import binding on use.ts:1 is not a use.
+    expect(refs.sites.map((s) => `${s.file}:${s.line}`).sort()).toEqual(["lib.ts:4", "use.ts:4"]);
     // A site inside a graph node walks up into that node's own panel.
     expect(refs.sites.find((s) => s.file === "lib.ts")!.panelId).toBe("lib.ts#helper");
   }, 30_000);

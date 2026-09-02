@@ -318,14 +318,33 @@ function scopeName(node: ts.Node): ts.Node | undefined {
   return undefined;
 }
 
-/** The innermost named function (else class) containing `pos`. */
-function enclosingAt(sourceFile: ts.SourceFile, pos: number): EnclosingDeclaration | null {
+/** The deepest node containing `pos`. */
+function nodeAt(sourceFile: ts.SourceFile, pos: number): ts.Node {
   let node: ts.Node = sourceFile;
   for (;;) {
     const child = ts.forEachChild(node, (c) => (c.getStart(sourceFile) <= pos && pos < c.getEnd() ? c : undefined));
     if (!child) break;
     node = child;
   }
+  return node;
+}
+
+/**
+ * Whether the reference at `pos` is an import or re-export binding — a line
+ * that brings the name into scope without using it.
+ */
+function isImportBinding(ps: ProjectService, fileName: string, pos: number): boolean {
+  const sourceFile = ps.program.getSourceFile(fileName);
+  if (!sourceFile) return false;
+  for (let n: ts.Node | undefined = nodeAt(sourceFile, pos); n; n = n.parent) {
+    if (ts.isImportDeclaration(n) || ts.isImportEqualsDeclaration(n) || ts.isExportDeclaration(n)) return true;
+  }
+  return false;
+}
+
+/** The innermost named function (else class) containing `pos`. */
+function enclosingAt(sourceFile: ts.SourceFile, pos: number): EnclosingDeclaration | null {
+  const node = nodeAt(sourceFile, pos);
   let fn: ts.Node | null = null;
   let cls: ts.Node | null = null;
   for (let n: ts.Node | undefined = node; n && !fn; n = n.parent) {
@@ -392,6 +411,7 @@ export function referencesAt(ps: ProjectService, fileName: string, pos: number):
   for (const symbol of ps.service.findReferences(fileName, pos) ?? []) {
     for (const entry of symbol.references) {
       if (entry.isDefinition || !isProjectFile(ps.rootDir, entry.fileName)) continue;
+      if (isImportBinding(ps, entry.fileName, entry.textSpan.start)) continue;
       const ref = referenceAt(ps, entry.fileName, entry.textSpan);
       if (ref) refs.push(ref);
     }
