@@ -199,6 +199,15 @@ _Avoid_: sidebar, handle
 The tappable row at the top of a panel listing one incoming call — the way
 to walk up.
 
+**Status pill**:
+The badge in the page's bottom-left corner that appears only when symbol
+navigation is not simply working — the navigation server unreachable or
+shutting down, the PR still building, a language service starting or
+crashed, a question taking a while — and says which. It reads the server's
+side from `/status` under the PR's mount and the page's own round trips; on
+recovery it turns green, says so, and fades after a few seconds.
+_Avoid_: toast, banner, indicator
+
 **Expander**:
 The GitHub-style widget standing in for hidden lines, revealing twenty at a
 time (up, down, or all), labeled with the hidden-line count and a breadcrumb.

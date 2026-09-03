@@ -1,4 +1,4 @@
-import type { LanguageBackend } from "./backend.js";
+import type { LanguageBackend, ServiceState } from "./backend.js";
 import { LspBackend, pyrightConfig } from "./lspBackend.js";
 import { TsBackend } from "./tsBackend.js";
 
@@ -25,6 +25,19 @@ export class Backends {
   /** Whether requests to this backend go over a wire and should be issued in parallel. */
   batched(backend: LanguageBackend): boolean {
     return backend === this.py;
+  }
+
+  /**
+   * One state for every service started so far: a failure anywhere is a
+   * failure, otherwise anything still starting means starting, otherwise
+   * ready if anything is up at all.
+   */
+  status(): ServiceState {
+    const states = [this.ts, this.py].filter((b) => b !== null).map((b) => b.status());
+    if (states.includes("failed")) return "failed";
+    if (states.includes("starting")) return "starting";
+    if (states.includes("ready")) return "ready";
+    return "idle";
   }
 
   dispose(): void {

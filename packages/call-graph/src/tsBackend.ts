@@ -4,6 +4,7 @@ import type {
   FunctionRelations,
   IncomingReference,
   LanguageBackend,
+  ServiceState,
 } from "./backend.js";
 import {
   createProjectService,
@@ -28,6 +29,11 @@ export class TsBackend implements LanguageBackend {
   private service(): ProjectService {
     this.ps ??= createProjectService(this.rootDir);
     return this.ps;
+  }
+
+  /** In-process: there is nothing to spawn, so it is ready as soon as it is used. */
+  status(): ServiceState {
+    return this.ps ? "ready" : "idle";
   }
 
   private offsetOf(decl: DeclRef): number | null {

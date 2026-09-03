@@ -1,4 +1,5 @@
 import { EXPLORER_CSS, EXPLORER_NAV_JS, renderPanel } from "./explorer.js";
+import { STATUS_PILL_CSS, STATUS_PILL_JS } from "./statusPill.js";
 import { renderCodePane } from "./codePane.js";
 import { fragmentDiffRows } from "./diffView.js";
 import { escapeHtml as esc, languageOf } from "./highlight.js";
@@ -645,7 +646,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(`${input.repo}#${input.number} — slice explorer`)}</title>
-<style>${CSS}${EXPLORER_CSS}${SLICE_CSS}${input.debugMarks ? DEBUG_MARKS_CSS : ""}</style>
+<style>${CSS}${EXPLORER_CSS}${SLICE_CSS}${STATUS_PILL_CSS}${input.debugMarks ? DEBUG_MARKS_CSS : ""}</style>
 </head>
 <body class="slice-explorer">
 <aside class="side">
@@ -692,6 +693,7 @@ window.NAV_BASE = ${JSON.stringify(input.navBase ?? "")};
 ${GAP_JS}
 ${WRAP_JS}
 ${SCOPE_JS}
+${STATUS_PILL_JS}
 ${EXPLORER_NAV_JS}
 ${HISTORY_JS}
 ${DECK_JS}

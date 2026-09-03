@@ -12,6 +12,7 @@ import {
   type IncomingReference,
   type LanguageBackend,
   type RelationEntry,
+  type ServiceState,
 } from "./backend.js";
 import { LspClient } from "./lsp.js";
 import type { FunctionSnapshot, SymbolRange } from "./types.js";
@@ -174,6 +175,7 @@ const SKIP_DIRS = new Set([
 export class LspBackend implements LanguageBackend {
   private client: LspClient | null = null;
   private ready: Promise<LspClient> | null = null;
+  private state: ServiceState = "idle";
   private opened = new Set<string>();
   private fileCache = new Map<string, string[]>();
   private symbolCache = new Map<string, LspDocumentSymbol[]>();
@@ -185,11 +187,39 @@ export class LspBackend implements LanguageBackend {
 
   private start(): Promise<LspClient> {
     this.ready ??= (async () => {
-      this.client = new LspClient(this.config.command, this.config.args, this.rootDir);
-      await this.client.initialize();
-      return this.client;
+      this.state = "starting";
+      const client = new LspClient(this.config.command, this.config.args, this.rootDir);
+      this.client = client;
+      // When the process goes — crash, OOM kill, a stray signal — forget it,
+      // so the next question spawns a fresh one instead of failing forever
+      // against a dead pipe. Documents were opened on the old process, so
+      // they are opened again on the new one.
+      client.onExit(() => {
+        if (this.client !== client) return;
+        this.client = null;
+        this.ready = null;
+        this.opened.clear();
+        this.state = "failed";
+      });
+      try {
+        await client.initialize();
+      } catch (error) {
+        if (this.client === client) {
+          this.client = null;
+          this.ready = null;
+          this.state = "failed";
+        }
+        void client.dispose();
+        throw error;
+      }
+      if (this.client === client) this.state = "ready";
+      return client;
     })();
     return this.ready;
+  }
+
+  status(): ServiceState {
+    return this.state;
   }
 
   private linesOf(fileName: string): string[] {
@@ -573,5 +603,7 @@ export class LspBackend implements LanguageBackend {
     void this.client?.dispose();
     this.client = null;
     this.ready = null;
+    this.opened.clear();
+    this.state = "idle";
   }
 }

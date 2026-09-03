@@ -30,6 +30,9 @@ export class LspClient {
       sites, not just find fewer of them. */
   private activeProgress = new Set<string | number>();
   private idleWaiters: Array<() => void> = [];
+  /** The child has exited (or could not be spawned); every request fails at once. */
+  exited = false;
+  private exitListeners: Array<() => void> = [];
 
   constructor(
     command: string,
@@ -38,11 +41,31 @@ export class LspClient {
   ) {
     this.child = spawn(command, args, { stdio: ["pipe", "pipe", "ignore"] });
     this.child.stdout!.on("data", (chunk: Buffer) => this.onData(chunk));
-    this.child.on("exit", () => {
-      const error = new Error("language server exited");
-      for (const { reject } of this.pending.values()) reject(error);
-      this.pending.clear();
-    });
+    // A write to a pipe whose reader is gone raises on the stream; without
+    // a listener that is an uncaught exception, and it would take the whole
+    // navigation server down with the one language server that died.
+    this.child.stdin!.on("error", () => this.onExit());
+    this.child.on("error", () => this.onExit());
+    this.child.on("exit", () => this.onExit());
+  }
+
+  /** Called once the child is gone, however it went. */
+  onExit(listener: () => void): void;
+  onExit(): void;
+  onExit(listener?: () => void): void {
+    if (listener) {
+      if (this.exited) listener();
+      else this.exitListeners.push(listener);
+      return;
+    }
+    if (this.exited) return;
+    this.exited = true;
+    const error = new Error("language server exited");
+    for (const { reject } of this.pending.values()) reject(error);
+    this.pending.clear();
+    const listeners = this.exitListeners;
+    this.exitListeners = [];
+    for (const fn of listeners) fn();
   }
 
   async initialize(): Promise<void> {
@@ -67,6 +90,7 @@ export class LspClient {
   }
 
   request<T = unknown>(method: string, params: unknown, timeoutMs = 120_000): Promise<T> {
+    if (this.exited) return Promise.reject(new Error("language server exited"));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -125,8 +149,9 @@ export class LspClient {
   }
 
   private send(message: RpcMessage): void {
+    if (this.exited || !this.child.stdin?.writable) return;
     const json = JSON.stringify(message);
-    this.child.stdin!.write(
+    this.child.stdin.write(
       `Content-Length: ${Buffer.byteLength(json, "utf8")}\r\n\r\n${json}`,
     );
   }

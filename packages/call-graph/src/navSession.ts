@@ -8,7 +8,7 @@
 
 import path from "node:path";
 import { hunksForFileRange } from "@deep-review/pr";
-import type { DeclRef, EnclosingDeclaration, IncomingReference, LanguageBackend } from "./backend.js";
+import type { DeclRef, EnclosingDeclaration, IncomingReference, LanguageBackend, ServiceState } from "./backend.js";
 import { Backends } from "./backends.js";
 import { definitionPanelId, renderDefinitionPanel } from "./explorer.js";
 import type { FileIndex } from "./html.js";
@@ -39,6 +39,8 @@ export interface DefinitionAnswer {
 /** Why a click resolved to nothing. */
 export interface DefinitionMiss {
   why: string;
+  /** The service failed rather than answered; asking again may succeed. */
+  transient?: boolean | undefined;
 }
 
 export type DefinitionResult = DefinitionAnswer | DefinitionMiss;
@@ -47,6 +49,13 @@ export interface PanelAnswer {
   id: string;
   name: string;
   html: string;
+}
+
+/** What the page's status pill shows about this PR's language services. */
+export interface NavStatus {
+  services: ServiceState;
+  /** Questions being answered right now. */
+  busy: number;
 }
 
 export interface NavSessionOptions {
@@ -76,6 +85,7 @@ export class NavSession {
   private readonly lookups = new Map<string, Promise<DefinitionResult>>();
   private readonly refs = new Map<DefinitionId, Promise<ReferenceList | null>>();
   private readonly panels = new Map<DefinitionId, Promise<PanelAnswer | null>>();
+  private busy = 0;
 
   constructor(
     private readonly headDir: string,
@@ -103,12 +113,32 @@ export class NavSession {
     }
   }
 
-  /** The definition of the symbol at a position the page rendered. Memoised per position. */
+  /** Where the language services are and how many questions are in flight. Never starts anything. */
+  status(): NavStatus {
+    return { services: this.backends.status(), busy: this.busy };
+  }
+
+  /** Count a question while it is being answered, however it ends. */
+  private track<T>(work: Promise<T>): Promise<T> {
+    this.busy++;
+    return work.finally(() => {
+      this.busy--;
+    });
+  }
+
+  /**
+   * The definition of the symbol at a position the page rendered. Memoised
+   * per position — except a language-service failure, which is forgotten so
+   * the next click asks again once the service is back.
+   */
   definition(file: string, line: number, column: number): Promise<DefinitionResult> {
     const key = `${file}:${line}:${column}`;
     let pending = this.lookups.get(key);
     if (!pending) {
-      pending = this.resolve(file, line, column);
+      pending = this.track(this.resolve(file, line, column)).then((result) => {
+        if ("why" in result && result.transient) this.lookups.delete(key);
+        return result;
+      });
       this.lookups.set(key, pending);
     }
     return pending;
@@ -126,7 +156,7 @@ export class NavSession {
     try {
       def = await backend.definitionAt(ref);
     } catch (e: unknown) {
-      return { why: `language service error (${e instanceof Error ? e.message : String(e)})` };
+      return { why: `language service error (${e instanceof Error ? e.message : String(e)})`, transient: true };
     }
     if (!def) return { why: "no definition" };
     const target = this.targetFor({
@@ -226,21 +256,33 @@ export class NavSession {
   references(id: DefinitionId): Promise<ReferenceList | null> {
     let pending = this.refs.get(id);
     if (!pending) {
-      pending = this.collectReferences(id);
+      // A list gathered while the service was failing is forgotten rather
+      // than served forever: the next ask gathers it again.
+      pending = this.track(this.collectReferences(id)).then((result) => {
+        if (!result) return null;
+        const { partial, ...list } = result;
+        if (partial) this.refs.delete(id);
+        return list;
+      });
       this.refs.set(id, pending);
     }
     return pending;
   }
 
-  private async collectReferences(id: DefinitionId): Promise<ReferenceList | null> {
+  private async collectReferences(id: DefinitionId): Promise<(ReferenceList & { partial?: boolean }) | null> {
     const def = this.defs.get(id);
     if (!def) return null;
     const backend: LanguageBackend | null = this.backends.for(def.file);
     if (!backend) return { kind: "references", sites: [] };
     const ref: DeclRef = { fileName: this.absolute(def.file), line: def.nameLine, column: def.nameColumn };
+    let partial = false;
+    const failed = (): null => {
+      partial = true;
+      return null;
+    };
     const [calls, uses] = await Promise.all([
-      backend.incomingCallsAt(ref).catch(() => null),
-      backend.referencesAt(ref).catch((): IncomingReference[] => []),
+      backend.incomingCallsAt(ref).catch(failed),
+      backend.referencesAt(ref).catch((): IncomingReference[] => failed() ?? []),
     ]);
     const site = (r: IncomingReference): ReferenceSite => ({
       file: toRelative(this.headDir, r.fileName),
@@ -251,14 +293,14 @@ export class NavSession {
       enclosingName: r.enclosing?.name ?? path.basename(r.fileName),
       ...(r.enclosing ? { panelId: this.enclosingPanel(r.enclosing) } : {}),
     });
-    if (!calls) return { kind: "references", sites: uses.map(site) };
+    if (!calls) return { kind: "references", sites: uses.map(site), ...(partial ? { partial } : {}) };
     const at = (r: IncomingReference) => `${r.fileName}:${r.line}:${r.startColumn}`;
     const called = new Set(calls.map(at));
     const sites = [
       ...calls.map(site),
       ...uses.filter((r) => !called.has(at(r))).map((r) => ({ ...site(r), indirect: true as const })),
     ].sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.startColumn - b.startColumn);
-    return { kind: "calls", sites };
+    return { kind: "calls", sites, ...(partial ? { partial } : {}) };
   }
 
   /**
@@ -270,7 +312,12 @@ export class NavSession {
     const id = panelId.startsWith("def:") ? panelId.slice(4) : panelId;
     let pending = this.panels.get(id);
     if (!pending) {
-      pending = this.renderPanel(id);
+      pending = this.track(this.renderPanel(id)).catch((): null => {
+        // The file could not be read from a failing service: forget the
+        // miss so the next ask renders once the service is back.
+        this.panels.delete(id);
+        return null;
+      });
       this.panels.set(id, pending);
     }
     return pending;
@@ -286,7 +333,8 @@ export class NavSession {
       let lines = this.linesByFile.get(def.file);
       if (!lines) {
         const backend = this.backends.for(def.file);
-        lines = (await backend?.fileInfo(def.file).catch(() => null))?.lines;
+        if (!backend) return null;
+        lines = (await backend.fileInfo(def.file))?.lines;
         if (!lines) return null;
         this.linesByFile.set(def.file, lines);
       }

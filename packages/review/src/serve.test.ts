@@ -134,6 +134,31 @@ describe("serveExplorer", () => {
     expect((await fetch(new URL("/pr/a/b/2/panel?id=x", server.url))).status).toBe(404);
   });
 
+  it("tells the page's status pill where things stand, without waking anything", async () => {
+    // A fresh server: built, but nobody has asked a question yet.
+    const fresh = await serveExplorer({ headDir, input, sessionGraceMs: 60 });
+    try {
+      const at = (route: string) => fetch(new URL(route.replace(/^\//, ""), fresh.pageUrl));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const idle: any = await (await at("/status")).json();
+      expect(idle).toEqual({ ok: true, stopping: false, pr: "ready", services: "idle", busy: 0 });
+      // Looking is not asking: the language services stay down.
+      expect(fresh.registry.get("a/b#1")?.live).toBe(false);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const first: any = await (await at("/definition?file=use.ts&line=4&col=9")).json();
+      expect(first.name).toBe("helper");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const warm: any = await (await at("/status")).json();
+      expect([warm.services, warm.busy]).toEqual(["ready", 0]);
+
+      // A PR the server does not hold is a 404, which the pill reads as "not loaded".
+      expect((await fetch(new URL("/pr/a/b/2/status", fresh.url))).status).toBe(404);
+    } finally {
+      await fresh.close();
+    }
+  }, 30_000);
+
   it("lets a page's language services go when it leaves, without stopping", async () => {
     // Warm the session, then say goodbye.
     await json("/definition?file=use.ts&line=4&col=9");

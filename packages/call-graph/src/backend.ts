@@ -66,8 +66,19 @@ export interface IncomingReference {
  * A language service the analysis can drive: the in-process TypeScript
  * service, or any LSP server that supports call hierarchy.
  */
+/**
+ * Where a language service is in its life: not started yet (`idle`), spawning
+ * and initializing (`starting`), answering (`ready`), or gone — the process
+ * exited or never came up (`failed`). A failed service is restarted by the
+ * next question asked of it, so `failed` is what a reader sees between the
+ * crash and the next click, not a terminal state.
+ */
+export type ServiceState = "idle" | "starting" | "ready" | "failed";
+
 export interface LanguageBackend {
   readonly rootDir: string;
+  /** Where this service is right now; never starts it. */
+  status(): ServiceState;
   /** Locate a function declaration by name; prefer one in `preferred` files. */
   findFunction(name: string, preferred: ReadonlySet<string>): Promise<DeclRef | null>;
   /** Callers and callees of the function declared at `decl`. */

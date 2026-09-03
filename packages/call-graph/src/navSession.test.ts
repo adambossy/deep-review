@@ -148,6 +148,21 @@ describe("NavSession.definition", () => {
   }, 30_000);
 });
 
+describe("NavSession.status", () => {
+  it("reports idle services before any question and ready after, never starting them itself", async () => {
+    const quiet = new NavSession(dir, input);
+    try {
+      expect(quiet.status()).toEqual({ services: "idle", busy: 0 });
+      const pending = quiet.definition("use.ts", 4, 16);
+      expect(quiet.status().busy).toBe(1);
+      await pending;
+      expect(quiet.status()).toEqual({ services: "ready", busy: 0 });
+    } finally {
+      quiet.dispose();
+    }
+  }, 30_000);
+});
+
 describe("NavSession.references", () => {
   it("lists every caller of a function with the panel to walk up into", async () => {
     const helper = await hit("use.ts", 4, 16);

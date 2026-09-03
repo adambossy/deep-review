@@ -159,10 +159,13 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
   });
   let server: Server;
   let stopped = false;
+  /** `/quit` was received; the server is about to go. Pages polling `/status` see it first. */
+  let stopping = false;
 
   const shutdown = async (): Promise<void> => {
     if (stopped) return closed;
     stopped = true;
+    stopping = true;
     registry.dispose();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     server.closeAllConnections();
@@ -209,6 +212,18 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
         else sendJson(res, 200, panel);
         return;
       }
+      // The page's status pill asks this: is the server here, is the PR
+      // built, are its language services up, is anything being answered.
+      // Not a use — it never starts a session or counts as activity.
+      case "/status": {
+        const status = registry.status(key);
+        if (!status) {
+          sendJson(res, 404, { why: "no such PR on this server" });
+          return;
+        }
+        sendJson(res, 200, { ok: true, stopping, ...status });
+        return;
+      }
       // The page says hello as it loads — after a reload, that is what
       // cancels the goodbye the previous page sent — and browsers ask for a
       // favicon unprompted; an empty answer keeps the console clean.
@@ -243,6 +258,7 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
 
     // Server-wide routes first; a PR can never be named `_`.
     if (method === "POST" && path === "/quit") {
+      stopping = true;
       res.writeHead(204, NO_STORE);
       res.end();
       log("asked to stop.");
@@ -252,6 +268,7 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
     if (method === "GET" && path === "/health") {
       sendJson(res, 200, {
         ok: true,
+        stopping,
         version: VERSION,
         pid: process.pid,
         prs: registry.count(),

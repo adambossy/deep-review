@@ -10,7 +10,7 @@
  * a session is fully derivable from what was built and cheap to recreate.
  */
 
-import { NavSession, type SliceExplorerInput } from "@deep-review/call-graph";
+import { NavSession, type NavStatus, type SliceExplorerInput } from "@deep-review/call-graph";
 import { prUrl, type PrRef } from "@deep-review/pr";
 
 export type { PrRef } from "@deep-review/pr";
@@ -93,6 +93,11 @@ export interface PrView extends PrRef {
   log: string[];
   /** Whether language services are up for this PR right now. */
   live: boolean;
+}
+
+/** What a page's status pill is told about its PR: how far the build is, and how the language services are. */
+export interface PrStatus extends NavStatus {
+  pr: PrState;
 }
 
 /** What a build produced: enough to render the page and answer about symbols. */
@@ -267,6 +272,18 @@ export class PrRegistry {
       entry.session.warm();
     }
     return entry.session;
+  }
+
+  /**
+   * Where this PR stands, for the page's status pill. A look, not a use: it
+   * neither starts language services nor counts as activity, so a page
+   * asking every few seconds does not keep an idle session alive forever.
+   */
+  status(key: PrKey): PrStatus | null {
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    const nav = entry.session?.status() ?? { services: "idle" as const, busy: 0 };
+    return { pr: entry.state, ...nav };
   }
 
   /** The page for this PR loaded: it is here, so nothing pending applies. */

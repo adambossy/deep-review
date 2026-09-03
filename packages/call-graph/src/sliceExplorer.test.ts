@@ -172,6 +172,12 @@ describe("renderSliceExplorerHtml", () => {
     expect(html).toContain('document.querySelector(".panel-defs " + sel)');
   });
 
+  it("carries the status pill, wired to the page's navigation mount", () => {
+    expect(html).toContain(".nav-pill {");
+    expect(html).toContain("window.NAV_STATUS = {");
+    expect(html).toContain('navUrl("/status")');
+  });
+
   it("emits one render-data blob for the whole page", () => {
     expect([...html.matchAll(/id="render-data"/g)]).toHaveLength(1);
   });

@@ -1,6 +1,7 @@
 import { renderCodePane } from "./codePane.js";
 import { fileDiffRows, markIntraLine, segmentRows, type DiffRow } from "./diffView.js";
 import { escapeHtml as esc, languageOf, type Mark } from "./highlight.js";
+import { STATUS_PILL_CSS, STATUS_PILL_JS } from "./statusPill.js";
 import {
   buildFileIndex,
   dataScripts,
@@ -361,24 +362,36 @@ function navUrl(path) {
   if (base.charAt(base.length - 1) === "/") base = base.slice(0, base.length - 1);
   return base + path;
 }
+/* Tell the status pill (when the page has one) a question left, and how it
+   came back. A 404 is an answer — "no panel", "unknown definition" — not a
+   hiccup; anything else short of ok is worth looking into. */
+function navBegan() { if (window.NAV_STATUS) window.NAV_STATUS.begin(); }
+function navEnded(ok) { if (window.NAV_STATUS) window.NAV_STATUS.end(ok); }
 /* One round trip to the navigation server; null when there is none. */
 function navFetch(url) {
   if (location.protocol !== "http:" && location.protocol !== "https:") return Promise.resolve(null);
+  navBegan();
   return fetch(navUrl(url), { cache: "no-store" })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .catch(function () { return null; });
+    .then(function (r) { navEnded(r.ok || r.status === 404); return r.ok ? r.json() : null; })
+    .catch(function () { navEnded(false); return null; });
 }
 /* Like navFetch, but tells the caller whether the round trip actually
    reached the server: a hiccup (dropped connection, bad status) is not the
    same as the server answering "no definition here", and a caller that
    caches its result must not confuse the two — a hiccup should be retried,
-   not remembered as a permanent miss. */
+   not remembered as a permanent miss. The server flags a miss it owes to a
+   failing language service as transient; that counts as a hiccup too. */
 function navFetchTried(url) {
   if (location.protocol !== "http:" && location.protocol !== "https:") return Promise.resolve({ ok: true, data: null });
+  navBegan();
   return fetch(navUrl(url), { cache: "no-store" })
     .then(function (r) { if (!r.ok) throw new Error("bad status"); return r.json(); })
-    .then(function (data) { return { ok: true, data: data }; })
-    .catch(function () { return { ok: false, data: null }; });
+    .then(function (data) {
+      var transient = Boolean(data && data.transient);
+      navEnded(!transient);
+      return { ok: !transient, data: data };
+    })
+    .catch(function () { navEnded(false); return { ok: false, data: null }; });
 }
 /* Let the server go when the page does. A reload fires this too — and the
    browser fetches the new page *before* the old one hears it is leaving, so
@@ -910,7 +923,7 @@ export function renderCallPathExplorerHtml(result: CallPathResult): string {
   return `<!doctype html>
 <html lang="en">
 <head>
-${pageHead(result, EXPLORER_CSS)}
+${pageHead(result, EXPLORER_CSS + STATUS_PILL_CSS)}
 </head>
 <body class="explorer">
 ${pageHeader(result)}
@@ -930,6 +943,7 @@ ${dataScripts(result, index)}
 ${GAP_JS}
 ${WRAP_JS}
 ${SCOPE_JS}
+${STATUS_PILL_JS}
 ${EXPLORER_NAV_JS}
 initExplorer(document.body, JSON.parse(document.getElementById("node-names").textContent));
 </script>

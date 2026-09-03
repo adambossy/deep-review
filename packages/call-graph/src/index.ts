@@ -21,8 +21,10 @@ export {
   type DefinitionMiss,
   type DefinitionResult,
   type NavSessionOptions,
+  type NavStatus,
   type PanelAnswer,
 } from "./navSession.js";
+export type { ServiceState } from "./backend.js";
 export {
   explorerFileIndex,
   renderSliceExplorerHtml,
