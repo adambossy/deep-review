@@ -22,6 +22,9 @@ export interface DiffIndex {
   byId: Map<HunkId, IndexedHunk>;
   /** Total addition + deletion lines across the diff. */
   changedLineCount: number;
+  /** The same total, split the way GitHub reports it. */
+  additions: number;
+  deletions: number;
 }
 
 function isChanged(line: string): boolean {
@@ -71,10 +74,21 @@ export function indexDiff(files: FileDiff[]): DiffIndex {
     }
   }
 
+  let additions = 0;
+  let deletions = 0;
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.startsWith("+")) additions++;
+      else if (line.startsWith("-")) deletions++;
+    }
+  }
+
   return {
     hunks,
     byId: new Map(hunks.map((h) => [h.id, h])),
-    changedLineCount: hunks.reduce((n, h) => n + h.changedLines.length, 0),
+    changedLineCount: additions + deletions,
+    additions,
+    deletions,
   };
 }
 

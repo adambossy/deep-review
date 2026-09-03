@@ -71,6 +71,16 @@ describe("buildSliceExplorerInput", () => {
     expect(fragment.hunkHeader).toBe("@@ -0,0 +1,4 @@");
   });
 
+  it("carries the fragment's kind through, and leaves it off when the report has none", async () => {
+    const classified = report(2, 3);
+    classified.slices[0]!.fragments[0]!.kind = "test";
+    const input = await buildSliceExplorerInput({ report: classified, index });
+    expect(input.slices[0]!.fragments[0]!.kind).toBe("test");
+
+    const legacy = await buildSliceExplorerInput({ report: report(2, 3), index });
+    expect(legacy.slices[0]!.fragments[0]!).not.toHaveProperty("kind");
+  });
+
   it("leaves a slice without a target ungraphed rather than guessing", async () => {
     const input = await buildSliceExplorerInput({ report: report(1, 4), index });
     expect(input.slices[0]!.graph).toBeUndefined();

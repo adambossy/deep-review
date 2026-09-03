@@ -92,6 +92,16 @@ Two rules govern this, and both are checked mechanically:
 
 Context lines (the ones with a leading space) do not have to be covered, but a fragment may span them freely when the run of changes it describes is interrupted by one.
 
+## Classifying fragments
+
+Every fragment carries a \`kind\`. The kinds split the PR's line count into three numbers a reviewer can trust, so classify by what the lines *are*, not by which slice they sit in:
+
+- \`core\`: the behavior the PR exists to change, and the supporting logic it needs to work. The lines a reviewer has to actually read.
+- \`boilerplate\`: mechanical fallout a reviewer skims — import and export updates, re-exports, renames, wiring and registration, config, lockfiles, generated files, formatting-only changes, type plumbing that carries no logic.
+- \`test\`: test code that exercises \`core\` changes. A test that only exercises boilerplate — a snapshot of a generated file, an assertion that a re-export exists — is \`boilerplate\`, not \`test\`.
+
+When one contiguous run mixes kinds and the seam between them is clean, split it into separate fragments rather than picking a dominant kind. When it is not clean, use the kind most of the run's changed lines are.
+
 ## Doing the work
 
 Read the description and the tickets first: they tell you what the PR is *for*, which is what the ordering depends on. Then read the diff.
@@ -102,7 +112,7 @@ Where the diff alone does not tell you whether something is central or incidenta
 
 Rank by this test: if this slice were reverted and everything else kept, how much of the PR's stated purpose would be lost? The change that defeats the PR's purpose entirely goes first.
 
-That usually puts the new behavior or the core fix at the top; the supporting changes it needs to work below it; then tests, then the mechanical fallout — renames, import updates, formatting, generated files, lockfiles — at the bottom. Follow the actual PR rather than the template: in a refactor, the mechanical change *is* the point and belongs first.
+That usually puts the new behavior or the core fix at the top; the supporting changes it needs to work below it; then tests, then the mechanical fallout — the \`boilerplate\` kind — at the bottom. Follow the actual PR rather than the template: in a refactor, the mechanical change *is* the point and belongs first.
 
 ## Slice size
 

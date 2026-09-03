@@ -395,3 +395,74 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(debug).toContain("body.debug-marks [data-why]:hover::after");
   });
 });
+
+describe("size breakdown", () => {
+  const core = { ...fragment, kind: "core" as const };
+  const test = { ...farFragment, kind: "test" as const };
+  const boilerplate = { ...fragment, id: "a.ts#0@1-3-b", kind: "boilerplate" as const };
+
+  const classified = renderSliceExplorerHtml({
+    prUrl: "https://github.com/a/b/pull/1",
+    prTitle: "A PR",
+    repo: "a/b",
+    number: 1,
+    overview: "does a thing",
+    files,
+    slices: [
+      { id: "slice-1", title: "First", summary: "s", rationale: "r", fragments: [core, test] },
+      { id: "slice-2", title: "Second", summary: "s2", rationale: "r2", fragments: [boilerplate] },
+    ],
+  });
+  const side = /<aside class="side">[\s\S]*?<\/aside>/.exec(classified)![0];
+  const panels = [...classified.matchAll(/<article class="panel slice-panel"[\s\S]*?<\/article>/g)].map(
+    (m) => m[0],
+  );
+
+  it("replaces the fragment and line badges with per-kind +/− counts", () => {
+    const panel = panels[0]!;
+    expect(panel).not.toMatch(/\d+ fragments?<\/span>/);
+    expect(panel).not.toMatch(/\d+ lines<\/span>/);
+    expect(panel).toContain(
+      '<span class="kind">core</span> <span class="plus">+2</span><span class="minus">−1</span>',
+    );
+    expect(panel).toContain(
+      '<span class="kind">tests</span> <span class="plus">+1</span><span class="minus">−0</span>',
+    );
+    expect(panel).toContain('<span class="badge">1 file</span>');
+  });
+
+  it("draws a bar segment per kind, weighted by changed lines, and skips empty kinds", () => {
+    const panel = panels[0]!;
+    expect(panel).toContain('<span class="seg core" style="flex:3"></span>');
+    expect(panel).toContain('<span class="seg test" style="flex:1"></span>');
+    expect(panel).not.toContain("boilerplate");
+  });
+
+  it("sums every slice into the PR's breakdown under its title", () => {
+    expect(side).toContain('<div class="pr-title">A PR</div>');
+    expect(side).toContain(
+      '<span class="kind">core</span> <span class="plus">+2</span><span class="minus">−1</span>',
+    );
+    expect(side).toContain(
+      '<span class="kind">tests</span> <span class="plus">+1</span><span class="minus">−0</span>',
+    );
+    expect(side).toContain(
+      '<span class="kind">boilerplate</span> <span class="plus">+2</span><span class="minus">−1</span>',
+    );
+  });
+
+  it("falls back to one unsplit total when any fragment is unclassified", () => {
+    // The shared fixture's fragments carry no kind: an older report.
+    const html = render();
+    const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
+    expect(panel).toContain('<span class="seg unclassified" style="flex:4"></span>');
+    expect(panel).toContain(
+      '<span class="delta-kind"><span class="plus">+3</span><span class="minus">−1</span></span>',
+    );
+    expect(panel).not.toContain('<span class="kind">');
+    const oldSide = /<aside class="side">[\s\S]*?<\/aside>/.exec(html)![0];
+    expect(oldSide).toContain(
+      '<span class="delta-kind"><span class="plus">+5</span><span class="minus">−2</span></span>',
+    );
+  });
+});

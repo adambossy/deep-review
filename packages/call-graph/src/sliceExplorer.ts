@@ -8,6 +8,9 @@ import { buildFileIndex, CSS, GAP_JS, renderDataBlob, SCOPE_JS, WRAP_JS, type Fi
 export { fileBlockRanges } from "./diffView.js";
 import type { CallPathResult, EmbeddedFile, FileDiff } from "./types.js";
 
+/** Mirrors the slicer's `FragmentKind`; see the note on SliceFragmentInput. */
+export type FragmentKind = "core" | "test" | "boilerplate";
+
 /**
  * One fragment of a slice: a contiguous run of diff lines. Given
  * structurally rather than imported from the slicer package, so the two
@@ -17,6 +20,12 @@ export interface SliceFragmentInput {
   id: string;
   file: string;
   summary: string;
+  /**
+   * How the slicer classed this run of lines, so a slice's size can be read
+   * as core / tests / boilerplate rather than one number. Absent on reports
+   * written before fragments were classified.
+   */
+  kind?: FragmentKind | undefined;
   /** The `@@ ... @@` header of the hunk this fragment sits in. */
   hunkHeader: string;
   /** Raw diff lines, each still prefixed with " ", "+", "-", or "\\". */
@@ -112,6 +121,78 @@ export function explorerFileIndex(input: SliceExplorerInput): FileIndex {
 }
 
 /** The slice's own panel: everything the PR changed for this one purpose. */
+interface LineDelta {
+  additions: number;
+  deletions: number;
+}
+
+const KINDS: readonly FragmentKind[] = ["core", "test", "boilerplate"];
+const KIND_LABEL: Record<FragmentKind, string> = {
+  core: "core",
+  test: "tests",
+  boilerplate: "boilerplate",
+};
+
+/**
+ * A set of fragments' size as three numbers, or as one when any fragment is
+ * unclassified — a partial split would quietly stop adding up to the total.
+ */
+function sizeOf(fragments: readonly SliceFragmentInput[]): {
+  byKind: Record<FragmentKind, LineDelta> | null;
+  total: LineDelta;
+} {
+  const total: LineDelta = { additions: 0, deletions: 0 };
+  const byKind: Record<FragmentKind, LineDelta> = {
+    core: { additions: 0, deletions: 0 },
+    test: { additions: 0, deletions: 0 },
+    boilerplate: { additions: 0, deletions: 0 },
+  };
+  let classified = true;
+  for (const fragment of fragments) {
+    const into = fragment.kind ? byKind[fragment.kind] : null;
+    if (!into) classified = false;
+    for (const line of fragment.lines) {
+      if (line.startsWith("+")) {
+        total.additions++;
+        if (into) into.additions++;
+      } else if (line.startsWith("-")) {
+        total.deletions++;
+        if (into) into.deletions++;
+      }
+    }
+  }
+  return { byKind: classified ? byKind : null, total };
+}
+
+function deltaHtml(delta: LineDelta): string {
+  return `<span class="plus">+${delta.additions}</span><span class="minus">−${delta.deletions}</span>`;
+}
+
+/**
+ * A slice's or the PR's size: a thin bar proportioned by kind, then the
+ * numbers. Kinds with no lines are left out so a pure-test slice reads as one
+ * entry, and an unclassified set reads as a single neutral total.
+ */
+function renderDeltaBreakdown(fragments: readonly SliceFragmentInput[]): string {
+  const { byKind, total } = sizeOf(fragments);
+  const weight = (d: LineDelta) => d.additions + d.deletions;
+  if (!byKind) {
+    return `<div class="delta">
+      <div class="delta-bar"><span class="seg unclassified" style="flex:${weight(total)}"></span></div>
+      <div class="delta-text"><span class="delta-kind">${deltaHtml(total)}</span></div>
+    </div>`;
+  }
+  const present = KINDS.filter((k) => weight(byKind[k]) > 0);
+  return `<div class="delta">
+    <div class="delta-bar">${present
+      .map((k) => `<span class="seg ${k}" style="flex:${weight(byKind[k])}"></span>`)
+      .join("")}</div>
+    <div class="delta-text">${present
+      .map((k) => `<span class="delta-kind ${k}"><span class="kind">${KIND_LABEL[k]}</span> ${deltaHtml(byKind[k])}</span>`)
+      .join('<span class="dot">·</span>')}</div>
+  </div>`;
+}
+
 function renderSlicePanel(
   slice: SliceInput,
   rank: number,
@@ -127,7 +208,6 @@ function renderSlicePanel(
     if (group) group.push(fragment);
     else byFile.set(fragment.file, [fragment]);
   }
-  const lines = slice.fragments.reduce((n, f) => n + f.lines.length, 0);
   const files = new Set(slice.fragments.map((f) => f.file));
 
   return `<article class="panel slice-panel" data-node="__slice__">
@@ -136,8 +216,7 @@ function renderSlicePanel(
     <p class="slice-summary">${esc(slice.summary)}</p>
     <p class="slice-rationale">${esc(slice.rationale)}</p>
     <div class="slice-badges">
-      <span class="badge">${slice.fragments.length} fragment${slice.fragments.length === 1 ? "" : "s"}</span>
-      <span class="badge">${lines} lines</span>
+      ${renderDeltaBreakdown(slice.fragments)}
       <span class="badge">${files.size} file${files.size === 1 ? "" : "s"}</span>
       ${slice.target ? `<span class="badge target">→ ${esc(slice.target.name)}</span>` : ""}
       ${slice.graph ? "" : '<span class="badge">no call graph</span>'}
@@ -254,6 +333,30 @@ const SLICE_CSS = `
   .badge.target { background: var(--accent-soft); color: var(--accent); border-color: transparent;
                   font-family: var(--mono); }
   .hint { font-size: 0.7rem; color: var(--ink-faint); margin-left: 0.3rem; }
+
+  /* Size as three numbers: a bar proportioned by kind, then the counts. The
+     same block sits in each slice's header and under the PR title. */
+  .delta { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+  .slice-badges .delta { margin-right: 0.3rem; }
+  .side .delta { margin-top: 0.55rem; }
+  .delta-bar { display: flex; height: 4px; border-radius: 2px; overflow: hidden;
+               background: var(--panel-2); min-width: 6rem; }
+  .delta-bar .seg { display: block; height: 100%; }
+  .delta-bar .seg.core { background: var(--accent); }
+  .delta-bar .seg.test { background: var(--tok-num); }
+  .delta-bar .seg.boilerplate { background: var(--ink-faint); }
+  .delta-bar .seg.unclassified { background: var(--ink-faint); }
+  .delta-text { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline;
+                font-size: 0.68rem; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+  .delta-text .kind { font-weight: 600; }
+  .delta-text .kind::before { content: ""; display: inline-block; width: 6px; height: 6px;
+                              border-radius: 50%; margin-right: 0.3rem; vertical-align: 1px; }
+  .delta-kind.core .kind::before { background: var(--accent); }
+  .delta-kind.test .kind::before { background: var(--tok-num); }
+  .delta-kind.boilerplate .kind::before { background: var(--ink-faint); }
+  .delta-text .plus { color: var(--add-edge); }
+  .delta-text .minus { color: var(--del-edge); margin-left: 0.25rem; }
+  .delta-text .dot { color: var(--ink-faint); }
 
   .slice-panel .code-pane { margin: 0 0 1.1rem; }
 
@@ -652,6 +755,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   <div>
     <a class="pr" href="${esc(input.prUrl)}">${esc(input.repo)}#${input.number}</a>
     <div class="pr-title">${esc(input.prTitle)}</div>
+    ${renderDeltaBreakdown(input.slices.flatMap((s) => s.fragments))}
   </div>
   <nav>
     <div class="slice-nav">

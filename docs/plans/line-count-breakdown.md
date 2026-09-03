@@ -65,8 +65,8 @@ Pure functions, unit-tested:
 export interface LineDelta { additions: number; deletions: number }
 export type KindTotals = Record<FragmentKind, LineDelta>;
 export function fragmentDelta(fragment, index): LineDelta   // count "+"/"-" prefixes in hunk.lines[start-1..end)
-export function sliceTotals(slice, index): KindTotals | LineDelta  // LineDelta when any fragment lacks kind
-export function reportTotals(report, index): KindTotals | LineDelta
+export function fragmentTotals(fragments, index): SizeTotals  // unsplit when any fragment lacks kind
+export function reportTotals(report, index): SizeTotals  // throws when the sum drifts from the diff
 ```
 
 Extend `DiffIndex` with `additions`/`deletions` next to `changedLineCount`

@@ -29,5 +29,6 @@ export {
   type SliceExplorerInput,
   type SliceInput,
   type SliceFragmentInput,
+  type FragmentKind,
 } from "./sliceExplorer.js";
 export type * from "./types.js";

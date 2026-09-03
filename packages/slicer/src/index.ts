@@ -26,6 +26,16 @@ export {
 } from "./annotate.js";
 export { validateSlices, type ValidationResult } from "./validate.js";
 export {
+  countDelta,
+  fragmentDelta,
+  fragmentTotals,
+  reportTotals,
+  type KindTotals,
+  type LineDelta,
+  type SizeTotals,
+} from "./stats.js";
+export { FRAGMENT_KINDS } from "./types.js";
+export {
   agentOutputSchema,
   agentSliceSchema,
   agentFragmentSchema,

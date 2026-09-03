@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { indexDiff } from "./annotate.js";
 import type { AgentOutput } from "./schema.js";
 import { validateSlices } from "./validate.js";
+import { agentOutputSchema, sliceReportSchema } from "./schema.js";
 
 const DIFF = `diff --git a/src/new.ts b/src/new.ts
 --- /dev/null
@@ -29,6 +30,7 @@ const output = (
       startLine,
       endLine,
       summary: "f",
+      kind: "core" as const,
     })),
   })),
 });
@@ -95,7 +97,7 @@ describe("validateSlices", () => {
             summary: "s",
             rationale: "r",
             fragments: [
-              { hunkId: "src/gone.ts#0", startLine: 1, endLine: 1, summary: "f" },
+              { hunkId: "src/gone.ts#0", startLine: 1, endLine: 1, summary: "f", kind: "core" },
             ],
           },
         ],
@@ -105,5 +107,44 @@ describe("validateSlices", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.errors[0]).toContain('references hunk "src/gone.ts#0"');
+  });
+});
+
+describe("fragment kind", () => {
+  it("carries the agent's kind onto the persisted fragment", () => {
+    const result = validateSlices(output({ title: "All", fragments: [[1, 4]] }), index);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.slices[0]!.fragments[0]!.kind).toBe("core");
+  });
+
+  it("is required in the agent's output", () => {
+    const raw = output({ title: "All", fragments: [[1, 4]] }) as unknown as {
+      slices: { fragments: Record<string, unknown>[] }[];
+    };
+    delete raw.slices[0]!.fragments[0]!.kind;
+    expect(agentOutputSchema.safeParse(raw).success).toBe(false);
+  });
+
+  it("is optional in a saved report, so older reports still load", () => {
+    const saved = {
+      pr: {
+        url: "u", owner: "a", repo: "b", number: 1, title: "t",
+        baseSha: "b", mergeBaseSha: "m", headSha: "h",
+      },
+      tickets: [],
+      overview: "o",
+      slices: [
+        {
+          id: "slice-1", title: "s", summary: "s", rationale: "r",
+          fragments: [
+            { id: "src/new.ts#0@1-4", hunkId: "src/new.ts#0", file: "src/new.ts", startLine: 1, endLine: 4, summary: "f" },
+          ],
+        },
+      ],
+      model: "m",
+      generatedAt: "now",
+    };
+    expect(sliceReportSchema.safeParse(saved).success).toBe(true);
   });
 });
