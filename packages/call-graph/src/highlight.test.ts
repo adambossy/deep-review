@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { identifiersOf, renderLine, tokenizeLines } from "./highlight.js";
+import { identifierMarks, identifiersOf, renderLine, tokenizeLines } from "./highlight.js";
 
 function classesOf(lines: string[]): string[][] {
   return tokenizeLines(lines).map((tokens) => tokens.map((t) => t.cls));
@@ -91,5 +91,33 @@ describe("renderLine", () => {
       { start: 9, end: 12, cls: "csite", attrs: 'data-callee="3"' },
     ]);
     expect(html).toContain('<span class="tok-fn csite" data-callee="3">zap</span>');
+  });
+});
+
+describe("identifierMarks", () => {
+  const line = "                image=_agent_image(),";
+  const [ids] = identifiersOf([line], "py");
+  const [tokens] = tokenizeLines([line], "py");
+
+  it("yields to a mark that names the span, such as a call site", () => {
+    const csite = { start: 22, end: 34, cls: "csite" };
+    const marks = identifierMarks(ids!, [csite]);
+    expect(marks.map((m) => line.slice(m.start, m.end))).toEqual(["image"]);
+  });
+
+  it("still marks an identifier under an intra-line diff highlight", () => {
+    // The changed phrase of a modified line: `_agent_image()` was added.
+    const highlight = { start: 22, end: 36, cls: "diff-add-inner" };
+    const marks = identifierMarks(ids!, [highlight]);
+    expect(marks.map((m) => line.slice(m.start, m.end))).toEqual(["image", "_agent_image"]);
+    const html = renderLine(line, tokens!, [highlight, ...marks]);
+    expect(html).toContain('<span class="tok-fn diff-add-inner id">_agent_image</span>');
+    expect(html).toContain('<span class="diff-add-inner">()</span>');
+  });
+
+  it("treats the deletion highlight the same way", () => {
+    const highlight = { start: 22, end: 27, cls: "diff-del-inner" };
+    const marks = identifierMarks(ids!, [highlight]);
+    expect(marks.map((m) => m.cls)).toEqual(["id", "id"]);
   });
 });

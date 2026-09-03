@@ -213,18 +213,29 @@ export function identifiersOf(lines: readonly string[], lang: Language = "ts"): 
 }
 
 /**
+ * Marks that only colour a span — the changed phrase of a modified line —
+ * without saying what the name under them is. An identifier they cover still
+ * needs its own `.id`, or the changed names on a line, the ones a reader most
+ * wants to follow, would be the only ones that cannot be clicked.
+ */
+const COSMETIC_MARKS = new Set(["diff-add-inner", "diff-del-inner"]);
+
+/**
  * A bare `.id` mark over every identifier no other mark covers — a marked
  * span (a call mark, the declared name) already says what it is. Identifier
  * spans are how the page asks the navigation server about a name, so they
- * belong to every rendering of a line; the marks vary per pane.
+ * belong to every rendering of a line; the marks vary per pane. Cosmetic
+ * marks do not count as covering: an identifier under a diff highlight is
+ * still asked about.
  */
 export function identifierMarks(
   ids: readonly IdentifierToken[],
   marks: readonly Mark[],
   debug = false,
 ): Mark[] {
+  const naming = marks.filter((m) => !COSMETIC_MARKS.has(m.cls));
   return ids
-    .filter((id) => !marks.some((m) => m.start < id.end && id.start < m.end))
+    .filter((id) => !naming.some((m) => m.start < id.end && id.start < m.end))
     .map((id) => ({ start: id.start, end: id.end, cls: "id", ...(debug ? { why: "id · not asked yet" } : {}) }));
 }
 
