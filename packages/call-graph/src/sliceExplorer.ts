@@ -191,7 +191,7 @@ export function renderSizeBreakdown({ byKind, total }: SizeBreakdown): string {
       .join("")}</div>
     <div class="delta-text">${present
       .map((k) => `<span class="delta-kind ${k}"><span class="kind">${KIND_LABEL[k]}</span> ${deltaHtml(byKind[k])}</span>`)
-      .join('<span class="dot">·</span>')}</div>
+      .join('<span class="delta-sep">·</span>')}</div>
   </div>`;
 }
 
@@ -265,7 +265,7 @@ export const SIZE_CSS = `
   .delta-kind.boilerplate .kind::before { background: var(--ink-faint); }
   .delta-text .plus { color: var(--add-edge); }
   .delta-text .minus { color: var(--del-edge); margin-left: 0.25rem; }
-  .delta-text .dot { color: var(--ink-faint); }
+  .delta-text .delta-sep { color: var(--ink-faint); }
 `;
 
 const SLICE_CSS = `
