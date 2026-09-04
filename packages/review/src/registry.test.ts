@@ -120,6 +120,47 @@ describe("PrRegistry", () => {
     registry.dispose();
   });
 
+  it("sizes a built PR from its fragments, split by kind", async () => {
+    const registry = new PrRegistry({
+      build: () => {
+        const b = built(1, "/pr/a/b/1/");
+        const fragment = {
+          id: "f",
+          file: "a.ts",
+          summary: "s",
+          hunkHeader: "@@",
+          newLineNumbers: [1],
+          headStart: 1,
+          headEnd: 1,
+        };
+        b.input.slices = [
+          {
+            id: "slice-1",
+            title: "t",
+            summary: "s",
+            rationale: "r",
+            fragments: [
+              { ...fragment, kind: "core", lines: ["+a", "-b"] },
+              { ...fragment, kind: "test", lines: ["+c"] },
+            ],
+          },
+        ];
+        return Promise.resolve(b);
+      },
+    });
+    registry.add(ref(1));
+    await registry.settled();
+    expect(registry.get("a/b#1")!.size).toEqual({
+      byKind: {
+        core: { additions: 1, deletions: 1 },
+        test: { additions: 1, deletions: 0 },
+        boilerplate: { additions: 0, deletions: 0 },
+      },
+      total: { additions: 2, deletions: 1 },
+    });
+    registry.dispose();
+  });
+
   it("drops a removed PR, even one still queued", async () => {
     const { build, pending } = manualBuild();
     const registry = new PrRegistry({ build, concurrency: 1 });

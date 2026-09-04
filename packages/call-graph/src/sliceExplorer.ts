@@ -120,10 +120,19 @@ export function explorerFileIndex(input: SliceExplorerInput): FileIndex {
   });
 }
 
-/** The slice's own panel: everything the PR changed for this one purpose. */
-interface LineDelta {
+export interface LineDelta {
   additions: number;
   deletions: number;
+}
+
+/**
+ * A set of fragments' size: the total, and the same lines split by kind when
+ * every fragment was classified. `byKind` is null otherwise — a partial split
+ * would quietly stop adding up to the total.
+ */
+export interface SizeBreakdown {
+  byKind: Record<FragmentKind, LineDelta> | null;
+  total: LineDelta;
 }
 
 const KINDS: readonly FragmentKind[] = ["core", "test", "boilerplate"];
@@ -133,14 +142,7 @@ const KIND_LABEL: Record<FragmentKind, string> = {
   boilerplate: "boilerplate",
 };
 
-/**
- * A set of fragments' size as three numbers, or as one when any fragment is
- * unclassified — a partial split would quietly stop adding up to the total.
- */
-function sizeOf(fragments: readonly SliceFragmentInput[]): {
-  byKind: Record<FragmentKind, LineDelta> | null;
-  total: LineDelta;
-} {
+export function fragmentSize(fragments: readonly SliceFragmentInput[]): SizeBreakdown {
   const total: LineDelta = { additions: 0, deletions: 0 };
   const byKind: Record<FragmentKind, LineDelta> = {
     core: { additions: 0, deletions: 0 },
@@ -171,10 +173,10 @@ function deltaHtml(delta: LineDelta): string {
 /**
  * A slice's or the PR's size: a thin bar proportioned by kind, then the
  * numbers. Kinds with no lines are left out so a pure-test slice reads as one
- * entry, and an unclassified set reads as a single neutral total.
+ * entry, and an unclassified set reads as a single neutral total. Needs
+ * SIZE_CSS on the page.
  */
-function renderDeltaBreakdown(fragments: readonly SliceFragmentInput[]): string {
-  const { byKind, total } = sizeOf(fragments);
+export function renderSizeBreakdown({ byKind, total }: SizeBreakdown): string {
   const weight = (d: LineDelta) => d.additions + d.deletions;
   if (!byKind) {
     return `<div class="delta">
@@ -193,6 +195,7 @@ function renderDeltaBreakdown(fragments: readonly SliceFragmentInput[]): string 
   </div>`;
 }
 
+/** The slice's own panel: everything the PR changed for this one purpose. */
 function renderSlicePanel(
   slice: SliceInput,
   rank: number,
@@ -216,7 +219,7 @@ function renderSlicePanel(
     <p class="slice-summary">${esc(slice.summary)}</p>
     <p class="slice-rationale">${esc(slice.rationale)}</p>
     <div class="slice-badges">
-      ${renderDeltaBreakdown(slice.fragments)}
+      ${renderSizeBreakdown(fragmentSize(slice.fragments))}
       <span class="badge">${files.size} file${files.size === 1 ? "" : "s"}</span>
       ${slice.target ? `<span class="badge target">→ ${esc(slice.target.name)}</span>` : ""}
       ${slice.graph ? "" : '<span class="badge">no call graph</span>'}
@@ -237,6 +240,33 @@ function renderSlicePanel(
       .join("")}
   </article>`;
 }
+
+/**
+ * Styles for renderSizeBreakdown, on their own so the pages that list PRs
+ * can show the same block without the rest of the explorer's CSS.
+ */
+export const SIZE_CSS = `
+  /* Size as three numbers: a bar proportioned by kind, then the counts. */
+  .delta { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+  .delta-bar { display: flex; height: 4px; border-radius: 2px; overflow: hidden;
+               background: var(--panel-2); min-width: 6rem; }
+  .delta-bar .seg { display: block; height: 100%; }
+  .delta-bar .seg.core { background: var(--accent); }
+  .delta-bar .seg.test { background: var(--tok-num); }
+  .delta-bar .seg.boilerplate { background: var(--ink-faint); }
+  .delta-bar .seg.unclassified { background: var(--ink-faint); }
+  .delta-text { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline;
+                font-size: 0.68rem; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+  .delta-text .kind { font-weight: 600; }
+  .delta-text .kind::before { content: ""; display: inline-block; width: 6px; height: 6px;
+                              border-radius: 50%; margin-right: 0.3rem; vertical-align: 1px; }
+  .delta-kind.core .kind::before { background: var(--accent); }
+  .delta-kind.test .kind::before { background: var(--tok-num); }
+  .delta-kind.boilerplate .kind::before { background: var(--ink-faint); }
+  .delta-text .plus { color: var(--add-edge); }
+  .delta-text .minus { color: var(--del-edge); margin-left: 0.25rem; }
+  .delta-text .dot { color: var(--ink-faint); }
+`;
 
 const SLICE_CSS = `
   body.slice-explorer {
@@ -333,31 +363,8 @@ const SLICE_CSS = `
   .badge.target { background: var(--accent-soft); color: var(--accent); border-color: transparent;
                   font-family: var(--mono); }
   .hint { font-size: 0.7rem; color: var(--ink-faint); margin-left: 0.3rem; }
-
-  /* Size as three numbers: a bar proportioned by kind, then the counts. The
-     same block sits in each slice's header and under the PR title. */
-  .delta { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
   .slice-badges .delta { margin-right: 0.3rem; }
   .side .delta { margin-top: 0.55rem; }
-  .delta-bar { display: flex; height: 4px; border-radius: 2px; overflow: hidden;
-               background: var(--panel-2); min-width: 6rem; }
-  .delta-bar .seg { display: block; height: 100%; }
-  .delta-bar .seg.core { background: var(--accent); }
-  .delta-bar .seg.test { background: var(--tok-num); }
-  .delta-bar .seg.boilerplate { background: var(--ink-faint); }
-  .delta-bar .seg.unclassified { background: var(--ink-faint); }
-  .delta-text { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline;
-                font-size: 0.68rem; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
-  .delta-text .kind { font-weight: 600; }
-  .delta-text .kind::before { content: ""; display: inline-block; width: 6px; height: 6px;
-                              border-radius: 50%; margin-right: 0.3rem; vertical-align: 1px; }
-  .delta-kind.core .kind::before { background: var(--accent); }
-  .delta-kind.test .kind::before { background: var(--tok-num); }
-  .delta-kind.boilerplate .kind::before { background: var(--ink-faint); }
-  .delta-text .plus { color: var(--add-edge); }
-  .delta-text .minus { color: var(--del-edge); margin-left: 0.25rem; }
-  .delta-text .dot { color: var(--ink-faint); }
-
   .slice-panel .code-pane { margin: 0 0 1.1rem; }
 
   /* The two things the sidebar can point at: the PR's prose, or one of its
@@ -748,14 +755,14 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(`${input.repo}#${input.number} — slice explorer`)}</title>
-<style>${CSS}${EXPLORER_CSS}${SLICE_CSS}${input.debugMarks ? DEBUG_MARKS_CSS : ""}</style>
+<style>${CSS}${EXPLORER_CSS}${SIZE_CSS}${SLICE_CSS}${input.debugMarks ? DEBUG_MARKS_CSS : ""}</style>
 </head>
 <body class="slice-explorer">
 <aside class="side">
   <div>
     <a class="pr" href="${esc(input.prUrl)}">${esc(input.repo)}#${input.number}</a>
     <div class="pr-title">${esc(input.prTitle)}</div>
-    ${renderDeltaBreakdown(input.slices.flatMap((s) => s.fragments))}
+    ${renderSizeBreakdown(fragmentSize(input.slices.flatMap((s) => s.fragments)))}
   </div>
   <nav>
     <div class="slice-nav">
