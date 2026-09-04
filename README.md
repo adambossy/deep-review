@@ -213,6 +213,12 @@ paid slicing run. Anything that drops out of the list is forgotten, so
 approving a PR and having it reassigned, or unassigning and reassigning, is
 the deliberate way to ask for it again.
 
+Once a PR is merged or closed, its page leaves the server's index on the next
+check, so the index shows only what can still be acted on. Leaving the list is
+not what triggers this — approval, unassignment and turning back into a draft
+all do that, and none of them finish a PR — so every PR handed over is asked
+about directly until GitHub says it is closed.
+
 Turning it on installs a launchd agent (`com.deep-review.watcher`), which is
 what carries it across reboots. Two consequences worth knowing:
 

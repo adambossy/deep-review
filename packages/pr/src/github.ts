@@ -11,12 +11,18 @@ export interface PrInfo extends PrRef {
   headSha: string;
   cloneUrl: string;
   htmlUrl: string;
+  /** Open, or closed — where "closed" covers merged too; see `merged`. */
+  state: "open" | "closed";
+  /** True only for a PR that was merged; a closed-unmerged PR is `closed` and false. */
+  merged: boolean;
 }
 
 interface PrApiResponse {
   title: string;
   body: string | null;
   html_url: string;
+  state: "open" | "closed";
+  merged: boolean;
   user: { login: string } | null;
   base: { ref: string; sha: string; repo: { clone_url: string } };
   head: { ref: string; sha: string };
@@ -54,6 +60,8 @@ export async function fetchPrInfo(ref: PrRef): Promise<PrInfo> {
     headSha: pr.head.sha,
     cloneUrl: pr.base.repo.clone_url,
     htmlUrl: pr.html_url,
+    state: pr.state,
+    merged: pr.merged,
   };
 }
 

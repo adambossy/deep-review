@@ -19,7 +19,7 @@ import { renderSliceExplorerHtml } from "@deep-review/call-graph";
 import { fetchPrInfo, parsePrUrl } from "@deep-review/pr";
 import { loadSliceReport, slicePr, writeSliceReport } from "@deep-review/slicer";
 import { explorerInputFromReport } from "./build.js";
-import type { AddOptions, BuildPr, PrRef, PrView } from "./registry.js";
+import type { AddOptions, BuildPr, PrKey, PrRef, PrView } from "./registry.js";
 import { startNavServer, VERSION, type NavServer } from "./serve.js";
 
 export function stateDir(): string {
@@ -367,6 +367,19 @@ export async function listServerPrs(serverUrl: string): Promise<PrView[]> {
   const response = await fetch(new URL("/prs", serverUrl));
   if (!response.ok) throw new Error(`the server said ${response.status}`);
   return ((await response.json()) as { prs: PrView[] }).prs;
+}
+
+/**
+ * Ask the running server to drop a PR, by its `owner/repo#number` key. True
+ * when the server held it; false when it did not, which is not an error —
+ * the caller's memory of what the server holds is allowed to be stale.
+ */
+export async function removePrFromServer(serverUrl: string, key: PrKey): Promise<boolean> {
+  const response = await fetch(new URL(`/prs/${encodeURIComponent(key)}`, serverUrl), {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error(`the server said ${response.status}`);
+  return ((await response.json()) as { removed: boolean }).removed;
 }
 
 /**
