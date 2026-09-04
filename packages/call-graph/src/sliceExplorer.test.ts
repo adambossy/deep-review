@@ -470,12 +470,12 @@ describe("size breakdown", () => {
     const panel = /<article class="panel slice-panel"[\s\S]*?<\/article>/.exec(html)![0];
     expect(panel).toContain('<span class="seg unclassified" style="flex:4"></span>');
     expect(panel).toContain(
-      '<span class="delta-kind"><span class="plus">+3</span><span class="minus">−1</span></span>',
+      '<span class="delta-kind unclassified"><span class="plus">+3</span><span class="minus">−1</span></span>',
     );
     expect(panel).not.toContain('<span class="kind">');
     const oldSide = /<aside class="side">[\s\S]*?<\/aside>/.exec(html)![0];
     expect(oldSide).toContain(
-      '<span class="delta-kind"><span class="plus">+5</span><span class="minus">−2</span></span>',
+      '<span class="delta-kind unclassified"><span class="plus">+5</span><span class="minus">−2</span></span>',
     );
   });
 });

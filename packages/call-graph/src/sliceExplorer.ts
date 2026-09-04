@@ -179,21 +179,26 @@ function deltaHtml(delta: LineDelta): string {
 export function renderSizeBreakdown({ byKind, total }: SizeBreakdown): string {
   const weight = (d: LineDelta) => d.additions + d.deletions;
   if (weight(total) === 0) return "";
-  if (!byKind) {
-    return `<div class="delta">
-      <div class="delta-bar"><span class="seg unclassified" style="flex:${weight(total)}"></span></div>
-      <div class="delta-text"><span class="delta-kind">${deltaHtml(total)}</span></div>
-    </div>`;
-  }
-  const present = KINDS.filter((k) => weight(byKind[k]) > 0);
+  const parts = byKind
+    ? KINDS.filter((k) => weight(byKind[k]) > 0).map((k) => ({
+        cls: k,
+        label: `<span class="kind">${KIND_LABEL[k]}</span> `,
+        delta: byKind[k],
+      }))
+    : [{ cls: "unclassified", label: "", delta: total }];
   return `<div class="delta">
-    <div class="delta-bar">${present
-      .map((k) => `<span class="seg ${k}" style="flex:${weight(byKind[k])}"></span>`)
+    <div class="delta-bar">${parts
+      .map((p) => `<span class="seg ${p.cls}" style="flex:${weight(p.delta)}"></span>`)
       .join("")}</div>
-    <div class="delta-text">${present
-      .map((k) => `<span class="delta-kind ${k}"><span class="kind">${KIND_LABEL[k]}</span> ${deltaHtml(byKind[k])}</span>`)
+    <div class="delta-text">${parts
+      .map((p) => `<span class="delta-kind ${p.cls}">${p.label}${deltaHtml(p.delta)}</span>`)
       .join('<span class="delta-sep">·</span>')}</div>
   </div>`;
+}
+
+/** The whole PR's size: every slice's fragments together. */
+export function explorerSize(input: SliceExplorerInput): SizeBreakdown {
+  return fragmentSize(input.slices.flatMap((s) => s.fragments));
 }
 
 /** The slice's own panel: everything the PR changed for this one purpose. */
@@ -251,19 +256,17 @@ export const SIZE_CSS = `
   .delta { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
   .delta-bar { display: flex; height: 4px; border-radius: 2px; overflow: hidden;
                background: var(--panel-2); min-width: 6rem; }
-  .delta-bar .seg { display: block; height: 100%; }
-  .delta-bar .seg.core { background: var(--accent); }
-  .delta-bar .seg.test { background: var(--tok-num); }
-  .delta-bar .seg.boilerplate { background: var(--ink-faint); }
-  .delta-bar .seg.unclassified { background: var(--ink-faint); }
+  /* One color per kind, read by both the bar segment and the legend dot. */
+  .delta .core { --kind-color: var(--accent); }
+  .delta .test { --kind-color: var(--tok-num); }
+  .delta .boilerplate, .delta .unclassified { --kind-color: var(--ink-faint); }
+  .delta-bar .seg { display: block; height: 100%; background: var(--kind-color); }
   .delta-text { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline;
                 font-size: 0.68rem; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
   .delta-text .kind { font-weight: 600; }
   .delta-text .kind::before { content: ""; display: inline-block; width: 6px; height: 6px;
-                              border-radius: 50%; margin-right: 0.3rem; vertical-align: 1px; }
-  .delta-kind.core .kind::before { background: var(--accent); }
-  .delta-kind.test .kind::before { background: var(--tok-num); }
-  .delta-kind.boilerplate .kind::before { background: var(--ink-faint); }
+                              border-radius: 50%; margin-right: 0.3rem; vertical-align: 1px;
+                              background: var(--kind-color); }
   .delta-text .plus { color: var(--add-edge); }
   .delta-text .minus { color: var(--del-edge); margin-left: 0.25rem; }
   .delta-text .delta-sep { color: var(--ink-faint); }
@@ -763,7 +766,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   <div>
     <a class="pr" href="${esc(input.prUrl)}">${esc(input.repo)}#${input.number}</a>
     <div class="pr-title">${esc(input.prTitle)}</div>
-    ${renderSizeBreakdown(fragmentSize(input.slices.flatMap((s) => s.fragments)))}
+    ${renderSizeBreakdown(explorerSize(input))}
   </div>
   <nav>
     <div class="slice-nav">

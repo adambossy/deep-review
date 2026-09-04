@@ -1,9 +1,8 @@
 import { parseUnifiedDiff } from "@deep-review/pr";
 import { describe, expect, it } from "vitest";
 import { indexDiff } from "./annotate.js";
-import type { AgentOutput } from "./schema.js";
+import { agentOutputSchema, sliceReportSchema, type AgentOutput } from "./schema.js";
 import { validateSlices } from "./validate.js";
-import { agentOutputSchema, sliceReportSchema } from "./schema.js";
 
 const DIFF = `diff --git a/src/new.ts b/src/new.ts
 --- /dev/null

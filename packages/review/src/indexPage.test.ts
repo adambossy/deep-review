@@ -48,7 +48,7 @@ describe("renderIndexPage", () => {
     );
     expect(row).not.toContain("boilerplate");
     // The bar's styles ride along, since the explorer's stylesheet does not.
-    expect(html).toContain(".delta-bar .seg.core");
+    expect(html).toContain(".delta .core { --kind-color");
   });
 
   it("shows one unsplit total for a PR whose report predates kinds", () => {
@@ -57,7 +57,7 @@ describe("renderIndexPage", () => {
       "0",
     );
     expect(html).toContain(
-      '<span class="delta-kind"><span class="plus">+7</span><span class="minus">−2</span></span>',
+      '<span class="delta-kind unclassified"><span class="plus">+7</span><span class="minus">−2</span></span>',
     );
     expect(html).not.toContain('<span class="kind">');
   });

@@ -11,7 +11,7 @@
  */
 
 import {
-  fragmentSize,
+  explorerSize,
   NavSession,
   type SizeBreakdown,
   type SliceExplorerInput,
@@ -407,7 +407,7 @@ export class PrRegistry {
       ...(input?.prTitle ? { title: input.prTitle } : {}),
       ...(input ? { slices: input.slices.length } : {}),
       ...(input ? { graphs: input.slices.filter((s) => s.graph).length } : {}),
-      ...(input ? { size: fragmentSize(input.slices.flatMap((s) => s.fragments)) } : {}),
+      ...(input ? { size: explorerSize(input) } : {}),
       ...(entry.error ? { error: entry.error } : {}),
       addedAt: entry.addedAt,
       ...(entry.readyAt !== undefined ? { readyAt: entry.readyAt } : {}),

@@ -78,7 +78,7 @@ describe("buildSliceExplorerInput", () => {
     expect(input.slices[0]!.fragments[0]!.kind).toBe("test");
 
     const legacy = await buildSliceExplorerInput({ report: report(2, 3), index });
-    expect(legacy.slices[0]!.fragments[0]!).not.toHaveProperty("kind");
+    expect(legacy.slices[0]!.fragments[0]!.kind).toBeUndefined();
   });
 
   it("leaves a slice without a target ungraphed rather than guessing", async () => {

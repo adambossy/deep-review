@@ -30,10 +30,10 @@ export {
   type SliceInput,
   type SliceFragmentInput,
   type FragmentKind,
+  explorerSize,
   fragmentSize,
   renderSizeBreakdown,
   SIZE_CSS,
-  type LineDelta,
   type SizeBreakdown,
 } from "./sliceExplorer.js";
 export type * from "./types.js";

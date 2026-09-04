@@ -65,7 +65,7 @@ function fragmentInput(fragment: Fragment, index: DiffIndex) {
     id: fragment.id,
     file: fragment.file,
     summary: fragment.summary,
-    ...(fragment.kind ? { kind: fragment.kind } : {}),
+    kind: fragment.kind,
     hunkHeader: hunk.header,
     lines: hunk.lines.slice(from, to),
     newLineNumbers,
