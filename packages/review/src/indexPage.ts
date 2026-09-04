@@ -60,10 +60,7 @@ function facts(pr: PrView): string {
 
 /** The PR's size as core / tests / boilerplate, once there is a build to count. */
 function size(pr: PrView): string {
-  if (pr.state !== "ready" || !pr.size) return "";
-  const { additions, deletions } = pr.size.total;
-  if (additions + deletions === 0) return "";
-  return renderSizeBreakdown(pr.size);
+  return pr.state === "ready" && pr.size ? renderSizeBreakdown(pr.size) : "";
 }
 
 function row(pr: PrView): string {

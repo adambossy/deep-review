@@ -173,11 +173,12 @@ function deltaHtml(delta: LineDelta): string {
 /**
  * A slice's or the PR's size: a thin bar proportioned by kind, then the
  * numbers. Kinds with no lines are left out so a pure-test slice reads as one
- * entry, and an unclassified set reads as a single neutral total. Needs
- * SIZE_CSS on the page.
+ * entry, an unclassified set reads as a single neutral total, and a set that
+ * changed no lines renders nothing. Needs SIZE_CSS on the page.
  */
 export function renderSizeBreakdown({ byKind, total }: SizeBreakdown): string {
   const weight = (d: LineDelta) => d.additions + d.deletions;
+  if (weight(total) === 0) return "";
   if (!byKind) {
     return `<div class="delta">
       <div class="delta-bar"><span class="seg unclassified" style="flex:${weight(total)}"></span></div>

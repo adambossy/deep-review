@@ -57,21 +57,16 @@ Add a `## Classifying fragments` section after `## Fragments`:
 - The ordering section already mentions tests and mechanical fallout;
   cross-reference it rather than duplicating.
 
-### 3. Counting (new `packages/slicer/src/stats.ts`)
+### 3. Counting
 
-Pure functions, unit-tested:
-
-```ts
-export interface LineDelta { additions: number; deletions: number }
-export type KindTotals = Record<FragmentKind, LineDelta>;
-export function fragmentDelta(fragment, index): LineDelta   // count "+"/"-" prefixes in hunk.lines[start-1..end)
-export function fragmentTotals(fragments, index): SizeTotals  // unsplit when any fragment lacks kind
-export function reportTotals(report, index): SizeTotals  // throws when the sum drifts from the diff
-```
-
-Extend `DiffIndex` with `additions`/`deletions` next to `changedLineCount`
-(`annotate.ts:77`). `reportTotals` asserts the bucket sums equal those and
-throws on drift.
+Counting lives in the explorer (`fragmentSize` in
+`packages/call-graph/src/sliceExplorer.ts`): count `+`/`-` prefixes over each
+fragment's raw diff lines, bucket by `kind`, and fall back to one unsplit
+total when any fragment lacks a kind. No separate reconciliation step:
+`validateSlices` already rejects output that leaves a changed line uncovered or
+covers one twice, so the sum over fragments equals the diff by construction.
+(An earlier draft added a `stats.ts` with a drift check; it was never wired in
+and was dropped in review.)
 
 ### 4. Explorer input (`packages/review/src/build.ts`, `packages/call-graph/src/sliceExplorer.ts`)
 
@@ -79,8 +74,8 @@ throws on drift.
 - The explorer already receives each fragment's raw `lines` with `+`/`-`
   prefixes, so it can count per bucket itself from `lines` + `kind`. This
   keeps `call-graph` free of a dependency on `slicer` internals; `build.ts`
-  only threads `kind`. The `stats.ts` functions in step 3 serve the
-  reconciliation check and any non-explorer consumer.
+  only threads `kind`. The index page and registry reuse the same
+  `fragmentSize` / `renderSizeBreakdown` / `SIZE_CSS` exports.
 
 ### 5. Explorer rendering (`packages/call-graph/src/sliceExplorer.ts`)
 
@@ -97,9 +92,6 @@ throws on drift.
 
 ### 6. Tests
 
-- `packages/slicer/src/stats.test.ts`: fragment counting with context lines,
-  pure-deletion fragments, `\ No newline` lines; slice/report totals; kind
-  missing → `LineDelta`; reconciliation assertion.
 - `packages/slicer/src/validate.test.ts`: agent output without `kind` is
   rejected; persisted report without `kind` still loads.
 - `packages/call-graph/src/sliceExplorer.test.ts`: header shows per-bucket
@@ -120,4 +112,3 @@ throws on drift.
 - Fetching GitHub's `additions`/`deletions` (the diff from git is the source
   of truth; the invariant is against the diff).
 - Updating `packages/slicer/src/html.ts`.
-- Index page (`packages/review/src/indexPage.ts`) sizes.

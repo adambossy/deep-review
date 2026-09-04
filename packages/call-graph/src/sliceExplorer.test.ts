@@ -451,6 +451,19 @@ describe("size breakdown", () => {
     );
   });
 
+  it("renders nothing for a slice that changed no lines", () => {
+    const empty = renderSliceExplorerHtml({
+      prUrl: "https://github.com/a/b/pull/1",
+      prTitle: "A PR",
+      repo: "a/b",
+      number: 1,
+      overview: "does a thing",
+      files,
+      slices: [{ id: "slice-1", title: "First", summary: "s", rationale: "r", fragments: [] }],
+    });
+    expect(empty).not.toContain('class="delta"');
+  });
+
   it("falls back to one unsplit total when any fragment is unclassified", () => {
     // The shared fixture's fragments carry no kind: an older report.
     const html = render();
