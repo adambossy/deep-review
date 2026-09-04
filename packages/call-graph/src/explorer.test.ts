@@ -184,6 +184,36 @@ describe("renderCallPathExplorerHtml", () => {
     expect(leafPanel.match(/class="caller-row"/g)).toHaveLength(6);
   });
 
+  it("collapses two edges that display as the same caller at the same line into one row", () => {
+    // Regression: a caller that the graph walk reached through two
+    // distinct edges (e.g. two node ids that never merged into one) but
+    // that both display as the same name at the same call-site line must
+    // not render as two "called by" rows.
+    const duplicated: CallPathResult = {
+      ...result,
+      nodes: [
+        ...result.nodes,
+        node({ id: "top.ts#top#dup", name: "top", file: "top.ts", expanded: false }),
+      ],
+      edges: [
+        ...result.edges,
+        {
+          from: "top.ts#top#dup",
+          to: "mid.ts#mid",
+          before: [],
+          after: [{ line: 3, snippet: "return mid(1);", startColumn: 9, endColumn: 12 }],
+        },
+      ],
+    };
+    const page = renderCallPathExplorerHtml(duplicated);
+    // Both the track and panel-defs sections render a full copy of mid's
+    // panel; isolate the panel-defs copy the way the "every call site" test
+    // above does, so only one copy's rows are counted.
+    const midPanel = page.slice(page.lastIndexOf('data-node="mid.ts#mid"'), page.lastIndexOf('data-node="leaf.ts#leaf"'));
+    expect(midPanel).toContain("called by (1)");
+    expect(midPanel.match(/class="caller-row"/g)).toHaveLength(1);
+  });
+
   it("labels boundary nodes", () => {
     const leafPanel = html.slice(
       html.lastIndexOf('data-node="leaf.ts#leaf"'),
