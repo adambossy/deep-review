@@ -10,6 +10,7 @@
  * world-readable directory, and an API key does not belong in one.
  */
 
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -17,10 +18,32 @@ import path from "node:path";
 import process from "node:process";
 import { stateDir } from "./daemon.js";
 
-export const AGENT_LABEL = "com.deep-review.watcher";
+const BASE_LABEL = "com.deep-review.watcher";
+
+/**
+ * A launchd agent is named once, machine-wide, by this label — and by the
+ * plist file it lives in, which does not move with `$DEEP_REVIEW_HOME`. Two
+ * processes with different state dirs but the same label are one launchd
+ * job wearing two hats: whichever installs last silently owns the other's
+ * agent, argv, log file and captured secrets. A test suite, or anyone
+ * pointing `$DEEP_REVIEW_HOME` somewhere for a moment, would otherwise
+ * reinstall — and so overwrite — the real watcher on this machine.
+ *
+ * The default state dir keeps the bare label, so the agent this repo has
+ * shipped since before this existed is untouched. Anything else earns a
+ * short, stable suffix of its own state dir, so it gets its own label, its
+ * own plist, and its own launchd job — safely installable and removable
+ * without going near whatever else is actually running.
+ */
+export function agentLabel(): string {
+  const home = stateDir();
+  if (home === path.join(os.homedir(), ".deep-review")) return BASE_LABEL;
+  const suffix = createHash("sha1").update(home).digest("hex").slice(0, 8);
+  return `${BASE_LABEL}.${suffix}`;
+}
 
 export function plistPath(): string {
-  return path.join(os.homedir(), "Library", "LaunchAgents", `${AGENT_LABEL}.plist`);
+  return path.join(os.homedir(), "Library", "LaunchAgents", `${agentLabel()}.plist`);
 }
 
 export function watcherLogFile(): string {
@@ -102,6 +125,18 @@ export interface AgentPlistOptions {
   /** argv for the agent: the same interpreter and CLI that installed it. */
   programArguments: string[];
   logFile: string;
+  /** Defaults to `agentLabel()`; a param, not a read of ambient state, so this stays a pure function. */
+  label?: string | undefined;
+  /**
+   * The state dir this agent belongs to. launchd starts a fresh process
+   * with none of the environment this shell has — no $DEEP_REVIEW_HOME, no
+   * profile — so without this, the very first thing the agent does
+   * (`loadWatcherEnv`, to find its own captured secrets) resolves `stateDir()`
+   * back to the default and reads *that* directory's files instead of its
+   * own. A path is not a secret, so it goes directly in the plist rather
+   * than the 0600 side file that holds the real credentials.
+   */
+  stateDir?: string | undefined;
 }
 
 /**
@@ -109,20 +144,29 @@ export interface AgentPlistOptions {
  * and `ThrottleInterval` keeps a boot-looping one from spinning the CPU.
  */
 export function renderAgentPlist(options: AgentPlistOptions): string {
+  const label = options.label ?? agentLabel();
   const args = options.programArguments
     .map((arg) => `    <string>${escapeXml(arg)}</string>`)
     .join("\n");
+  const env = options.stateDir
+    ? `  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DEEP_REVIEW_HOME</key>
+    <string>${escapeXml(options.stateDir)}</string>
+  </dict>
+`
+    : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${AGENT_LABEL}</string>
+  <string>${escapeXml(label)}</string>
   <key>ProgramArguments</key>
   <array>
 ${args}
   </array>
-  <key>RunAtLoad</key>
+${env}  <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <dict>
@@ -213,7 +257,7 @@ export function agentInstalled(): boolean {
 /** Is launchd holding the agent right now? */
 export function agentLoaded(): boolean {
   try {
-    launchctl(["print", `${domain()}/${AGENT_LABEL}`]);
+    launchctl(["print", `${domain()}/${agentLabel()}`]);
     return true;
   } catch {
     return false;
@@ -257,7 +301,7 @@ export function installAgent(
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(
     file,
-    renderAgentPlist({ programArguments: argv, logFile: watcherLogFile() }),
+    renderAgentPlist({ programArguments: argv, logFile: watcherLogFile(), stateDir: stateDir() }),
   );
   // Replace rather than reload: bootstrap on an already-loaded label fails,
   // and a stale definition is worse than a moment with none.
@@ -269,7 +313,7 @@ export function installAgent(
 /** Take the agent out of launchd, and (unless asked otherwise) off disk. */
 export function uninstallAgent(options: { keepPlist?: boolean } = {}): void {
   try {
-    launchctl(["bootout", `${domain()}/${AGENT_LABEL}`]);
+    launchctl(["bootout", `${domain()}/${agentLabel()}`]);
   } catch {
     // Not loaded; nothing to take out.
   }

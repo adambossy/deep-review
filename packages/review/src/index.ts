@@ -45,5 +45,5 @@ export {
   renderAgentPlist,
   captureEnv,
   missingEnv,
-  AGENT_LABEL,
+  agentLabel,
 } from "./launchAgent.js";

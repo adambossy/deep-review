@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  AGENT_LABEL,
+  agentLabel,
   captureEnv,
   inheritableExecArgv,
   transientPaths,
@@ -16,13 +16,16 @@ import {
 } from "./launchAgent.js";
 
 describe("renderAgentPlist", () => {
+  // An explicit label, not agentLabel()'s default: this suite should not
+  // depend on whatever $DEEP_REVIEW_HOME happens to be at collection time.
   const plist = renderAgentPlist({
     programArguments: ["/usr/local/bin/node", "/opt/cli.js", "watch", "--foreground"],
     logFile: "/tmp/watcher.log",
+    label: "com.deep-review.watcher.test",
   });
 
   it("names the agent and every argument", () => {
-    expect(plist).toContain(`<string>${AGENT_LABEL}</string>`);
+    expect(plist).toContain("<string>com.deep-review.watcher.test</string>");
     expect(plist).toContain("<string>/opt/cli.js</string>");
     expect(plist).toContain("<string>--foreground</string>");
   });
@@ -54,6 +57,29 @@ describe("renderAgentPlist", () => {
     expect(odd).toContain("/opt/a&amp;b/cli.js");
     expect(odd).not.toContain("/opt/a&b/cli.js");
   });
+
+  it("carries its own state dir, so the spawned process can find its env file", () => {
+    // launchd starts the agent with none of this shell's environment, so
+    // without this, loadWatcherEnv's very first lookup — where is my own
+    // watcher.env? — falls back to the default state dir and reads THAT
+    // one's files instead of this agent's, silently.
+    const scoped = renderAgentPlist({
+      programArguments: ["/bin/node", "/opt/cli.js"],
+      logFile: "/tmp/w.log",
+      stateDir: "/Users/x/.deep-review-test",
+    });
+    expect(scoped).toContain("<key>EnvironmentVariables</key>");
+    expect(scoped).toContain("<key>DEEP_REVIEW_HOME</key>");
+    expect(scoped).toContain("<string>/Users/x/.deep-review-test</string>");
+  });
+
+  it("omits EnvironmentVariables when no state dir is given", () => {
+    const plain = renderAgentPlist({
+      programArguments: ["/bin/node", "/opt/cli.js"],
+      logFile: "/tmp/w.log",
+    });
+    expect(plain).not.toContain("EnvironmentVariables");
+  });
 });
 
 describe("captureEnv / missingEnv", () => {
@@ -77,6 +103,56 @@ describe("captureEnv / missingEnv", () => {
       "a GitHub token (GITHUB_TOKEN or GH_TOKEN)",
     ]);
     expect(missingEnv({ ANTHROPIC_API_KEY: "a", GH_TOKEN: "g" })).toEqual([]);
+  });
+});
+
+describe("agentLabel", () => {
+  const defaultHome = path.join(os.homedir(), ".deep-review");
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(path.join(os.tmpdir(), "agent-label-test-"));
+  });
+
+  afterEach(() => {
+    delete process.env.DEEP_REVIEW_HOME;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("keeps the bare label for the default state dir", () => {
+    // The real, currently-running agent on this machine was installed
+    // under that label; changing it here would orphan that agent.
+    process.env.DEEP_REVIEW_HOME = defaultHome;
+    expect(agentLabel()).toBe("com.deep-review.watcher");
+  });
+
+  it("gives a non-default state dir a label — and plist — of its own", () => {
+    // Sharing a label across two state dirs means whichever installs last
+    // silently owns the other's agent, argv, log file and secrets — the
+    // exact failure a test suite pointing DEEP_REVIEW_HOME at a temp dir
+    // would otherwise risk against the real installed agent.
+    process.env.DEEP_REVIEW_HOME = home;
+    const label = agentLabel();
+    expect(label).not.toBe("com.deep-review.watcher");
+    expect(label.startsWith("com.deep-review.watcher.")).toBe(true);
+  });
+
+  it("is deterministic for the same state dir", () => {
+    process.env.DEEP_REVIEW_HOME = home;
+    expect(agentLabel()).toBe(agentLabel());
+  });
+
+  it("differs between two different state dirs", () => {
+    const other = mkdtempSync(path.join(os.tmpdir(), "agent-label-test-"));
+    try {
+      process.env.DEEP_REVIEW_HOME = home;
+      const first = agentLabel();
+      process.env.DEEP_REVIEW_HOME = other;
+      const second = agentLabel();
+      expect(first).not.toBe(second);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
   });
 });
 
