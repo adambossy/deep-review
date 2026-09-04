@@ -6,7 +6,7 @@
  * its explorer as soon as it is ready.
  */
 
-import { escapeHtml as esc, REPORT_CSS } from "@deep-review/call-graph";
+import { escapeHtml as esc, renderSizeBreakdown, REPORT_CSS, SIZE_CSS } from "@deep-review/call-graph";
 import type { PrView } from "./registry.js";
 
 const INDEX_CSS = `
@@ -22,6 +22,8 @@ const INDEX_CSS = `
   .row a.title { color: inherit; text-decoration: none; }
   .row a.title:hover { color: var(--accent); }
   .row .facts { color: var(--ink-soft); font-size: 0.85rem; margin-top: 0.15rem; }
+  .row .delta { margin-top: 0.45rem; max-width: 30rem; }
+  .row .delta-text { font-size: 0.75rem; }
   .row .why { color: var(--del-edge); font-size: 0.85rem; margin-top: 0.15rem; }
   .row .last { font-family: var(--mono); font-size: 0.78rem; color: var(--ink-faint);
                margin-top: 0.3rem; white-space: pre-wrap; }
@@ -56,6 +58,11 @@ function facts(pr: PrView): string {
   return "slicing and walking call graphs…";
 }
 
+/** The PR's size as core / tests / boilerplate, once there is a build to count. */
+function size(pr: PrView): string {
+  return pr.state === "ready" && pr.size ? renderSizeBreakdown(pr.size) : "";
+}
+
 function row(pr: PrView): string {
   const heading =
     pr.state === "ready"
@@ -68,6 +75,7 @@ function row(pr: PrView): string {
     <div class="name"><a href="${esc(pr.prUrl)}">${esc(pr.key)}</a></div>
     ${heading}
     ${f ? `<div class="facts">${esc(f)}</div>` : ""}
+    ${size(pr)}
     ${pr.error ? `<div class="why">${esc(pr.error)}</div>` : ""}
     ${last ? `<div class="last">${esc(last)}</div>` : ""}
   </div>
@@ -114,7 +122,7 @@ export function renderIndexPage(prs: PrView[], version: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pr-review — ${prs.length} PR${prs.length === 1 ? "" : "s"}</title>
-<style>${REPORT_CSS}${INDEX_CSS}</style>
+<style>${REPORT_CSS}${SIZE_CSS}${INDEX_CSS}</style>
 </head>
 <body>
 <header>

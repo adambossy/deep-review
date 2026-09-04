@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FRAGMENT_KINDS } from "./types.js";
 
 /**
  * What the agent returns. Fragments are defined inline on the slice that owns
@@ -24,6 +25,14 @@ export const agentFragmentSchema = z.object({
     .string()
     .min(1)
     .describe("What this run of lines does, in one sentence."),
+  kind: z
+    .enum(FRAGMENT_KINDS)
+    .describe(
+      "core: behavior the PR exists to change, and the logic supporting it. " +
+        "test: test code exercising core changes. " +
+        "boilerplate: mechanical fallout (imports, renames, wiring, config, lockfiles, generated files, formatting), " +
+        "and any test that only exercises boilerplate.",
+    ),
 });
 
 export const agentSliceSchema = z.object({
@@ -104,6 +113,9 @@ export const sliceReportSchema = z.object({
           startLine: z.number().int().positive(),
           endLine: z.number().int().positive(),
           summary: z.string(),
+          // Optional: reports written before fragments were classified still
+          // load, and render with an unsplit line count.
+          kind: z.enum(FRAGMENT_KINDS).optional(),
         }),
       ),
     }),

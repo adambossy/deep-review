@@ -8,6 +8,18 @@ import type { LinearIssue, PrInfo } from "@deep-review/pr";
 export type HunkId = string;
 
 /**
+ * What kind of change a fragment is, so a PR's size can be read as three
+ * numbers instead of one. `core` is the behavior the PR exists to change and
+ * the logic that supports it. `test` is test code exercising core changes.
+ * `boilerplate` is mechanical fallout — imports, renames, wiring, config,
+ * lockfiles, generated files, formatting — and also any test that only
+ * exercises boilerplate.
+ */
+export type FragmentKind = "core" | "test" | "boilerplate";
+
+export const FRAGMENT_KINDS = ["core", "test", "boilerplate"] as const;
+
+/**
  * A contiguous run of lines inside one hunk, and the unit a slice is built
  * from. Hunks are too coarse to assign: a newly added file is a single hunk
  * that may serve several unrelated purposes. Fragments cut it finer.
@@ -30,6 +42,11 @@ export interface Fragment {
   endLine: number;
   /** What this run of lines does, in the model's words. */
   summary: string;
+  /**
+   * Absent only on reports written before fragments were classified; those
+   * render with an unsplit line count rather than a breakdown.
+   */
+  kind?: FragmentKind;
 }
 
 /**

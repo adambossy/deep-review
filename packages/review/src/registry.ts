@@ -10,7 +10,12 @@
  * a session is fully derivable from what was built and cheap to recreate.
  */
 
-import { NavSession, type SliceExplorerInput } from "@deep-review/call-graph";
+import {
+  explorerSize,
+  NavSession,
+  type SizeBreakdown,
+  type SliceExplorerInput,
+} from "@deep-review/call-graph";
 import { prUrl, type PrRef } from "@deep-review/pr";
 
 export type { PrRef } from "@deep-review/pr";
@@ -83,6 +88,8 @@ export interface PrView extends PrRef {
   slices?: number | undefined;
   /** Slices that got a walkable call graph. */
   graphs?: number | undefined;
+  /** The PR's +/− lines, split core / tests / boilerplate when the slicer classified them. */
+  size?: SizeBreakdown | undefined;
   /** Why the build failed, when it did. */
   error?: string | undefined;
   addedAt: number;
@@ -400,6 +407,7 @@ export class PrRegistry {
       ...(input?.prTitle ? { title: input.prTitle } : {}),
       ...(input ? { slices: input.slices.length } : {}),
       ...(input ? { graphs: input.slices.filter((s) => s.graph).length } : {}),
+      ...(input ? { size: explorerSize(input) } : {}),
       ...(entry.error ? { error: entry.error } : {}),
       addedAt: entry.addedAt,
       ...(entry.readyAt !== undefined ? { readyAt: entry.readyAt } : {}),

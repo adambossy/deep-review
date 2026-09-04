@@ -88,6 +88,7 @@ export function validateSlices(
         startLine,
         endLine,
         summary: fragment.summary,
+        kind: fragment.kind,
       });
     }
 

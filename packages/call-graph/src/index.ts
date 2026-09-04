@@ -29,5 +29,11 @@ export {
   type SliceExplorerInput,
   type SliceInput,
   type SliceFragmentInput,
+  type FragmentKind,
+  explorerSize,
+  fragmentSize,
+  renderSizeBreakdown,
+  SIZE_CSS,
+  type SizeBreakdown,
 } from "./sliceExplorer.js";
 export type * from "./types.js";
