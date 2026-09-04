@@ -170,8 +170,12 @@ export function inheritableExecArgv(execArgv: string[] = process.execArgv): stri
  * because a `.ts` entry point plain node cannot take is exactly what a dev
  * checkout runs, and absolute because launchd has no working directory or
  * PATH worth relying on.
+ *
+ * Which repos to watch is not in here: the watcher reads `watch.json` on
+ * every poll, so the file can change without reinstalling the agent, and
+ * there is no argv form — and so no environment form — that widens it.
  */
-export function watcherArgv(intervalMs?: number, repo?: string): string[] {
+export function watcherArgv(intervalMs?: number): string[] {
   const argv = [
     process.execPath,
     ...inheritableExecArgv(),
@@ -180,9 +184,6 @@ export function watcherArgv(intervalMs?: number, repo?: string): string[] {
     "--foreground",
   ];
   if (intervalMs !== undefined) argv.push("--interval", String(Math.round(intervalMs / 1000)));
-  // Spelled out rather than left to the environment: the agent should watch
-  // what you asked it to watch, not what a later shell happens to export.
-  if (repo) argv.push("--repo", repo);
   return argv;
 }
 
@@ -229,7 +230,6 @@ export interface InstallResult {
 export function installAgent(
   options: {
     intervalMs?: number | undefined;
-    repo?: string | undefined;
     force?: boolean | undefined;
   } = {},
 ): InstallResult {
@@ -242,7 +242,7 @@ export function installAgent(
         "can only ever have what is captured here. Export them and run this again.",
     );
   }
-  const argv = watcherArgv(options.intervalMs, options.repo);
+  const argv = watcherArgv(options.intervalMs);
   const transient = transientPaths(argv);
   if (transient.length > 0 && !options.force) {
     throw new Error(

@@ -141,15 +141,15 @@ describe("inheritableExecArgv", () => {
 });
 
 describe("watcherArgv", () => {
-  it("spells the repo into the agent's argv", () => {
-    // The agent must watch what was asked for, not what some later shell
-    // happens to export into its environment.
-    expect(watcherArgv(300_000, "acme/widgets")).toEqual(
-      expect.arrayContaining(["--repo", "acme/widgets"]),
-    );
+  it("reruns this CLI in the foreground at the asked interval", () => {
+    const argv = watcherArgv(300_000);
+    expect(argv.slice(-4)).toEqual(["watch", "--foreground", "--interval", "300"]);
   });
 
-  it("omits the repo when watching everything", () => {
+  it("carries no repo: the file decides, and can change without a reinstall", () => {
+    // The scope used to ride in argv as --repo, and its absence meant every
+    // repo the token could see. Now it lives only in watch.json, read each
+    // poll — there is no argv the agent could be installed with that widens it.
     expect(watcherArgv(300_000)).not.toContain("--repo");
   });
 });

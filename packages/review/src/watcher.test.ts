@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AssignedPr, PrRef } from "@deep-review/pr";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AddOptions, PrView } from "./registry.js";
+import { watchConfigFile, type WatchConfig, type WatchedRepo } from "./watchConfig.js";
 import {
   parsePrKey,
   planCleanup,
@@ -26,6 +27,17 @@ function assigned(number: number, updatedAt = "2026-09-01T10:00:00Z"): AssignedP
     updatedAt,
     draft: false,
   };
+}
+
+/** Name these repos in watch.json under the test's state dir. */
+function watching(...repos: (string | [string, string])[]): void {
+  const config: WatchConfig = { repos: {} };
+  for (const entry of repos) {
+    if (typeof entry === "string") config.repos[entry] = {};
+    else config.repos[entry[0]] = { query: entry[1] };
+  }
+  mkdirSync(path.dirname(watchConfigFile()), { recursive: true });
+  writeFileSync(watchConfigFile(), JSON.stringify(config));
 }
 
 function view(pr: AssignedPr): PrView {
@@ -81,6 +93,7 @@ describe("pollOnce", () => {
   beforeEach(() => {
     home = mkdtempSync(path.join(os.tmpdir(), "watcher-test-"));
     process.env.DEEP_REVIEW_HOME = home;
+    watching("acme/widgets");
   });
 
   afterEach(() => {
@@ -274,6 +287,7 @@ describe("pollOnce cleanup", () => {
   beforeEach(() => {
     home = mkdtempSync(path.join(os.tmpdir(), "watcher-test-"));
     process.env.DEEP_REVIEW_HOME = home;
+    watching("acme/widgets");
   });
 
   afterEach(() => {
@@ -380,6 +394,182 @@ describe("pollOnce cleanup", () => {
       },
       check: async () => OPEN,
     });
+    expect(state.held).toEqual({});
+  });
+});
+
+describe("pollOnce across repos", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(path.join(os.tmpdir(), "watcher-test-"));
+    process.env.DEEP_REVIEW_HOME = home;
+  });
+
+  afterEach(() => {
+    delete process.env.DEEP_REVIEW_HOME;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function inRepo(repo: string, number: number): AssignedPr {
+    const [owner, name] = repo.split("/") as [string, string];
+    return { ...assigned(number), owner, repo: name, htmlUrl: `https://github.com/${repo}/pull/${number}` };
+  }
+
+  /** A fake GitHub holding PRs for several repos, remembering what it was asked. */
+  function github(prs: Record<string, AssignedPr[]>) {
+    const asked: WatchedRepo[] = [];
+    const list = async (repo: WatchedRepo): Promise<AssignedPr[]> => {
+      asked.push(repo);
+      return prs[repo.repo] ?? [];
+    };
+    return { asked, list };
+  }
+
+  it("polls each configured repo with its own query and holds PRs from all of them", async () => {
+    watching(["acme/widgets", "is:open is:pr review-requested:@me"], ["acme/gadgets", "is:open is:pr label:needs-review"]);
+    const gh = github({
+      "acme/widgets": [inRepo("acme/widgets", 1)],
+      "acme/gadgets": [inRepo("acme/gadgets", 9)],
+    });
+    const handed: string[] = [];
+    const state = await pollOnce({
+      list: gh.list,
+      add: async (pr) => {
+        handed.push(`${pr.owner}/${pr.repo}#${pr.number}`);
+        return view(pr);
+      },
+      check: async () => OPEN,
+    });
+    expect(gh.asked).toEqual([
+      { repo: "acme/widgets", query: "is:open is:pr review-requested:@me" },
+      { repo: "acme/gadgets", query: "is:open is:pr label:needs-review" },
+    ]);
+    expect(handed.sort()).toEqual(["acme/gadgets#9", "acme/widgets#1"]);
+    expect(Object.keys(state.seen).sort()).toEqual(["acme/gadgets#9", "acme/widgets#1"]);
+    expect(Object.keys(state.held).sort()).toEqual(["acme/gadgets#9", "acme/widgets#1"]);
+  });
+
+  it("never asks about a repo the file does not name", async () => {
+    // The incident this file exists for: with no repo configured, the old
+    // watcher asked for every PR the token could see, and six from a
+    // personal repo nobody meant to watch landed on the server. Now a repo
+    // is queried only by being named — the fake GitHub has PRs waiting in
+    // adambossy/panoply, and is never asked for them.
+    watching("acme/widgets");
+    const gh = github({
+      "acme/widgets": [inRepo("acme/widgets", 1)],
+      "adambossy/panoply": [inRepo("adambossy/panoply", 3), inRepo("adambossy/panoply", 4)],
+    });
+    const handed: string[] = [];
+    const state = await pollOnce({
+      list: gh.list,
+      add: async (pr) => {
+        handed.push(`${pr.owner}/${pr.repo}#${pr.number}`);
+        return view(pr);
+      },
+      check: async () => OPEN,
+    });
+    expect(gh.asked.map((repo) => repo.repo)).toEqual(["acme/widgets"]);
+    expect(handed).toEqual(["acme/widgets#1"]);
+    expect(Object.keys(state.held)).toEqual(["acme/widgets#1"]);
+  });
+
+  it("uses the default query for a repo that names none", async () => {
+    // Opting a repo in should take nothing but its name; the query is the
+    // library's business unless the entry says otherwise.
+    watching("acme/widgets");
+    const gh = github({});
+    await pollOnce({ list: gh.list, check: async () => OPEN });
+    expect(gh.asked).toEqual([{ repo: "acme/widgets" }]);
+  });
+
+  it("polls nothing, and says so, when there is no config file", async () => {
+    // Not an error: a fresh install has no file. But not silence either,
+    // and above all not "everything" — the absence of a scope used to mean
+    // the widest one, and that is the reading this removes.
+    const gh = github({ "adambossy/panoply": [inRepo("adambossy/panoply", 3)] });
+    const messages: string[] = [];
+    const state = await pollOnce({ list: gh.list, onProgress: (m) => messages.push(m) });
+    expect(gh.asked).toEqual([]);
+    expect(messages.join("\n")).toMatch(/Nothing to watch/);
+    expect(messages.join("\n")).toContain(watchConfigFile());
+    expect(state.lastError).toBeUndefined();
+    expect(state.seen).toEqual({});
+  });
+
+  it("polls nothing, and says so, when the file lists no repos", async () => {
+    writeFileSync(watchConfigFile(), JSON.stringify({ repos: {} }));
+    const gh = github({ "adambossy/panoply": [inRepo("adambossy/panoply", 3)] });
+    const messages: string[] = [];
+    await pollOnce({ list: gh.list, onProgress: (m) => messages.push(m) });
+    expect(gh.asked).toEqual([]);
+    expect(messages.join("\n")).toMatch(/Nothing to watch/);
+  });
+
+  it("survives a corrupt config file, watching nothing and saying why", async () => {
+    // A typo in the file must not take the watcher down: a crashed watcher
+    // also stops removing merged PRs from the server. And it must not be
+    // read as "no scope", which used to mean the widest scope.
+    writeFileSync(watchConfigFile(), "{ this is not json");
+    const gh = github({ "adambossy/panoply": [inRepo("adambossy/panoply", 3)] });
+    const messages: string[] = [];
+    const state = await pollOnce({ list: gh.list, onProgress: (m) => messages.push(m) });
+    expect(gh.asked).toEqual([]);
+    expect(messages.join("\n")).toMatch(/could not be read/);
+    expect(state.lastError).toBeUndefined();
+  });
+
+  it("skips a repo whose query names a repo, and polls the rest", async () => {
+    // A second repo: qualifier widens a GitHub search rather than narrowing
+    // it, so an entry that carries one could reach into a repo the file
+    // never named. It is left out, with a note, and the others go ahead.
+    watching(["acme/widgets", "is:open repo:adambossy/panoply"], "acme/gadgets");
+    const gh = github({});
+    const messages: string[] = [];
+    await pollOnce({ list: gh.list, onProgress: (m) => messages.push(m) });
+    expect(gh.asked.map((repo) => repo.repo)).toEqual(["acme/gadgets"]);
+    expect(messages.join("\n")).toMatch(/acme\/widgets: its query names a repo/);
+  });
+
+  it("keeps what it knew when one repo's query fails, rather than emptying that repo", async () => {
+    // Partial results would make the failed repo look emptied: its PRs would
+    // leave `seen` for a GitHub hiccup, then re-dispatch when it came back.
+    watching("acme/widgets", "acme/gadgets");
+    await pollOnce({
+      list: async (repo) => (repo.repo === "acme/widgets" ? [inRepo("acme/widgets", 1)] : []),
+      add: async (pr) => view(pr),
+      check: async () => OPEN,
+    });
+    const state = await pollOnce({
+      list: async (repo) => {
+        if (repo.repo === "acme/gadgets") throw new Error("422");
+        return [inRepo("acme/widgets", 1)];
+      },
+    });
+    expect(state.lastError).toBe("422");
+    expect(Object.keys(state.seen)).toEqual(["acme/widgets#1"]);
+  });
+
+  it("still cleans up held PRs when the file has since been emptied", async () => {
+    // A PR handed over is on the server whatever the file now says; taking
+    // its repo out of the file should not strand its page there forever.
+    watching("acme/widgets");
+    await pollOnce({
+      list: async () => [inRepo("acme/widgets", 1)],
+      add: async (pr) => view(pr),
+      check: async () => OPEN,
+    });
+    writeFileSync(watchConfigFile(), JSON.stringify({ repos: {} }));
+    const removed: string[] = [];
+    const state = await pollOnce({
+      check: async () => MERGED,
+      remove: async (key) => {
+        removed.push(key);
+        return true;
+      },
+    });
+    expect(removed).toEqual(["acme/widgets#1"]);
     expect(state.held).toEqual({});
   });
 });

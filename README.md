@@ -191,15 +191,41 @@ every other invocation uses — starting it if it is not up, so there is never
 a server to start yourself. New PRs simply appear on the server's index,
 built and ready.
 
+Which repos it watches is the business of one file, `~/.deep-review/watch.json`
+(under `$DEEP_REVIEW_HOME`, beside the rest of the state). `pr-review watch
+--repo <owner>/<repo>` adds a repo to it; or write it yourself:
+
+```json
+{
+  "repos": {
+    "acme/widgets": {},
+    "acme/gadgets": { "query": "is:open is:pr review-requested:@me -is:draft" }
+  }
+}
+```
+
+Each key is a repo to watch, and naming it is all opting in takes: an empty
+entry uses the default query below. An entry may instead carry its own
+`query`, in GitHub search syntax, for a repo where "waiting on me" is spelled
+differently. Leave `repo:` out of it — the repo is the key, and is appended for
+you, so no entry's query can reach into a repo other than the one it is filed
+under; one that tries is skipped with a note in the log. The file is read on
+every check, so adding a repo needs no reinstall.
+
+A repo not named in the file is never watched. Not queried, not touched, not
+on the server: there is no default that means "every repo your token can see",
+and no flag or environment variable that widens the list. An empty file, or
+none, means nothing is watched, and each check says so in the log.
+`DEEP_REVIEW_REPO` still names the repo a bare PR number refers to; it plays
+no part in what is watched.
+
 "Waiting on your review" is narrower than "assigned to you", and deliberately:
 a draft is not ready to be read, and one you have already approved has been
 read. Both are excluded, so the list is work outstanding rather than
-everything carrying your name. `--repo <owner>/<repo>` (or `DEEP_REVIEW_REPO`,
-the same one a bare PR number uses) narrows it to a single repo; without one
-it watches every repo your token can see. The query is exactly:
+everything carrying your name. The default query, for each repo, is exactly:
 
 ```
-is:open is:pr assignee:@me archived:false -is:draft -review:approved [repo:<owner>/<repo>]
+is:open is:pr assignee:@me archived:false -is:draft -review:approved repo:<owner>/<repo>
 ```
 
 The check asks for the *current* set of such PRs rather than for events,
@@ -233,8 +259,9 @@ what carries it across reboots. Two consequences worth knowing:
   path is removed. `watch` refuses those paths; `--force` overrides.
 
 State lives beside the server's, under `~/.deep-review` (`$DEEP_REVIEW_HOME`):
-`watcher.json` for what has been handed over, `watcher.log` for what the
-agent has been doing. `pr-review stop` stops watching and stops the server.
+`watch.json` for what to watch, `watcher.json` for what has been handed over,
+`watcher.log` for what the agent has been doing. `pr-review stop` stops
+watching and stops the server.
 
 ## The slice explorer
 

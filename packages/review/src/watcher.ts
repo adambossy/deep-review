@@ -9,6 +9,10 @@
  * arithmetic, no public ingress, and nothing to replay. Missing a poll is
  * therefore uninteresting by construction — the next one subsumes it.
  *
+ * What it polls is exactly the repos named in `watch.json`, each with its
+ * own query; see `watchConfig.ts`. An empty or missing file means it watches
+ * nothing, and says so. It never means "everything".
+ *
  * State lives beside the server's, under `~/.deep-review` (or
  * $DEEP_REVIEW_HOME): one directory of truth even though the watcher and the
  * server are separate processes.
@@ -19,6 +23,7 @@ import path from "node:path";
 import { fetchPrInfo, listAssignedPrs, type AssignedPr, type PrRef } from "@deep-review/pr";
 import { addPrToServer, ensureServer, findServer, removePrFromServer, stateDir } from "./daemon.js";
 import { prKey, type AddOptions, type PrKey, type PrView } from "./registry.js";
+import { readWatchConfig, watchConfigFile, type WatchedRepo } from "./watchConfig.js";
 
 export function watcherStateFile(): string {
   return path.join(stateDir(), "watcher.json");
@@ -176,8 +181,12 @@ export async function planCleanup(
 }
 
 export interface PollDeps {
-  /** The PRs assigned to you right now. */
-  list?: (() => Promise<AssignedPr[]>) | undefined;
+  /**
+   * The PRs waiting on you right now in one configured repo. Called once per
+   * repo in `watch.json`, and for no other: a repo the file does not name is
+   * never asked about.
+   */
+  list?: ((repo: WatchedRepo) => Promise<AssignedPr[]>) | undefined;
   /** The current state of one PR, for the merged-or-closed check. */
   check?: ((ref: PrRef) => Promise<PrLifecycle>) | undefined;
   /**
@@ -186,8 +195,6 @@ export interface PollDeps {
    * be work for no one.
    */
   remove?: ((key: PrKey) => Promise<boolean>) | undefined;
-  /** Watch one `owner/repo` instead of every repo the token can see. */
-  repo?: string | undefined;
   /** Hand one PR to the server. Defaults to starting/finding it and adding. */
   add?: ((pr: AssignedPr, options: AddOptions) => Promise<PrView>) | undefined;
   options?: AddOptions | undefined;
@@ -199,6 +206,12 @@ export interface PollDeps {
  * then take back from it each held PR that has since been merged or closed,
  * so the index shows what can still be acted on.
  *
+ * The config file is read on every poll, so a repo added to it is watched
+ * from the next check without restarting anything. With no repos there is
+ * nothing to ask GitHub for new PRs about, and the poll says so; the held
+ * PRs are still looked after, since they are on the server whatever the
+ * file now says.
+ *
  * The server is reached through the same `ensureServer` every CLI invocation
  * uses, so the watcher never "starts the daemon" as a separate step — it
  * asks for one the way anything else does, and a server that died overnight
@@ -207,12 +220,24 @@ export interface PollDeps {
 export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
   const log = deps.onProgress ?? (() => {});
   const list =
-    deps.list ?? (() => listAssignedPrs(deps.repo ? { repo: deps.repo } : {}));
+    deps.list ?? ((repo: WatchedRepo) => listAssignedPrs({ repo: repo.repo, query: repo.query }));
   const before = readWatcherState();
 
+  const config = readWatchConfig();
+  for (const problem of config.problems) log(`${watchConfigFile()}: ${problem}`);
+  if (config.repos.length === 0) {
+    log(`Nothing to watch: ${watchConfigFile()} names no repos.`);
+  }
+
+  // One query per configured repo, and all or nothing: a repo whose query
+  // failed would otherwise look emptied, and its PRs would fall out of
+  // `seen` for a GitHub hiccup rather than for anything that happened.
   let assigned: AssignedPr[];
   try {
-    assigned = await list();
+    assigned = [];
+    for (const repo of config.repos) {
+      assigned.push(...(await list(repo)));
+    }
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     log(`poll failed: ${why}`);
@@ -222,10 +247,13 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
   }
 
   const { dispatch, seen } = planPoll(assigned, before.seen);
-  log(
-    `${assigned.length} PR${assigned.length === 1 ? "" : "s"} assigned; ` +
-      `${dispatch.length} new.`,
-  );
+  if (config.repos.length > 0) {
+    const repos = config.repos.length;
+    log(
+      `${assigned.length} PR${assigned.length === 1 ? "" : "s"} waiting ` +
+        `across ${repos} repo${repos === 1 ? "" : "s"}; ${dispatch.length} new.`,
+    );
+  }
 
   // Note what is *not* set here: a workDir. The daemon keys one per PR
   // under the state dir, so it is already durable and already separate.
@@ -293,8 +321,6 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
 export interface RunWatcherOptions {
   /** How long to wait between polls. */
   intervalMs?: number | undefined;
-  /** Watch one `owner/repo` instead of every repo the token can see. */
-  repo?: string | undefined;
   onProgress?: ((message: string) => void) | undefined;
   /** Stop after this many polls; for tests, which cannot loop forever. */
   maxPolls?: number | undefined;
@@ -324,7 +350,7 @@ export async function runWatcher(options: RunWatcherOptions = {}): Promise<void>
   process.once("SIGTERM", release);
 
   for (let polls = 0; options.maxPolls === undefined || polls < options.maxPolls; polls += 1) {
-    await pollOnce({ onProgress: log, ...(options.repo ? { repo: options.repo } : {}) });
+    await pollOnce({ onProgress: log });
     if (options.maxPolls !== undefined && polls + 1 >= options.maxPolls) break;
     await new Promise((resolve) => setTimeout(resolve, interval));
   }

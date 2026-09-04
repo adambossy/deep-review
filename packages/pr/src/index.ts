@@ -3,6 +3,8 @@ export {
   fetchPrInfo,
   listAssignedPrs,
   assignedPrsQuery,
+  namesRepo,
+  DEFAULT_REVIEW_QUERY,
   type PrInfo,
   type AssignedPr,
   type AssignedPrQuery,
