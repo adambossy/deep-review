@@ -162,16 +162,29 @@ export function renderPanel(
   // folded away by default: a widely used function has dozens, and the
   // code is what the panel is for.
   const nodeName = new Map(result.nodes.map((n) => [n.id, n.name]));
+  // Two distinct edges can resolve to what looks like the same caller (same
+  // displayed name, same call-site line) — e.g. a caller the graph walk
+  // reached through two different paths and never fully merged. Dedupe on
+  // what the user actually sees, so a real caller never appears twice.
+  const seenCallerRows = new Set<string>();
   const callerRows = result.edges
     .filter((edge) => edge.to === node.id)
     .flatMap((edge) => {
       const sites = sitesFor(side, edge).length ? sitesFor(side, edge) : sitesFor(side === "after" ? "before" : "after", edge);
-      return sites.map(
-        (site) =>
-          `<button class="caller-row" data-target="${esc(edge.from)}">↖ <code class="fn-name">${esc(
-            nodeName.get(edge.from) ?? edge.from,
-          )}</code> <span class="loc">L${site.line}</span> <code>${esc(site.snippet)}</code></button>`,
-      );
+      const name = nodeName.get(edge.from) ?? edge.from;
+      return sites
+        .filter((site) => {
+          const key = `${name} ${site.line} ${site.snippet}`;
+          if (seenCallerRows.has(key)) return false;
+          seenCallerRows.add(key);
+          return true;
+        })
+        .map(
+          (site) =>
+            `<button class="caller-row" data-target="${esc(edge.from)}">↖ <code class="fn-name">${esc(
+              name,
+            )}</code> <span class="loc">L${site.line}</span> <code>${esc(site.snippet)}</code></button>`,
+        );
     });
   const calledBy = callerRows.length
     ? `<details class="fn called-by"><summary title="tap a row to walk up">called by (${callerRows.length})</summary><div class="caller-rows">${callerRows.join("")}</div></details>`

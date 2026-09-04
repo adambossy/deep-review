@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -178,10 +178,37 @@ export class LspBackend implements LanguageBackend {
   private fileCache = new Map<string, string[]>();
   private symbolCache = new Map<string, LspDocumentSymbol[]>();
 
+  readonly rootDir: string;
+
   constructor(
-    readonly rootDir: string,
+    rootDir: string,
     private config: LspBackendConfig,
-  ) {}
+  ) {
+    // Canonicalize so relativizing against this root agrees with paths the
+    // LSP server reports back (e.g. pyright resolves macOS's symlinked
+    // /var/folders tmp dirs to /private/var/folders); otherwise the same
+    // file gets a different relative path per side and two call-graph walks
+    // of the same function never merge into one node.
+    try {
+      this.rootDir = realpathSync(rootDir);
+    } catch {
+      this.rootDir = rootDir;
+    }
+  }
+
+  /**
+   * Canonicalize a caller-supplied path so it agrees with the paths pyright
+   * reports back (see the constructor note on `rootDir`) — otherwise a
+   * `DeclRef` coming in from outside this backend compares unequal to the
+   * "same" file pyright names in its response.
+   */
+  private canon(fileName: string): string {
+    try {
+      return realpathSync(fileName);
+    } catch {
+      return fileName;
+    }
+  }
 
   private start(): Promise<LspClient> {
     this.ready ??= (async () => {
@@ -339,11 +366,12 @@ export class LspBackend implements LanguageBackend {
 
   private async prepare(decl: DeclRef): Promise<LspCallHierarchyItem | null> {
     const client = await this.start();
-    await this.open(client, decl.fileName);
+    const fileName = this.canon(decl.fileName);
+    await this.open(client, fileName);
     const items = await client.request<LspCallHierarchyItem[] | null>(
       "textDocument/prepareCallHierarchy",
       {
-        textDocument: { uri: pathToFileURL(decl.fileName).href },
+        textDocument: { uri: pathToFileURL(fileName).href },
         position: { line: decl.line - 1, character: decl.column },
       },
     );
@@ -449,11 +477,12 @@ export class LspBackend implements LanguageBackend {
 
   async definitionAt(ref: DeclRef): Promise<DefinitionLocation | null> {
     const client = await this.start();
-    await this.open(client, ref.fileName);
+    const refFileName = this.canon(ref.fileName);
+    await this.open(client, refFileName);
     const raw = await client.request<LspLocation | LspLocation[] | LspLocationLink[] | null>(
       "textDocument/definition",
       {
-        textDocument: { uri: pathToFileURL(ref.fileName).href },
+        textDocument: { uri: pathToFileURL(refFileName).href },
         position: { line: ref.line - 1, character: ref.column },
       },
     );
@@ -466,7 +495,7 @@ export class LspBackend implements LanguageBackend {
     const nameRange = "targetSelectionRange" in first ? first.targetSelectionRange : first.range;
     const fileName = fileURLToPath(uri);
     const self =
-      fileName === ref.fileName &&
+      fileName === refFileName &&
       nameRange.start.line === ref.line - 1 &&
       nameRange.start.character <= ref.column &&
       ref.column <= nameRange.end.character;
@@ -551,11 +580,12 @@ export class LspBackend implements LanguageBackend {
 
   async referencesAt(ref: DeclRef): Promise<IncomingReference[]> {
     const client = await this.start();
-    await this.open(client, ref.fileName);
+    const refFileName = this.canon(ref.fileName);
+    await this.open(client, refFileName);
     // Cross-file, same as incomingCallsAt above: wait out the background scan.
     await client.whenIdle();
     const locations = await client.request<LspLocation[] | null>("textDocument/references", {
-      textDocument: { uri: pathToFileURL(ref.fileName).href },
+      textDocument: { uri: pathToFileURL(refFileName).href },
       position: { line: ref.line - 1, character: ref.column },
       context: { includeDeclaration: false },
     });

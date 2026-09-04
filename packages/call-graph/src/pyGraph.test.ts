@@ -1,14 +1,17 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { walkCallGraph } from "./graph.js";
+import { mergeGraphs, walkCallGraph } from "./graph.js";
 import { LspBackend, pyrightConfig } from "./lspBackend.js";
 import type { FileDiff } from "./types.js";
 
 // Same chain as the TS test, in Python, analyzed via pyright over LSP:
 // top() -> mid() -> target() -> leaf(); diff touches mid and target.
-const dir = mkdtempSync(path.join(os.tmpdir(), "py-graph-test-"));
+// Canonicalized: macOS's /tmp is a symlink to /private/tmp, and pyright
+// reports paths through its own realpath, so comparisons against `dir` need
+// it resolved the same way the backend resolves its rootDir.
+const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "py-graph-test-")));
 writeFileSync(path.join(dir, "leaf.py"), "STEP = 1\n\n\ndef leaf(n):\n    return n + STEP\n");
 writeFileSync(
   path.join(dir, "target.py"),
@@ -74,6 +77,65 @@ describe("pyright backend", () => {
 
       const leaf = graph.nodes.get("leaf.py#leaf")!;
       expect(leaf.snapshot.source[0]!.lines.join("\n")).toContain("return n + STEP");
+    },
+  );
+
+  it(
+    "walks a self-referencing method pair (caller and new callee in the same file/class) into a single edge",
+    { timeout: 60_000 },
+    async () => {
+      // Reproduces the reported bug: a changed method (`caller`) calls a
+      // brand-new sibling method (`callee`) added by the same PR, both in
+      // one class/file. The BFS discovers this edge twice — once walking
+      // out from `caller`'s callees, once walking out from `callee`'s
+      // callers — and only the edge-key dedup in `walkCallGraph` keeps
+      // that from becoming two edges. That dedup only works if pyright
+      // reports the *same* file identity for `caller` both times: once
+      // from its own background workspace scan (seeded from the backend's
+      // `rootDir` at LSP init) and once from the explicit `didOpen` this
+      // backend issues per query. If those two ever disagree — e.g.
+      // because `rootDir` wasn't canonicalized the same way as the paths
+      // this backend opens documents with — pyright can treat the caller
+      // as two distinct documents, and the caller shows up twice in the
+      // "called by" list for the callee.
+      const checkoutDir = mkdtempSync(path.join(os.tmpdir(), "py-graph-self-ref-"));
+      writeFileSync(
+        path.join(checkoutDir, "session.py"),
+        [
+          "class Session:",
+          "    async def caller(self):",
+          "        await self.callee(",
+          "            x=1,",
+          "            y=2,",
+          "        )",
+          "",
+          "    async def callee(self, *, x, y):",
+          "        return x + y",
+          "",
+        ].join("\n"),
+      );
+      const sessionBackend = new LspBackend(checkoutDir, pyrightConfig());
+      try {
+        const decl = await sessionBackend.findFunction("caller", new Set(["session.py"]));
+        expect(decl).not.toBeNull();
+        const graph = await walkCallGraph(
+          sessionBackend,
+          decl!,
+          [changedFile("session.py")],
+          "new",
+        );
+
+        const callersOfCallee = [...graph.edges.values()].filter(
+          (e) => e.to === "session.py#callee",
+        );
+        expect(callersOfCallee).toHaveLength(1);
+        expect(callersOfCallee[0]!.from).toBe("session.py#caller");
+        expect(callersOfCallee[0]!.callSites).toHaveLength(1);
+        expect(callersOfCallee[0]!.callSites[0]!.line).toBe(3);
+      } finally {
+        sessionBackend.dispose();
+        rmSync(checkoutDir, { recursive: true, force: true });
+      }
     },
   );
 
