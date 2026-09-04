@@ -59,6 +59,8 @@ export interface NavServerOptions {
   /** Let a PR's language services go after this long with no question asked. */
   sessionIdleMs?: number | undefined;
   onProgress?: ((message: string) => void) | undefined;
+  /** Where the registry remembers its ready PRs between runs; see `RegistryOptions.stateFile`. */
+  stateFile?: string | undefined;
 }
 
 export interface NavServer {
@@ -150,6 +152,7 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
     ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
     ...(options.sessionGraceMs !== undefined ? { sessionGraceMs: options.sessionGraceMs } : {}),
     ...(options.sessionIdleMs !== undefined ? { sessionIdleMs: options.sessionIdleMs } : {}),
+    ...(options.stateFile !== undefined ? { stateFile: options.stateFile } : {}),
     onProgress: log,
   });
 

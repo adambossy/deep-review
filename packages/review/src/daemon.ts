@@ -34,6 +34,11 @@ export function logFile(): string {
   return path.join(stateDir(), "server.log");
 }
 
+/** The ready PRs the server held last time, so a restart shows them without rebuilding. */
+export function registryFile(): string {
+  return path.join(stateDir(), "registry.json");
+}
+
 interface ServerLock {
   pid: number;
   port: number;
@@ -220,6 +225,7 @@ export async function runDaemon(options: RunDaemonOptions = {}): Promise<NavServ
     build: daemonBuild,
     // A re-added PR is only trusted while its head has not moved.
     currentHeadSha: async (ref) => (await fetchPrInfo(ref)).headSha,
+    stateFile: registryFile(),
     ...(options.port !== undefined ? { port: options.port } : {}),
     ...(options.concurrency !== undefined ? { concurrency: options.concurrency } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),

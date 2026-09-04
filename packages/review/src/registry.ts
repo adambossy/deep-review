@@ -8,8 +8,17 @@
  * language services are started only when a reader first clicks a symbol,
  * and let go again when the page goes away or the entry sits idle, because
  * a session is fully derivable from what was built and cheap to recreate.
+ *
+ * What was built is kept on disk too. A server lives for weeks and is
+ * restarted for the most ordinary reasons — a new version, a reboot — and
+ * without a memory every restart emptied the index and cost a slicing run
+ * per PR to refill it. The ready PRs are written to one JSON file under the
+ * state dir whenever the set of them changes, and read back when the
+ * registry is made, so a restart resumes with the same pages and no builds.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import {
   explorerSize,
   NavSession,
@@ -148,6 +157,12 @@ export interface RegistryOptions {
   /** Progress lines kept per PR; the oldest are dropped past this. */
   logLimit?: number | undefined;
   onProgress?: ((message: string) => void) | undefined;
+  /**
+   * Where the ready PRs are remembered between runs. Read once when the
+   * registry is made, written whenever the set of ready PRs changes. Absent,
+   * the registry forgets everything on exit, as a `--no-daemon` run should.
+   */
+  stateFile?: string | undefined;
 }
 
 interface Entry extends PrRef {
@@ -167,6 +182,60 @@ interface Entry extends PrRef {
   release?: NodeJS.Timeout;
 }
 
+/**
+ * One ready PR as written to the state file: what identifies it, what it was
+ * added with, and what the build produced — everything `view()` and
+ * `sessionFor()` read, and nothing a build would have to redo. A session is
+ * not here; it never survived a page reload either, and is remade from
+ * `built.headDir` on the first click.
+ */
+interface SavedPr extends PrRef {
+  options: AddOptions;
+  addedAt: number;
+  readyAt: number;
+  built: BuiltPr;
+}
+
+interface SavedRegistry {
+  version: 1;
+  prs: SavedPr[];
+}
+
+/** The state file's records, or none: a file that cannot be read is an empty memory, not a failed start. */
+function readSavedPrs(file: string): SavedPr[] {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<SavedRegistry>;
+    if (!Array.isArray(parsed.prs)) return [];
+    return parsed.prs.filter(isSavedPr);
+  } catch {
+    // No file, or one we cannot read: an empty memory is the safe start —
+    // the worst it costs is the builds a restart cost before this existed.
+    return [];
+  }
+}
+
+/** Enough of a record's shape to trust it; a half-written file yields nothing rather than a crash later. */
+function isSavedPr(record: unknown): record is SavedPr {
+  if (typeof record !== "object" || record === null) return false;
+  const r = record as Partial<SavedPr>;
+  return (
+    typeof r.owner === "string" &&
+    typeof r.repo === "string" &&
+    Number.isInteger(r.number) &&
+    typeof r.addedAt === "number" &&
+    typeof r.readyAt === "number" &&
+    typeof r.options === "object" &&
+    r.options !== null &&
+    typeof r.built === "object" &&
+    r.built !== null &&
+    typeof r.built.headDir === "string" &&
+    typeof r.built.html === "string" &&
+    typeof r.built.input === "object" &&
+    r.built.input !== null &&
+    Array.isArray(r.built.input.slices)
+  );
+}
+
 const DEFAULTS = {
   concurrency: 2,
   sessionGraceMs: 3000,
@@ -182,6 +251,7 @@ export class PrRegistry {
   private readonly sessionIdleMs: number;
   private readonly logLimit: number;
   private readonly log: (message: string) => void;
+  private readonly stateFile: string | null;
   /** Keys waiting for a build slot, in the order they were added. */
   private readonly queue: PrKey[] = [];
   private building = 0;
@@ -195,6 +265,8 @@ export class PrRegistry {
     this.sessionIdleMs = options.sessionIdleMs ?? DEFAULTS.sessionIdleMs;
     this.logLimit = options.logLimit ?? DEFAULTS.logLimit;
     this.log = options.onProgress ?? (() => {});
+    this.stateFile = options.stateFile ?? null;
+    if (this.stateFile) this.restore(this.stateFile);
     // An idle session is worth reclaiming but not worth watching closely;
     // a sweep at a fraction of the idle window is close enough.
     if (this.sessionIdleMs > 0) {
@@ -267,6 +339,14 @@ export class PrRegistry {
       delete entry.release;
     }
     if (!entry.session) {
+      // The checkout is only ever read from here, so this is where its
+      // absence — a cleaned work dir, a state dir moved between runs — is
+      // found. Fail this question, not the page, and not the server.
+      if (!existsSync(entry.built.headDir)) {
+        throw new Error(
+          `the head checkout for ${key} is gone (${entry.built.headDir}); remove and re-add the PR to rebuild it`,
+        );
+      }
       this.log(`${key}: starting language services.`);
       entry.session = new NavSession(entry.built.headDir, entry.built.input, {
         debug: entry.built.input.debugMarks,
@@ -310,6 +390,10 @@ export class PrRegistry {
     const queued = this.queue.indexOf(key);
     if (queued !== -1) this.queue.splice(queued, 1);
     this.entries.delete(key);
+    // Written now, not at the next build: the watcher removes a PR once it
+    // is merged or closed, and a snapshot that still held it would put it
+    // back on the index at the next restart.
+    this.persist();
     return true;
   }
 
@@ -391,6 +475,77 @@ export class PrRegistry {
       entry.state = "failed";
       entry.error = error instanceof Error ? error.message : String(error);
       note(`failed — ${entry.error}`);
+    }
+    this.persist();
+  }
+
+  /**
+   * Take the previous run's ready PRs as this run's, straight into the
+   * table: no queue, no build. Their checkouts are not checked here — a
+   * page needs none, and the first click that does finds out (sessionFor).
+   */
+  private restore(file: string): void {
+    for (const saved of readSavedPrs(file)) {
+      const key = prKey(saved);
+      const entry: Entry = {
+        owner: saved.owner,
+        repo: saved.repo,
+        number: saved.number,
+        prUrl: prUrl(saved),
+        key,
+        state: "ready",
+        options: saved.options,
+        addedAt: saved.addedAt,
+        readyAt: saved.readyAt,
+        log: [`restored from ${path.basename(file)} — built in a previous run.`],
+        built: saved.built,
+        lastUsed: Date.now(),
+      };
+      this.entries.set(key, entry);
+    }
+    if (this.entries.size > 0) {
+      this.log(`restored ${this.entries.size} ready PR${this.entries.size === 1 ? "" : "s"} from ${file}.`);
+    }
+  }
+
+  /**
+   * Write every ready PR to the state file, whole. A handful of PRs and a
+   * change every few minutes at the busiest; nothing here is worth batching.
+   * A write that fails is logged and otherwise ignored — a server that
+   * cannot keep its memory should still serve what it holds.
+   *
+   * Only ready PRs are worth keeping. A queued or building one has nothing
+   * built yet, so restoring it would only mean redoing the same work — and
+   * a build is a promise on this process's event loop, which does not
+   * survive the process; it is dropped and comes back when it is added
+   * again, as the watcher does on its next poll. A failed one has nothing
+   * costly to lose, and forgetting it means the next add retries it, which
+   * is what a reader restarting the server after fixing whatever failed
+   * wants anyway.
+   */
+  private persist(): void {
+    if (!this.stateFile) return;
+    const prs: SavedPr[] = [];
+    for (const entry of this.entries.values()) {
+      if (entry.state !== "ready" || !entry.built || entry.readyAt === undefined) continue;
+      prs.push({
+        owner: entry.owner,
+        repo: entry.repo,
+        number: entry.number,
+        options: entry.options,
+        addedAt: entry.addedAt,
+        readyAt: entry.readyAt,
+        built: entry.built,
+      });
+    }
+    const snapshot: SavedRegistry = { version: 1, prs };
+    try {
+      mkdirSync(path.dirname(this.stateFile), { recursive: true });
+      writeFileSync(this.stateFile, JSON.stringify(snapshot));
+    } catch (error) {
+      this.log(
+        `could not write ${this.stateFile}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
