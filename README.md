@@ -11,20 +11,54 @@ pnpm install
 pnpm dev        # server on :3001, web on :5173
 ```
 
-Then, to view a PR in the slice explorer — the tool's primary interface,
-stacking slices vertically and each slice's call graph horizontally — run it
-against any GitHub PR URL:
+Then hand a PR to the slice explorer — the tool's primary interface, stacking
+slices vertically and each slice's call graph horizontally:
 
 ```sh
 export OPENAI_API_KEY=...   # or ANTHROPIC_API_KEY / GROK_API_KEY, see below
 pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
 ```
 
-This slices the PR with an agent, walks a call graph from each slice's
-target function, and opens the rendered report (`review-<repo>-pr<n>.html`)
-in your browser. See [The slice explorer](#the-slice-explorer) below for
-options, and [PR slicing](#pr-slicing) for the environment variables it
-needs.
+This slices the PR with an agent, walks a call graph from each slice's target
+function, serves the page from a local navigation server and opens it. See
+[The slice explorer](#the-slice-explorer) below for what the page does.
+
+### Adding PRs to the server
+
+One long-lived local server holds every PR you add. The first invocation
+starts it, later ones add their PRs to it, and each PR keeps its own URL until
+the server is stopped. A PR builds in the background — its URL opens at once
+and turns into the explorer when it is ready.
+
+```sh
+# One PR by URL; starts the server if it isn't already up.
+pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
+
+# Several at once as bare numbers, with the repo named separately
+# (or set DEEP_REVIEW_REPO=vercel/swr and drop --repo).
+pnpm --filter @deep-review/review cli 2950 2951 2952 --repo vercel/swr
+
+# Reuse a saved slicing run instead of paying for the agent again.
+pnpm --filter @deep-review/review cli 2950 --repo vercel/swr --slices slices.json
+
+# Stay attached until the PRs you added have finished building.
+pnpm --filter @deep-review/review cli 2950 --repo vercel/swr --wait
+
+# What the server holds, and how to stop it.
+pnpm --filter @deep-review/review cli status
+pnpm --filter @deep-review/review cli stop
+```
+
+After `pnpm build`, the same CLI is on your path as `pr-review`, so those read
+`pr-review 2950 --repo vercel/swr`. `--help` lists every flag, including
+`--max-graphs <n>` to cap the slow call-graph analysis, `--save <file>` to keep
+this run's slice JSON, and `--out <file>` for a static copy of the page.
+
+Environment: a model key is required unless `--slices` is given —
+`OPENAI_API_KEY` for the default model (`gpt-5.6-sol`), `ANTHROPIC_API_KEY` for
+`claude-*` models, `GROK_API_KEY` for `grok-*`; `GITHUB_TOKEN` for private
+repos; `LINEAR_API_KEY` is optional and enables linked-ticket context. A `.env`
+in the package or repo root is picked up automatically.
 
 ## Structure
 
@@ -35,13 +69,6 @@ needs.
 - `packages/call-graph` — analyze how a function's callers/callees change across a GitHub PR, using the TypeScript language service's call hierarchy. Includes an HTML report generator and CLI.
 - `packages/slicer` — break a PR's diff into prioritized slices with an agent. Includes a CLI.
 - `packages/review` — the two together: slices on the vertical axis, call graphs on the horizontal. Includes the `pr-review` CLI.
-
-## Getting started
-
-```sh
-pnpm install
-pnpm dev        # server on :3001, web on :5173
-```
 
 ## Scripts
 
@@ -62,117 +89,6 @@ Run from the repo root:
 - `GET /api/reviews/:id/findings` · `POST /api/reviews/:id/findings`
 
 Request/response shapes live in `packages/shared/src/index.ts`.
-
-## PR call-graph analysis
-
-Given a PR URL and a function name, `@deep-review/call-graph` checks out the
-PR's base and head commits, asks the TypeScript language service for the
-function's callers (incoming calls) and callees (outgoing calls) in each
-revision, and pairs every related function with the PR diff hunks that touch
-it.
-
-```sh
-pnpm --filter @deep-review/call-graph cli \
-  https://github.com/sindresorhus/ky/pull/874 calculateRetryDelay \
-  --out report.html
-```
-
-The HTML report shows callers above the target function and callees below,
-each entry collapsible, with a Before / After / Both toggle. Source is
-syntax-highlighted; the exact call to the target is marked inside each
-caller; elided regions get GitHub-style expanders (20 lines per click) with
-a breadcrumb of the enclosing symbols. `--layout columns` renders a
-two-pane sliding variant: callers | target by default; clicking a call site
-in the target's source slides the panes left (iOS-style) to show
-target | callee, with thin clickable rails on either edge to slide back and
-forth. `--layout explorer` goes further: it recursively walks the call graph
-out from the function in both directions, expanding through every function
-the PR changed and stopping at the first unchanged caller/callee boundaries.
-Each function is a panel in the same two-pane slider — tap a highlighted
-call to walk down the stack, tap a "called by" row to walk up — so a change
-that cuts deep through the stack can be traced end to end from either
-boundary. Use `--json` for the raw result instead. Programmatic use:
-
-```ts
-import { analyzePrCallGraph, createCallGraphReport } from "@deep-review/call-graph";
-
-const result = await analyzePrCallGraph({ prUrl, functionName }); // data
-await createCallGraphReport({ prUrl, functionName, outFile });    // data + HTML page
-```
-
-Languages: TypeScript/JavaScript are analyzed with an in-process TypeScript
-language service; Python with `pyright-langserver` over LSP (bundled — no
-install needed). The backend is chosen per PR from which file types the diff
-touches, falling back across languages when the function isn't found.
-
-Notes: set `GITHUB_TOKEN` for private repos; `#private` methods can be named
-with or without the `#`; the clone is cached per-PR under the system tmp dir
-(override with `--work-dir`). Dependencies of the analyzed repo are not
-installed, so calls that resolve through `node_modules` / site-packages may
-be missed.
-
-## PR slicing
-
-`@deep-review/slicer` reads a PR the way a reviewer would decide where to
-start: it takes the description, any linked Linear tickets, and the whole
-diff, and returns the changes grouped into **slices** — each accomplishing
-one coherent thing — ordered from most to least central to the PR's purpose.
-
-```sh
-export ANTHROPIC_API_KEY=...
-pnpm --filter @deep-review/slicer cli https://github.com/vercel/swr/pull/2950
-```
-
-The unit a slice holds is a **fragment**: a contiguous run of lines within
-one hunk. Hunks are too coarse to assign — a newly added file is a single
-hunk that may serve several purposes — so the agent cuts them finer, and its
-fragments must partition the diff: every added and removed line in exactly
-one slice. That is checked mechanically, and violations are handed back for
-repair rather than persisted, because a change assigned to no slice looks
-exactly like one that was considered and ranked last.
-
-The PR's metadata, tickets, and diff are fetched in plain code rather than by
-the agent — they are known-required inputs, and making the model discover
-them spends turns without adding judgment. What the agent gets tools for is
-the part that needs looking around: `read_file`, `list_directory`, and
-`search` (git grep), read-only over the base and head worktrees, so it can
-tell a load-bearing change from mechanical fallout.
-
-Output is a JSON file (`slices-<repo>-pr<n>.json`) validated against a Zod
-schema. Each slice may name a `target` function, which is the seam to the
-call-graph tool above: the target of the first slice is the entry point for
-the deepest-value walk of the PR.
-
-```ts
-import { slicePr, writeSliceReport } from "@deep-review/slicer";
-
-const report = await slicePr({ prUrl });
-writeSliceReport(report, "slices.json");
-```
-
-Add `--html <file>` for a report page: each slice in priority order with its
-summary, the reasoning behind its rank, and the actual diff lines every one
-of its fragments claims. Because the slices partition the diff, the page
-shows each changed line exactly once, under the one slice that owns it.
-
-Rendering is separable from slicing, so a saved run can be re-rendered — or
-several PRs combined into one page with a tab each — without paying for the
-agent again:
-
-```sh
-pnpm --filter @deep-review/slicer cli --render \
-  slices-spara-app-pr10169.json slices-spara-app-pr9986.json \
-  --html pr-slices.html
-```
-
-Use `--dry-run` to print the exact prompt (including the annotated diff)
-without spending a model call. The model defaults to `claude-opus-5`,
-overridable with `--model` or `DEEP_REVIEW_MODEL`.
-
-Environment: `ANTHROPIC_API_KEY` is required (a `.env` in the package or repo
-root is picked up automatically), `GITHUB_TOKEN` for private repos,
-`LINEAR_API_KEY` optional — without it, ticket references are reported and
-skipped rather than failing the run.
 
 ## Watching your assigned PRs
 
@@ -265,7 +181,7 @@ watching and stops the server.
 
 ## The slice explorer
 
-`@deep-review/review` fuses the two. Slices stack on the **vertical** axis in
+`@deep-review/review` fuses the slicer and the call-graph walker. Slices stack on the **vertical** axis in
 priority order; each slice's call graph walks on the **horizontal** axis.
 
 ```sh
@@ -318,7 +234,7 @@ there is to see, and the badge says so. Graph analysis is the slow part
 (~10-15s per slice), so `--max-graphs <n>` caps it, and a slice whose analysis
 fails is reported rather than silently dropped.
 
-## A note on the diff both tools analyze
+## A note on the diff that gets analyzed
 
 `prepareCheckouts` compares the PR's **merge base** to its head, not GitHub's
 `base.sha` to its head. GitHub reports `base.sha` as the current tip of the
