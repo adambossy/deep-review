@@ -77,6 +77,23 @@ optional and enables linked-ticket context. A `.env` in the package or repo
 root is picked up automatically, so `GITHUB_TOKEN=$(gh auth token)` can live
 there instead of being passed per invocation.
 
+### Have reviews waiting for you
+
+Finally, stop asking for reviews and let them arrive. Name a repo, and every
+PR that comes to wait on you there is sliced and built before you look:
+
+```sh
+GITHUB_TOKEN=$(gh auth token) pr-review watch --repo spara-ai/spara-app
+```
+
+That both adds the repo to `~/.deep-review/watch.json` and turns watching on,
+installing a launchd agent that survives logout and reboot. Because launchd
+sources no shell profile, the keys are captured from *this* shell at install
+time — so the model key and the token both have to be set for the command
+that installs it, and it refuses rather than failing at 3am without them. See
+[Watching your assigned PRs](#watching-your-assigned-prs) for the query each
+repo is watched with, and how to change it.
+
 ## Structure
 
 - `apps/server` — [Hono](https://hono.dev) API on Node. Reviews and findings, backed by an in-memory store (swap in a database via `src/store.ts`).
