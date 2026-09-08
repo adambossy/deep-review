@@ -11,6 +11,14 @@ pnpm install
 pnpm dev        # server on :3001, web on :5173
 ```
 
+Authenticate to GitHub once, and put the token `gh` holds in your environment
+— nothing here shells out to `gh`, so the login alone is not enough:
+
+```sh
+gh auth login
+export GITHUB_TOKEN=$(gh auth token)
+```
+
 Then hand a PR to the slice explorer — the tool's primary interface, stacking
 slices vertically and each slice's call graph horizontally:
 
@@ -56,9 +64,12 @@ this run's slice JSON, and `--out <file>` for a static copy of the page.
 
 Environment: a model key is required unless `--slices` is given —
 `OPENAI_API_KEY` for the default model (`gpt-5.6-sol`), `ANTHROPIC_API_KEY` for
-`claude-*` models, `GROK_API_KEY` for `grok-*`; `GITHUB_TOKEN` for private
-repos; `LINEAR_API_KEY` is optional and enables linked-ticket context. A `.env`
-in the package or repo root is picked up automatically.
+`claude-*` models, `GROK_API_KEY` for `grok-*`; `GITHUB_TOKEN` (or `GH_TOKEN`)
+for private repos, and required outright by `watch`, whose `assignee:@me` query
+has no meaning without a token to resolve it against; `LINEAR_API_KEY` is
+optional and enables linked-ticket context. A `.env` in the package or repo
+root is picked up automatically, so `GITHUB_TOKEN=$(gh auth token)` can live
+there instead of in your shell.
 
 ## Structure
 
