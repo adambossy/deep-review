@@ -16,6 +16,7 @@ its own is not enough — hand the token it holds to the command that needs it:
 
 ```sh
 gh auth login
+export GITHUB_TOKEN=$(gh auth token)
 ```
 
 Then hand a PR to the slice explorer — the tool's primary interface, stacking
@@ -23,19 +24,18 @@ slices vertically and each slice's call graph horizontally:
 
 ```sh
 export OPENAI_API_KEY=...   # or ANTHROPIC_API_KEY / GROK_API_KEY, see below
-GITHUB_TOKEN=$(gh auth token) \
-  pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
+pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
 ```
 
-Prefixing the invocation keeps the token out of your shell's environment. It
-does have to be on the invocation that *starts* the server, though: the server
-is long-lived and keeps the environment of whatever spawned it, so a token
-supplied to a later invocation never reaches it. The CLI notices that case and
-says so rather than failing obscurely on the first private repo.
+This slices the PR with an agent, walks a call graph from each slice's target function, serves the page from a local navigation server and opens it. It will automatically open the page with the slicing progress for you to monitor.
 
-This slices the PR with an agent, walks a call graph from each slice's target
-function, serves the page from a local navigation server and opens it. See
-[The slice explorer](#the-slice-explorer) below for what the page does.
+To have the server listen to new PRs as they get assigned to you, run the following once: 
+
+```sh
+pr-review watch --repo spara-ai/spara-app
+```
+
+That both adds the repo to `~/.deep-review/watch.json` and turns watching on, installing a launchd agent that survives logout and reboot. 
 
 ### Adding PRs to the server
 
@@ -77,23 +77,6 @@ optional and enables linked-ticket context. A `.env` in the package or repo
 root is picked up automatically, so `GITHUB_TOKEN=$(gh auth token)` can live
 there instead of being passed per invocation.
 
-### Have reviews waiting for you
-
-Finally, stop asking for reviews and let them arrive. Name a repo, and every
-PR that comes to wait on you there is sliced and built before you look:
-
-```sh
-GITHUB_TOKEN=$(gh auth token) pr-review watch --repo spara-ai/spara-app
-```
-
-That both adds the repo to `~/.deep-review/watch.json` and turns watching on,
-installing a launchd agent that survives logout and reboot. Because launchd
-sources no shell profile, the keys are captured from *this* shell at install
-time — so the model key and the token both have to be set for the command
-that installs it, and it refuses rather than failing at 3am without them. See
-[Watching your assigned PRs](#watching-your-assigned-prs) for the query each
-repo is watched with, and how to change it.
-
 ## Structure
 
 - `apps/server` — [Hono](https://hono.dev) API on Node. Reviews and findings, backed by an in-memory store (swap in a database via `src/store.ts`).
@@ -104,16 +87,22 @@ repo is watched with, and how to change it.
 - `packages/slicer` — break a PR's diff into prioritized slices with an agent. Includes a CLI.
 - `packages/review` — the two together: slices on the vertical axis, call graphs on the horizontal. Includes the `pr-review` CLI.
 
+
+
 ## Scripts
 
 Run from the repo root:
 
-| Command          | What it does                          |
-| ---------------- | ------------------------------------- |
+
+| Command          | What it does                           |
+| ---------------- | -------------------------------------- |
 | `pnpm dev`       | Start server and web app in watch mode |
-| `pnpm build`     | Build every package                   |
-| `pnpm typecheck` | Type-check every package              |
-| `pnpm test`      | Run all tests (Vitest)                |
+| `pnpm build`     | Build every package                    |
+| `pnpm typecheck` | Type-check every package               |
+| `pnpm test`      | Run all tests (Vitest)                 |
+
+
+
 
 ## API
 
@@ -142,8 +131,7 @@ a server to start yourself. New PRs simply appear on the server's index,
 built and ready.
 
 Which repos it watches is the business of one file, `~/.deep-review/watch.json`
-(under `$DEEP_REVIEW_HOME`, beside the rest of the state). `pr-review watch
---repo <owner>/<repo>` adds a repo to it; or write it yourself:
+(under `$DEEP_REVIEW_HOME`, beside the rest of the state). `pr-review watch --repo <owner>/<repo>` adds a repo to it; or write it yourself:
 
 ```json
 {
@@ -189,92 +177,8 @@ paid slicing run. Anything that drops out of the list is forgotten, so
 approving a PR and having it reassigned, or unassigning and reassigning, is
 the deliberate way to ask for it again.
 
-Once a PR is merged or closed, its page leaves the server's index on the next
-check, so the index shows only what can still be acted on. Leaving the list is
-not what triggers this — approval, unassignment and turning back into a draft
-all do that, and none of them finish a PR — so every PR handed over is asked
+Once a PR is merged or closed, its page leaves the server's index on the next  
+check, so the index shows only what can still be acted on. Leaving the list is  
+not what triggers this — approval, unassignment and turning back into a draft  
+all do that, and none of them finish a PR — so every PR handed over is asked  
 about directly until GitHub says it is closed.
-
-Turning it on installs a launchd agent (`com.deep-review.watcher`), which is
-what carries it across reboots. Two consequences worth knowing:
-
-- **Keys are captured at install time.** launchd sources no shell profile, so
-  the agent can only have what your shell had when you ran `watch`. It refuses
-  to install without a model key and a GitHub token rather than failing at 3am,
-  and stores them in `~/.deep-review/watcher.env` (mode 0600) rather than in
-  the plist, which lives in a world-readable directory.
-- **Install from a permanent checkout.** The agent points at the exact
-  interpreter and CLI path that installed it, so installing from a git
-  worktree or a temp dir gives you something that breaks silently when that
-  path is removed. `watch` refuses those paths; `--force` overrides.
-
-State lives beside the server's, under `~/.deep-review` (`$DEEP_REVIEW_HOME`):
-`watch.json` for what to watch, `watcher.json` for what has been handed over,
-`watcher.log` for what the agent has been doing. `pr-review stop` stops
-watching and stops the server.
-
-## The slice explorer
-
-`@deep-review/review` fuses the slicer and the call-graph walker. Slices stack on the **vertical** axis in
-priority order; each slice's call graph walks on the **horizontal** axis.
-
-```sh
-pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
-```
-
-It slices the PR, walks a call graph from each slice's named `target`, then
-serves the page from a local **navigation server** (`http://127.0.0.1:<port>/`)
-and opens it; Ctrl-C stops the server, as does closing the page. The server
-keeps the language services warm over the PR's head checkout and answers
-symbol clicks on demand — where a symbol is defined, who calls it, the panel
-for a definition nothing on the page had shown yet — so nothing is resolved
-ahead of time and nothing is capped. `--out <file>` also writes a static copy
-(readable, but symbol clicks are inert without the server); `--no-serve`
-writes that copy and exits. Reuse a previous slicing run with
-`--slices <file>` to skip the agent entirely — that is the fast loop while
-iterating on the page itself; `scripts/rerender.sh` wraps it for a batch of
-saved reports.
-
-In place of the URL you can pass just the PR number, as long as something
-names the repo it belongs to — `--repo <owner>/<repo>`, or the
-`DEEP_REVIEW_REPO` environment variable:
-
-```sh
-pnpm --filter @deep-review/review cli 2950 --repo vercel/swr
-```
-
-Vertically, scrolling inside a slice behaves normally until its content runs
-out; pushing past the bottom carries you to the next slice, past the top to
-the previous one, landing at the edge you were heading toward so the motion
-reads as one continuous column. A firm flick clears the threshold, a coasting
-scroll that merely lands on the boundary does not. Pips, PageUp/PageDown, and
-labelled rails at the top and bottom do the same thing deliberately.
-
-Horizontally, each slice starts at its **slice panel** — the slice's title,
-reasoning, and every fragment's diff. Any identifier in that diff is
-tappable: the server resolves it, and its panel slides in exactly as the
-standalone explorer does (a call-graph function's own panel when it has one,
-a definition panel otherwise; a declaration already in view lights up in
-place instead). ⌘-click a symbol — a newly declared function included — for
-a menu of everything that calls or references it, and tap a row to walk up
-into the caller with the call site highlighted. From there the usual walk up
-(called-by rows) and down (call marks) applies. Each slice keeps its own
-track and position, so walking deep into one slice's callers leaves the
-others where you left them.
-
-A slice only gets a horizontal axis if it named a target and the language
-service could resolve it. Slices without one still render — their diff is all
-there is to see, and the badge says so. Graph analysis is the slow part
-(~10-15s per slice), so `--max-graphs <n>` caps it, and a slice whose analysis
-fails is reported rather than silently dropped.
-
-## A note on the diff that gets analyzed
-
-`prepareCheckouts` compares the PR's **merge base** to its head, not GitHub's
-`base.sha` to its head. GitHub reports `base.sha` as the current tip of the
-base branch, so on a branch that has fallen behind, diffing against it pulls
-in every unrelated commit that landed on the base since — on one stale PR
-that was the difference between 1,025 changed lines and 26,911. The merge
-base is what GitHub's own "Files changed" compares against, so both the
-call-graph walk and the slicer now see the same diff a reviewer does. The
-base worktree is checked out at the merge base to match.
