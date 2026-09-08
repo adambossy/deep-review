@@ -11,12 +11,11 @@ pnpm install
 pnpm dev        # server on :3001, web on :5173
 ```
 
-Authenticate to GitHub once, and put the token `gh` holds in your environment
-— nothing here shells out to `gh`, so the login alone is not enough:
+Authenticate to GitHub once. Nothing here shells out to `gh`, so the login on
+its own is not enough — hand the token it holds to the command that needs it:
 
 ```sh
 gh auth login
-export GITHUB_TOKEN=$(gh auth token)
 ```
 
 Then hand a PR to the slice explorer — the tool's primary interface, stacking
@@ -24,8 +23,15 @@ slices vertically and each slice's call graph horizontally:
 
 ```sh
 export OPENAI_API_KEY=...   # or ANTHROPIC_API_KEY / GROK_API_KEY, see below
-pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
+GITHUB_TOKEN=$(gh auth token) \
+  pnpm --filter @deep-review/review cli https://github.com/vercel/swr/pull/2950
 ```
+
+Prefixing the invocation keeps the token out of your shell's environment. It
+does have to be on the invocation that *starts* the server, though: the server
+is long-lived and keeps the environment of whatever spawned it, so a token
+supplied to a later invocation never reaches it. The CLI notices that case and
+says so rather than failing obscurely on the first private repo.
 
 This slices the PR with an agent, walks a call graph from each slice's target
 function, serves the page from a local navigation server and opens it. See
@@ -69,7 +75,7 @@ for private repos, and required outright by `watch`, whose `assignee:@me` query
 has no meaning without a token to resolve it against; `LINEAR_API_KEY` is
 optional and enables linked-ticket context. A `.env` in the package or repo
 root is picked up automatically, so `GITHUB_TOKEN=$(gh auth token)` can live
-there instead of in your shell.
+there instead of being passed per invocation.
 
 ## Structure
 
