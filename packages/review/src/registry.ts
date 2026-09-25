@@ -26,6 +26,7 @@ import {
   type SliceExplorerInput,
 } from "@deep-review/call-graph";
 import { prUrl, type PrRef } from "@deep-review/pr";
+import { readWatchConfig } from "./watchConfig.js";
 
 export type { PrRef } from "@deep-review/pr";
 
@@ -348,8 +349,12 @@ export class PrRegistry {
         );
       }
       this.log(`${key}: starting language services.`);
+      // Read now rather than at startup, so an interpreter added to the file
+      // takes effect the next time a PR's services start.
+      const pythonPath = readWatchConfig().repos.find((r) => r.repo === `${entry.owner}/${entry.repo}`)?.python;
       entry.session = new NavSession(entry.built.headDir, entry.built.input, {
         debug: entry.built.input.debugMarks,
+        pythonPath,
       });
       entry.session.warm();
     }

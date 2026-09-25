@@ -1,4 +1,5 @@
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -189,5 +190,41 @@ describe("pyright backend", () => {
     expect([os!.external, os!.self]).toEqual([true, false]);
     const self = await backend.definitionAt({ fileName: path.join(dir, "target.py"), line: 5, column: 4 });
     expect([self!.self, self!.name, self!.kind, self!.nameLine]).toEqual([true, "target", "function", 5]);
+  });
+});
+
+// A package installed only in a venv, as a PR's third-party imports are: the
+// head checkout has no environment, so pyright finds it only when told which
+// interpreter to use.
+describe("pyright backend with an interpreter", () => {
+  const venvDir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "py-venv-test-")));
+  const repoDir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "py-repo-test-")));
+  const python = path.join(venvDir, "bin", "python");
+  execFileSync("python3", ["-m", "venv", "--without-pip", venvDir]);
+  const sitePackages = execFileSync(python, ["-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"], {
+    encoding: "utf8",
+  }).trim();
+  mkdirSync(path.join(sitePackages, "fakepkg"));
+  writeFileSync(path.join(sitePackages, "fakepkg", "__init__.py"), "def check(value):\n    return value\n");
+  writeFileSync(path.join(repoDir, "use.py"), "from fakepkg import check\n\n\ndef run():\n    return check(1)\n");
+  const use = { fileName: path.join(repoDir, "use.py"), line: 5, column: 11 };
+  const bare = new LspBackend(repoDir, pyrightConfig());
+  const withVenv = new LspBackend(repoDir, pyrightConfig(python));
+  afterAll(() => {
+    bare.dispose();
+    withVenv.dispose();
+    rmSync(venvDir, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it("opens a name imported from an installed package only once it knows the interpreter", { timeout: 60_000 }, async () => {
+    expect(await bare.definitionAt(use)).toBeNull();
+    const def = await withVenv.definitionAt(use);
+    expect(def && [def.name, def.kind, def.external, path.relative(sitePackages, def.fileName)]).toEqual([
+      "check",
+      "function",
+      true,
+      path.join("fakepkg", "__init__.py"),
+    ]);
   });
 });

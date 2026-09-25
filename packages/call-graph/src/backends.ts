@@ -14,11 +14,15 @@ export class Backends {
   private ts: TsBackend | null = null;
   private py: LspBackend | null = null;
 
-  constructor(private rootDir: string) {}
+  constructor(
+    private rootDir: string,
+    /** Interpreter Python imports resolve against; see `pyrightConfig`. */
+    private pythonPath?: string,
+  ) {}
 
   for(file: string): LanguageBackend | null {
     if (TS_EXTENSIONS.test(file)) return (this.ts ??= new TsBackend(this.rootDir));
-    if (PY_EXTENSIONS.test(file)) return (this.py ??= new LspBackend(this.rootDir, pyrightConfig()));
+    if (PY_EXTENSIONS.test(file)) return (this.py ??= new LspBackend(this.rootDir, pyrightConfig(this.pythonPath)));
     return null;
   }
 
