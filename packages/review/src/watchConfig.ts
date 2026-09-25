@@ -13,6 +13,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { namesRepo } from "@deep-review/pr";
 import { stateDir } from "./daemon.js";
@@ -30,6 +31,13 @@ export interface WatchedRepo {
    * the key, and is appended for you. Absent means the default query.
    */
   query?: string | undefined;
+  /**
+   * A Python interpreter with the repo's dependencies installed — a local
+   * clone's `.venv/bin/python`, say. The head checkout a PR is read from has
+   * no environment of its own, so without this a name imported from a
+   * third-party package has no definition to open.
+   */
+  python?: string | undefined;
 }
 
 /**
@@ -38,9 +46,12 @@ export interface WatchedRepo {
  * about its query is just `{}`: naming a repo is all it takes to watch it.
  *
  *   { "repos": { "acme/widgets": {}, "acme/gadgets": { "query": "..." } } }
+ *
+ * An entry may also name the `python` its PRs' imports resolve against;
+ * the server reads that each time it starts a PR's language services.
  */
 export interface WatchConfig {
-  repos: Record<string, { query?: string | undefined }>;
+  repos: Record<string, { query?: string | undefined; python?: string | undefined }>;
 }
 
 export interface ParsedWatchConfig {
@@ -80,9 +91,17 @@ export function parseWatchConfig(raw: unknown): ParsedWatchConfig {
       problems.push(`${repo}: entry should be an object like {} or { "query": "..." }; skipped.`);
       continue;
     }
-    const query = (entry as { query?: unknown }).query;
+    const { query, python } = entry as { query?: unknown; python?: unknown };
+    // A bad interpreter costs navigation, not watching: note it and keep the repo.
+    let pythonPath: string | undefined;
+    if (typeof python === "string" && python.trim() !== "") {
+      pythonPath = python.trim().replace(/^~(?=\/|$)/, os.homedir());
+    } else if (python !== undefined) {
+      problems.push(`${repo}: "python" should be a path to an interpreter; ignored.`);
+    }
+    const extra = pythonPath ? { python: pythonPath } : {};
     if (query === undefined) {
-      repos.push({ repo });
+      repos.push({ repo, ...extra });
       continue;
     }
     if (typeof query !== "string" || query.trim() === "") {
@@ -95,7 +114,7 @@ export function parseWatchConfig(raw: unknown): ParsedWatchConfig {
       );
       continue;
     }
-    repos.push({ repo, query: query.trim() });
+    repos.push({ repo, query: query.trim(), ...extra });
   }
   return { repos, problems };
 }
