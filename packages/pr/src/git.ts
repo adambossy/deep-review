@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { PrInfo } from "./github.js";
@@ -30,6 +30,42 @@ function git(args: string[], cwd: string): string {
   });
 }
 
+/**
+ * Whether a failed git command died of the network rather than of its
+ * arguments: GitHub resetting a long pack download mid-stream is routine
+ * for a repo this size, and trying again is the whole fix.
+ */
+export function isTransientGitError(error: unknown): boolean {
+  const e = error as { stderr?: unknown; message?: unknown } | null;
+  const text = `${String(e?.stderr ?? "")}\n${String(e?.message ?? "")}`;
+  return /RPC failed|Connection reset|timed out|early EOF|unexpected disconnect|remote end hung up|Could not resolve host|from promisor remote|invalid index-pack output/i.test(
+    text,
+  );
+}
+
+const NETWORK_ATTEMPTS = 3;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Run a git step that talks to the remote, again after a pause when it
+ * fails for a network reason. `reset` undoes whatever a failed attempt left
+ * half-done so the next one starts clean.
+ */
+function withNetworkRetry<T>(run: () => T, reset: () => void = () => {}): T {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return run();
+    } catch (error) {
+      if (attempt >= NETWORK_ATTEMPTS || !isTransientGitError(error)) throw error;
+      reset();
+      sleepSync(2000 * attempt);
+    }
+  }
+}
+
 export function defaultWorkDir(info: PrInfo): string {
   return path.join(
     os.tmpdir(),
@@ -44,7 +80,14 @@ function ensureWorktree(repoDir: string, dir: string, sha: string): void {
     if (current === sha) return;
     git(["worktree", "remove", "--force", dir], repoDir);
   }
-  git(["worktree", "add", "--detach", dir, sha], repoDir);
+  // A blob-less clone downloads file contents here, so this is a network step.
+  withNetworkRetry(
+    () => git(["worktree", "add", "--detach", dir, sha], repoDir),
+    () => {
+      rmSync(dir, { recursive: true, force: true });
+      git(["worktree", "prune"], repoDir);
+    },
+  );
 }
 
 /**
@@ -57,22 +100,34 @@ export function prepareCheckouts(info: PrInfo, workDir?: string): Checkouts {
   const repoDir = path.join(root, "repo");
 
   if (!existsSync(repoDir)) {
-    git(
-      ["clone", "--filter=blob:none", "--no-checkout", info.cloneUrl, repoDir],
-      root,
+    // Clone beside the cache and move it in only once whole: a clone cut
+    // off midway must not leave a `repo/` that every later build trusts.
+    const partialDir = `${repoDir}.partial`;
+    const clear = () => rmSync(partialDir, { recursive: true, force: true });
+    clear();
+    withNetworkRetry(
+      () =>
+        git(
+          ["clone", "--filter=blob:none", "--no-checkout", info.cloneUrl, partialDir],
+          root,
+        ),
+      clear,
     );
+    renameSync(partialDir, repoDir);
   }
 
-  try {
-    git(["fetch", "--force", "origin", info.baseSha, info.headSha], repoDir);
-  } catch {
-    // Some servers refuse fetching bare SHAs; the base branch and the PR
-    // head ref together are guaranteed to contain both commits.
-    git(
-      ["fetch", "--force", "origin", info.baseRef, `refs/pull/${info.number}/head`],
-      repoDir,
-    );
-  }
+  withNetworkRetry(() => {
+    try {
+      git(["fetch", "--force", "origin", info.baseSha, info.headSha], repoDir);
+    } catch {
+      // Some servers refuse fetching bare SHAs; the base branch and the PR
+      // head ref together are guaranteed to contain both commits.
+      git(
+        ["fetch", "--force", "origin", info.baseRef, `refs/pull/${info.number}/head`],
+        repoDir,
+      );
+    }
+  });
 
   const mergeBaseSha = git(
     ["merge-base", info.baseSha, info.headSha],
