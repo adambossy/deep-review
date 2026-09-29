@@ -204,6 +204,7 @@ export function explorerSize(input: SliceExplorerInput): SizeBreakdown {
 /** The slice's own panel: everything the PR changed for this one purpose. */
 function renderSlicePanel(
   slice: SliceInput,
+  all: readonly SliceInput[],
   rank: number,
   total: number,
   index: FileIndex,
@@ -237,7 +238,12 @@ function renderSlicePanel(
         return renderCodePane({
           file,
           entry,
-          rows: fragmentDiffRows(entry?.lines, group),
+          rows: fragmentDiffRows(
+            entry?.lines,
+            group,
+            undefined,
+            all.flatMap((s) => (s === slice ? [] : s.fragments.filter((f) => f.file === file))),
+          ),
           lang: languageOf(file),
           navigable: { side: "after" },
           debug,
@@ -738,7 +744,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
         <div class="viewport">
           <button class="rail rail-left"></button>
           <button class="rail rail-right"></button>
-          <div class="track">${renderSlicePanel(slice, i + 1, input.slices.length, index, debug)}</div>
+          <div class="track">${renderSlicePanel(slice, input.slices, i + 1, input.slices.length, index, debug)}</div>
         </div>
         <div class="panel-defs" hidden>${panels}</div>
       </section>`;

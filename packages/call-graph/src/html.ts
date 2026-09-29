@@ -403,6 +403,9 @@ export const CSS = `
     --del-bg: rgba(220, 38, 38, 0.08); --del-edge: #dc2626;
     --callsite-bg: rgba(79, 70, 229, 0.10);
     --add-inner: rgba(22, 163, 74, 0.28); --del-inner: rgba(220, 38, 38, 0.26);
+    /* Another slice's changes, shown as context: lime and rose, apart from the slice's own. */
+    --other-add-bg: rgba(132, 204, 22, 0.14); --other-add-edge: #65a30d; --other-add-inner: rgba(132, 204, 22, 0.38);
+    --other-del-bg: rgba(219, 39, 119, 0.08); --other-del-edge: #db2777; --other-del-inner: rgba(219, 39, 119, 0.24);
     --tok-kw: #9333ea; --tok-str: #15803d; --tok-com: #a1a1aa;
     --tok-num: #b45309; --tok-fn: #4f46e5; --tok-type: #0e7490; --tok-lit: #b45309;
   }
@@ -416,6 +419,8 @@ export const CSS = `
       --del-bg: rgba(248, 113, 113, 0.08); --del-edge: #f87171;
       --callsite-bg: rgba(129, 140, 248, 0.14);
       --add-inner: rgba(74, 222, 128, 0.28); --del-inner: rgba(248, 113, 113, 0.26);
+      --other-add-bg: rgba(163, 230, 53, 0.08); --other-add-edge: #a3e635; --other-add-inner: rgba(163, 230, 53, 0.26);
+      --other-del-bg: rgba(244, 114, 182, 0.08); --other-del-edge: #f472b6; --other-del-inner: rgba(244, 114, 182, 0.24);
       --tok-kw: #c084fc; --tok-str: #86efac; --tok-com: #5c5f66;
       --tok-num: #fbbf24; --tok-fn: #a5b4fc; --tok-type: #67e8f9; --tok-lit: #fbbf24;
     }
@@ -509,6 +514,12 @@ export const CSS = `
   /* Within a changed pair of lines, the words that actually differ. */
   .source .diff-add-inner { background: var(--add-inner); border-radius: 2px; }
   .source .diff-del-inner { background: var(--del-inner); border-radius: 2px; }
+  .source .line.diff-other-add { background: var(--other-add-bg); }
+  .source .line.diff-other-del { background: var(--other-del-bg); }
+  .source .line.diff-other-add .lineno { color: var(--other-add-edge); }
+  .source .line.diff-other-del .lineno { color: var(--other-del-edge); }
+  .source .diff-other-add .diff-add-inner { background: var(--other-add-inner); }
+  .source .diff-other-del .diff-del-inner { background: var(--other-del-inner); }
   /* The declaration a panel is about, marked along its left edge so it stands
      out from the context around it without competing with the diff colors. */
   .source .line.in-focus { box-shadow: inset 3px 0 0 var(--accent); }

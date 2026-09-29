@@ -120,6 +120,14 @@ describe("fragmentDiffRows", () => {
     expect(summary(rows)).toEqual(["gap 1-37", "38", "39", "- gone;", "40", "41", "gap 42-60"]);
   });
 
+  it("keeps another slice's changes inside the context, tinted as theirs", () => {
+    // Another slice added line 5 and removed a line sitting before line 6.
+    const other = { lines: ["+line 5;", "-was;"], newLineNumbers: [5, null], headStart: 5, headEnd: 5 };
+    const rows = fragmentDiffRows(lines, [first], 3, [other]);
+    expect(summary(rows)).toEqual(["1", "2", "+3", "- old;", "4", "+5", "- was;", "6", "gap 7-60"]);
+    expect(rows.flatMap((r) => ("other" in r && r.other ? [r.text] : []))).toEqual(["line 5;", "was;"]);
+  });
+
   it("falls back to the fragments alone, fixed gaps between them, without the file's text", () => {
     const rows = fragmentDiffRows(undefined, [far, first]);
     expect(summary(rows)).toEqual(["2", "+3", "- old;", "gap 4-49", "+50"]);

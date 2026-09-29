@@ -32,8 +32,9 @@ import type { DiffHunk, SourceSegment } from "./types.js";
 
 export type DiffRow =
   | { kind: "ctx"; n: number; text: string }
-  | { kind: "add"; n: number; text: string; marks?: Mark[] }
-  | { kind: "del"; text: string; marks?: Mark[] }
+  /** `other`: the change belongs to another slice, shown here as context. */
+  | { kind: "add"; n: number; text: string; marks?: Mark[]; other?: true }
+  | { kind: "del"; text: string; marks?: Mark[]; other?: true }
   /** Hidden head lines `from..to`, expandable when the file is embedded. */
   | { kind: "gap"; from: number; to: number }
   /** A `\ No newline at end of file` marker. */
@@ -170,12 +171,15 @@ export function fileBlockRanges(
  * between them as gaps. Without the file's text there is no context to show
  * and nothing to expand into, so the fragments stand alone with fixed gaps
  * between them. Nothing is interleaved between fragments — no ids, no
- * summaries — the tinting already says which lines changed.
+ * summaries — the tinting already says which lines changed. Context that
+ * other slices changed (`others`, the rest of the file's fragments) keeps its
+ * real diff, tinted apart, so it never reads as unchanged code.
  */
 export function fragmentDiffRows(
   lines: readonly string[] | undefined,
   fragments: readonly FragmentSpan[],
   context: number = FRAGMENT_CONTEXT,
+  others: readonly FragmentSpan[] = [],
 ): DiffRow[] {
   const ordered = [...fragments].sort(
     (a, b) => a.headStart - b.headStart || a.headEnd - b.headEnd,
@@ -198,12 +202,14 @@ export function fragmentDiffRows(
   // Walk the visible ranges; within each, a fragment's own rows stand in
   // for the head lines it covers (a deletion-only fragment covers none, so
   // its rows go in just before the line it sits at).
+  const foreign = changesOf(others);
   let cursor = 0;
   let next = 0;
   for (const [from, to] of fileBlockRanges(ordered, lines.length, context)) {
     if (from > cursor + 1) rows.push({ kind: "gap", from: cursor + 1, to: from - 1 });
     let n = from;
     while (n <= to) {
+      rows.push(...(foreign.deleted.get(n) ?? []));
       const fragment = ordered[next];
       if (fragment && fragment.headStart === n) {
         rows.push(...fragmentRows(fragment.lines, fragment.newLineNumbers));
@@ -211,7 +217,8 @@ export function fragmentDiffRows(
         n = Math.max(n, fragment.headEnd + 1);
         continue;
       }
-      rows.push({ kind: "ctx", n, text: lines[n - 1] ?? "" });
+      const text = lines[n - 1] ?? "";
+      rows.push(foreign.added.has(n) ? { kind: "add", n, text, other: true } : { kind: "ctx", n, text });
       n++;
     }
     cursor = to;
@@ -219,6 +226,25 @@ export function fragmentDiffRows(
   if (cursor < lines.length) rows.push({ kind: "gap", from: cursor + 1, to: lines.length });
   markIntraLine(rows);
   return rows;
+}
+
+/** Other slices' changes by head line: lines they added, and removed lines by the head line they precede. */
+function changesOf(fragments: readonly FragmentSpan[]): { added: Set<number>; deleted: Map<number, DiffRow[]> } {
+  const added = new Set<number>();
+  const deleted = new Map<number, DiffRow[]>();
+  const put = (n: number, rows: DiffRow[]) => deleted.set(n, [...(deleted.get(n) ?? []), ...rows]);
+  for (const fragment of fragments) {
+    let pending: DiffRow[] = [];
+    for (const row of fragmentRows(fragment.lines, fragment.newLineNumbers)) {
+      if (row.kind === "del") pending.push({ ...row, other: true });
+      if (row.kind !== "add" && row.kind !== "ctx") continue;
+      if (row.kind === "add") added.add(row.n);
+      if (pending.length) put(row.n, pending);
+      pending = [];
+    }
+    if (pending.length) put(fragment.headEnd + 1, pending);
+  }
+  return { added, deleted };
 }
 
 /**
@@ -270,15 +296,19 @@ export function markIntraLine(rows: DiffRow[]): void {
     while (j < rows.length && rows[j]!.kind === "del") j++;
     let k = j;
     while (k < rows.length && rows[k]!.kind === "add") k++;
-    const dels = (rows.slice(i, j) as DelRow[]).filter((r) => !paired.has(r));
-    const adds = (rows.slice(j, k) as AddRow[]).filter((r) => !paired.has(r));
-    for (const [d, a] of pairLines(dels.map((r) => r.text), adds.map((r) => r.text))) {
-      const del = dels[d]!;
-      const add = adds[a]!;
-      const marks = intraLineMarks(del.text, add.text);
-      if (marks) {
-        del.marks = marks.del;
-        add.marks = marks.add;
+    // A slice's own lines pair only with its own, another slice's with theirs.
+    for (const other of [false, true]) {
+      const mine = (r: DelRow | AddRow) => !paired.has(r) && Boolean(r.other) === other;
+      const dels = (rows.slice(i, j) as DelRow[]).filter(mine);
+      const adds = (rows.slice(j, k) as AddRow[]).filter(mine);
+      for (const [d, a] of pairLines(dels.map((r) => r.text), adds.map((r) => r.text))) {
+        const del = dels[d]!;
+        const add = adds[a]!;
+        const marks = intraLineMarks(del.text, add.text);
+        if (marks) {
+          del.marks = marks.del;
+          add.marks = marks.add;
+        }
       }
     }
     i = k;
@@ -300,18 +330,20 @@ function markReindented(rows: readonly DiffRow[]): Set<DiffRow> {
   for (let end = 0; end <= rows.length; end++) {
     if (end < rows.length && rows[end]!.kind !== "gap") continue;
     const stretch = rows.slice(start, end);
-    const dels = stretch.filter((r): r is DelRow => r.kind === "del");
-    const adds = stretch.filter((r): r is AddRow => r.kind === "add");
-    for (const [d, a] of pairByContent(dels.map((r) => r.text), adds.map((r) => r.text))) {
-      const del = dels[d]!;
-      const add = adds[a]!;
-      const marks = intraLineMarks(del.text, add.text);
-      if (marks) {
-        del.marks = marks.del;
-        add.marks = marks.add;
+    for (const other of [false, true]) {
+      const dels = stretch.filter((r): r is DelRow => r.kind === "del" && Boolean(r.other) === other);
+      const adds = stretch.filter((r): r is AddRow => r.kind === "add" && Boolean(r.other) === other);
+      for (const [d, a] of pairByContent(dels.map((r) => r.text), adds.map((r) => r.text))) {
+        const del = dels[d]!;
+        const add = adds[a]!;
+        const marks = intraLineMarks(del.text, add.text);
+        if (marks) {
+          del.marks = marks.del;
+          add.marks = marks.add;
+        }
+        paired.add(del);
+        paired.add(add);
       }
-      paired.add(del);
-      paired.add(add);
     }
     start = end + 1;
   }
@@ -541,7 +573,7 @@ export function renderDiffRows(input: readonly DiffRow[], options: DiffRenderOpt
         out.push(lineRow("", width, esc(row.text)));
         return;
       case "del":
-        out.push(lineRow("−", width, renderLine(row.text, localTokens[i]!, row.marks ?? []), ["diff-del"]));
+        out.push(lineRow("−", width, renderLine(row.text, localTokens[i]!, row.marks ?? []), [row.other ? "diff-other-del" : "diff-del"]));
         return;
       default: {
         const deco = decorations?.get(row.n);
@@ -553,7 +585,7 @@ export function renderDiffRows(input: readonly DiffRow[], options: DiffRenderOpt
             ? fileLineHtml(entry, row.n, marks)
             : renderLine(row.text, localTokens[i]!, [...marks, ...identifierMarks(localIds[i]!, marks, debug)]);
         const cls = [
-          ...(row.kind === "add" ? ["diff-add"] : []),
+          ...(row.kind === "add" ? [row.other ? "diff-other-add" : "diff-add"] : []),
           ...(deco?.cls ?? []),
           ...(focus && row.n >= focus.startLine && row.n <= focus.endLine ? ["in-focus"] : []),
         ];
