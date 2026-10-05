@@ -167,8 +167,12 @@ export async function startNavServer(options: NavServerOptions): Promise<NavServ
     if (stopped) return closed;
     stopped = true;
     registry.dispose();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // close()'s callback waits for every open connection, so drop them first:
+    // an open review tab's keep-alive would otherwise hold the process (and
+    // its lock) alive after the port is gone, and the next CLI reuses it.
+    const done = new Promise<void>((resolve) => server.close(() => resolve()));
     server.closeAllConnections();
+    await done;
     resolveClosed();
     return closed;
   };

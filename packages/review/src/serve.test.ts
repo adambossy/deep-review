@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { SliceExplorerInput } from "@deep-review/call-graph";
@@ -225,7 +226,11 @@ describe("serveExplorer", () => {
     await fresh.close();
   }, 15_000);
 
-  it("stops when asked over /quit", async () => {
+  it("stops when asked over /quit, even with a connection held open", async () => {
+    // An open review tab's keep-alive must not hold the process up.
+    const idle = net.connect(Number(new URL(server.url).port), "127.0.0.1");
+    await new Promise((resolve) => idle.once("connect", resolve));
+    idle.on("error", () => {});
     expect((await fetch(new URL("/quit", server.url), { method: "POST" })).status).toBe(204);
     await Promise.race([server.closed, new Promise((_, reject) => setTimeout(() => reject(new Error("still up")), 2000))]);
     await expect(fetch(server.url)).rejects.toThrow();
