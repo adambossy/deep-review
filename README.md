@@ -150,6 +150,18 @@ you, so no entry's query can reach into a repo other than the one it is filed
 under; one that tries is skipped with a note in the log. The file is read on
 every check, so adding a repo needs no reinstall.
 
+A Python repo's entry can also name an interpreter with its dependencies
+installed, so a name imported from a third-party package opens its
+definition instead of going nowhere — the head checkout a PR is read from has
+no environment of its own:
+
+```json
+{ "repos": { "acme/widgets": { "python": "~/code/widgets/.venv/bin/python" } } }
+```
+
+It is read whenever a PR's language services start, so it applies to the next
+PR you open (or the current one once its services are let go).
+
 A repo not named in the file is never watched. Not queried, not touched, not
 on the server: there is no default that means "every repo your token can see",
 and no flag or environment variable that widens the list. An empty file, or

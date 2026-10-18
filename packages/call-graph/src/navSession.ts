@@ -52,6 +52,8 @@ export interface PanelAnswer {
 export interface NavSessionOptions {
   /** Debug builds: rendered panels explain their marks (`data-why`). */
   debug?: boolean | undefined;
+  /** Interpreter with the repo's dependencies, so a name imported from one resolves. */
+  pythonPath?: string | undefined;
 }
 
 function toRelative(root: string, fileName: string): string {
@@ -82,7 +84,7 @@ export class NavSession {
     input: SliceExplorerInput,
     options: NavSessionOptions = {},
   ) {
-    this.backends = new Backends(headDir);
+    this.backends = new Backends(headDir, options.pythonPath);
     this.index = explorerFileIndex(input);
     this.debug = options.debug ?? false;
     this.diff = input.diff ?? [];

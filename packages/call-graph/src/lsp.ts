@@ -35,6 +35,8 @@ export class LspClient {
     command: string,
     args: string[],
     readonly rootDir: string,
+    /** What the server is told when it asks for its settings, by section (`python`, `python.analysis`). */
+    private readonly settings: Record<string, unknown> = {},
   ) {
     this.child = spawn(command, args, { stdio: ["pipe", "pipe", "ignore"] });
     this.child.stdout!.on("data", (chunk: Buffer) => this.onData(chunk));
@@ -59,7 +61,7 @@ export class LspClient {
           definition: { linkSupport: true },
           references: {},
         },
-        workspace: { symbol: {} },
+        workspace: { symbol: {}, configuration: true },
       },
       workspaceFolders: [{ uri: rootUri, name: "root" }],
     });
@@ -166,7 +168,9 @@ export class LspClient {
       // Server→client request: answer generically so the server proceeds.
       const result =
         message.method === "workspace/configuration"
-          ? ((message.params as { items?: unknown[] })?.items ?? []).map(() => null)
+          ? ((message.params as { items?: Array<{ section?: string }> })?.items ?? []).map((item) =>
+              item.section ? sectionOf(this.settings, item.section) : null,
+            )
           : null;
       this.send({ jsonrpc: "2.0", id: message.id, result });
       return;
@@ -198,4 +202,14 @@ export class LspClient {
     }
     // Other notifications (diagnostics, logs) are ignored.
   }
+}
+
+/** One dotted section of a settings object (`python.analysis`), or null when absent. */
+function sectionOf(settings: Record<string, unknown>, section: string): unknown {
+  let value: unknown = settings;
+  for (const key of section.split(".")) {
+    if (!value || typeof value !== "object") return null;
+    value = (value as Record<string, unknown>)[key];
+  }
+  return value ?? null;
 }

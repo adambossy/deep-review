@@ -25,6 +25,20 @@ describe("parseWatchConfig", () => {
     expect(parsed.repos).toEqual([{ repo: "acme/widgets", query: "is:open is:pr review-requested:@me" }]);
   });
 
+  it("keeps a repo's interpreter, home-relative paths expanded, and notes a bad one without dropping the repo", () => {
+    const parsed = parseWatchConfig({
+      repos: {
+        "acme/widgets": { python: "~/code/widgets/.venv/bin/python", query: "is:open" },
+        "acme/gadgets": { python: 3 },
+      },
+    });
+    expect(parsed.repos).toEqual([
+      { repo: "acme/widgets", query: "is:open", python: path.join(os.homedir(), "code/widgets/.venv/bin/python") },
+      { repo: "acme/gadgets" },
+    ]);
+    expect(parsed.problems).toEqual([expect.stringMatching(/acme\/gadgets: "python" should be a path/)]);
+  });
+
   it("reads no repos from a document without any", () => {
     // `{}` and `{"repos": {}}` both mean watch nothing — never everything.
     expect(parseWatchConfig({}).repos).toEqual([]);

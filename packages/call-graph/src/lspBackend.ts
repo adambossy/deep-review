@@ -122,6 +122,8 @@ export interface LspBackendConfig {
    * answer workspace/symbol for files they have already loaded.
    */
   declPattern: (name: string) => RegExp;
+  /** Settings the server asks for over `workspace/configuration`, by section. */
+  settings?: Record<string, unknown>;
 }
 
 /**
@@ -144,8 +146,13 @@ function escapeRegExp(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Resolve the pyright language server shipped with the `pyright` package. */
-export function pyrightConfig(): LspBackendConfig {
+/**
+ * Resolve the pyright language server shipped with the `pyright` package.
+ * `pythonPath` is the interpreter whose site-packages imports resolve
+ * against; without it pyright uses whatever `python` is on the PATH, and a
+ * name imported from a package without bundled stubs goes nowhere.
+ */
+export function pyrightConfig(pythonPath?: string): LspBackendConfig {
   const require = createRequire(import.meta.url);
   const server = require.resolve("pyright/langserver.index.js");
   return {
@@ -155,6 +162,7 @@ export function pyrightConfig(): LspBackendConfig {
     extensions: [".py"],
     declPattern: (name) =>
       new RegExp(`^\\s*(?:async\\s+)?def\\s+${escapeRegExp(name)}\\s*\\(|^\\s*class\\s+${escapeRegExp(name)}\\b`),
+    ...(pythonPath ? { settings: { python: { pythonPath } } } : {}),
   };
 }
 
@@ -212,7 +220,7 @@ export class LspBackend implements LanguageBackend {
 
   private start(): Promise<LspClient> {
     this.ready ??= (async () => {
-      this.client = new LspClient(this.config.command, this.config.args, this.rootDir);
+      this.client = new LspClient(this.config.command, this.config.args, this.rootDir, this.config.settings);
       await this.client.initialize();
       return this.client;
     })();
