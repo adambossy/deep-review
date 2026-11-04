@@ -175,7 +175,7 @@ export async function buildSliceExplorerInput(
     repo: `${report.pr.owner}/${report.pr.repo}`,
     number: report.pr.number,
     overview: report.overview,
-    prDescription: report.pr.description,
+    howItWorks: report.howItWorks,
     prAuthor: report.pr.author,
     slices,
     ...(options.diff ? { diff: options.diff } : {}),

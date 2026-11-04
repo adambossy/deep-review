@@ -125,14 +125,14 @@ function render(overrides: Partial<SliceInput> = {}): string {
   });
 }
 
-/** The same page for a PR that has a description, for the description view. */
+/** The same page for a PR that has a walkthrough, for the How it works view. */
 const describedHtml = renderSliceExplorerHtml({
   prUrl: "https://github.com/a/b/pull/1",
   prTitle: "A PR",
   repo: "a/b",
   number: 1,
   overview: "does a thing",
-  prDescription: "# Why\n\nIt **hoists** `retry` out of the loop.",
+  howItWorks: "# Why\n\nIt **hoists** `retry` out of the loop.",
   prAuthor: "octocat",
   files,
   slices: [{ id: "slice-1", title: "First", summary: "s", rationale: "r", fragments: [fragment] }],
@@ -294,9 +294,9 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(html).toContain('window.NAV_BASE = ""');
   });
 
-  it("names the description in the sidebar, alongside the slices", () => {
+  it("names How it works in the sidebar, alongside the slices", () => {
     const side = html.slice(html.indexOf('<aside class="side">'), html.indexOf("</aside>"));
-    expect(side).toContain('<button class="side-link doc-link" type="button">PR Description</button>');
+    expect(side).toContain('<button class="side-link doc-link" type="button">How it works</button>');
     // Both kinds of destination are the same kind of tappable sidebar link.
     expect([...side.matchAll(/class="side-link/g)]).toHaveLength(3);
     expect(html).not.toContain("view-tab");
@@ -318,17 +318,17 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     // class, so the deck is never rebuilt on the way back.
     expect(html).toContain('<section class="doc-view">');
     expect(html).toContain('<div class="stage">');
-    expect(html).toContain("body.showing-description .doc-view { display: block; }");
-    expect(html).toContain("body.showing-description .stage { display: none; }");
-    expect(html).toContain('.doc-link")) body.classList.add("showing-description")');
-    expect(html).toContain('.slice-link")) body.classList.remove("showing-description")');
+    expect(html).toContain("body.showing-how .doc-view { display: block; }");
+    expect(html).toContain("body.showing-how .stage { display: none; }");
+    expect(html).toContain('.doc-link")) body.classList.add("showing-how")');
+    expect(html).toContain('.slice-link")) body.classList.remove("showing-how")');
   });
 
   it("leaves paging to the deck only while the deck is what's showing", () => {
-    expect(html).toContain('if (document.body.classList.contains("showing-description")) return;');
+    expect(html).toContain('if (document.body.classList.contains("showing-how")) return;');
   });
 
-  it("renders the description as markdown, alongside the model's overview", () => {
+  it("renders the walkthrough as markdown, alongside the model's overview", () => {
     const doc = describedHtml.slice(describedHtml.indexOf('class="doc-view"'));
     expect(doc).toContain(`<h3 class="md-h">Why</h3>`);
     expect(doc).toContain(`<strong>hoists</strong>`);
@@ -337,8 +337,8 @@ describe("renderSliceExplorerHtml navigation hooks", () => {
     expect(doc).toContain(`<p class="doc-overview">does a thing</p>`);
   });
 
-  it("says a PR has no description rather than dropping the sidebar entry", () => {
-    expect(html).toContain('class="doc-empty">This PR has no description.');
+  it("says a report has no walkthrough rather than dropping the sidebar entry", () => {
+    expect(html).toContain('class="doc-empty">No walkthrough for this slicing run.');
     expect(html).toContain('class="side-link doc-link"');
   });
 

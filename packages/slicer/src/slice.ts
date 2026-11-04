@@ -9,6 +9,7 @@ import {
   prepareCheckouts,
 } from "@deep-review/pr";
 import { runSliceAgent, type ReasoningEffort } from "./agent.js";
+import { explainPr } from "./how.js";
 import { indexDiff, type DiffIndex } from "./annotate.js";
 import type { RenderEntry } from "./html.js";
 import { buildPrompt } from "./prompt.js";
@@ -109,6 +110,21 @@ export async function slicePr(options: SliceOptions): Promise<SliceReport> {
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
   });
 
+  // The walkthrough is extra: a failure here costs the "How it works" tab,
+  // never the slices already paid for.
+  let howItWorks: string | undefined;
+  try {
+    howItWorks = await explainPr(context, index, slices, {
+      model,
+      ...(options.effort ? { effort: options.effort } : {}),
+      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+    });
+  } catch (error) {
+    options.onProgress?.(
+      `How it works failed (${error instanceof Error ? error.message : String(error)}); saving the slices without it.`,
+    );
+  }
+
   return {
     pr: {
       url: context.info.htmlUrl,
@@ -124,6 +140,7 @@ export async function slicePr(options: SliceOptions): Promise<SliceReport> {
     },
     tickets: context.tickets,
     overview,
+    ...(howItWorks ? { howItWorks } : {}),
     slices,
     model,
     generatedAt: new Date().toISOString(),

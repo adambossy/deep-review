@@ -1,7 +1,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { createXai } from "@ai-sdk/xai";
-import { isStepCount, Output, ToolLoopAgent } from "ai";
+import { isStepCount, Output, ToolLoopAgent, type ToolLoopAgentSettings } from "ai";
 import type { DiffIndex } from "./annotate.js";
 import { buildPrompt, buildRepairPrompt } from "./prompt.js";
 import { agentOutputSchema, type AgentOutput } from "./schema.js";
@@ -22,7 +22,10 @@ const DEFAULT_EFFORT: ReasoningEffort = "xhigh";
  * option differently (`effort` for Anthropic, `reasoningEffort` for OpenAI
  * and xAI), so the mapping lives here rather than at call sites.
  */
-function resolveModel(modelId: string, effort?: ReasoningEffort) {
+export function resolveModel(
+  modelId: string,
+  effort: ReasoningEffort = DEFAULT_EFFORT,
+): { model: ToolLoopAgentSettings["model"]; providerOptions: ToolLoopAgentSettings["providerOptions"] | undefined } {
   if (modelId.startsWith("gpt-")) {
     return {
       model: openai.responses(modelId),
@@ -130,6 +133,47 @@ export interface SliceAgentOptions {
   onProgress?: (message: string) => void;
 }
 
+interface StreamedRun {
+  fullStream: AsyncIterable<{ type: string; text?: string; toolName?: string; error?: unknown }>;
+}
+
+/**
+ * Drive one streamed agent run to the end, reporting each step, each tool
+ * call, and a heartbeat while the model reasons. Streamed rather than a
+ * single blocking generate() call so long real-world runs show live progress
+ * instead of going dark for the whole call. The caller reads the result
+ * (`output` or `text`) off the returned stream.
+ */
+export async function streamWithProgress<S extends StreamedRun>(
+  start: (onStepFinish: (event: { toolCalls?: { toolName: string }[] }) => void) => Promise<S>,
+  report: (message: string) => void,
+): Promise<S> {
+  const began = performance.now();
+  const elapsed = (digits: number) => ((performance.now() - began) / 1000).toFixed(digits);
+  let step = 0;
+  let reasoningChars = 0;
+  let lastHeartbeat = began;
+  const stream = await start((event) => {
+    step += 1;
+    const calls = event.toolCalls?.map((c) => c.toolName).join(", ") || "(no tool calls)";
+    report(`  step ${step} (${elapsed(1)}s elapsed): ${calls}`);
+  });
+  for await (const part of stream.fullStream) {
+    if (part.type === "reasoning-delta") {
+      reasoningChars += part.text?.length ?? 0;
+      if (performance.now() - lastHeartbeat > 15_000) {
+        lastHeartbeat = performance.now();
+        report(`    ...thinking (${elapsed(0)}s elapsed, ~${reasoningChars.toLocaleString()} reasoning chars so far)`);
+      }
+    } else if (part.type === "tool-call") {
+      report(`    tool-call: ${part.toolName} (${elapsed(1)}s elapsed)`);
+    } else if (part.type === "error") {
+      report(`    stream error: ${String(part.error)}`);
+    }
+  }
+  return stream;
+}
+
 /**
  * Run the slicing agent over one PR, repairing the output until its slices
  * partition the diff or the repair budget runs out.
@@ -141,7 +185,7 @@ export async function runSliceAgent(
 ): Promise<{ overview: string; slices: Slice[]; model: string; llmMs: number }> {
   const modelId = options.model ?? process.env.DEEP_REVIEW_MODEL ?? DEFAULT_MODEL;
   const report = options.onProgress ?? (() => {});
-  const { model, providerOptions } = resolveModel(modelId, options.effort ?? DEFAULT_EFFORT);
+  const { model, providerOptions } = resolveModel(modelId, options.effort);
   let llmMs = 0;
 
   const agent = new ToolLoopAgent({
@@ -156,45 +200,14 @@ export async function runSliceAgent(
     ...(providerOptions ? { providerOptions } : {}),
   });
 
-  // Streamed (rather than a single blocking generate() call) so long real-world
-  // runs show live progress — reasoning and tool-call activity — instead of
-  // going dark for the whole call.
   const timedGenerate = async (args: { prompt: string }): Promise<{ output: AgentOutput }> => {
     const start = performance.now();
-    let step = 0;
-    let reasoningChars = 0;
-    let lastHeartbeat = start;
     try {
-      const stream = await agent.stream({
-        prompt: args.prompt,
-        onStepFinish: (event: { toolCalls?: { toolName: string }[] }) => {
-          step += 1;
-          const elapsed = ((performance.now() - start) / 1000).toFixed(1);
-          const calls =
-            event.toolCalls?.map((c) => c.toolName).join(", ") || "(no tool calls)";
-          report(`  step ${step} (${elapsed}s elapsed): ${calls}`);
-        },
-      });
-      for await (const part of stream.fullStream) {
-        if (part.type === "reasoning-delta") {
-          reasoningChars += part.text?.length ?? 0;
-          const now = performance.now();
-          if (now - lastHeartbeat > 15_000) {
-            lastHeartbeat = now;
-            report(
-              `    ...thinking (${((now - start) / 1000).toFixed(0)}s elapsed, ~${reasoningChars.toLocaleString()} reasoning chars so far)`,
-            );
-          }
-        } else if (part.type === "tool-call") {
-          report(
-            `    tool-call: ${part.toolName} (${((performance.now() - start) / 1000).toFixed(1)}s elapsed)`,
-          );
-        } else if (part.type === "error") {
-          report(`    stream error: ${String((part as { error?: unknown }).error)}`);
-        }
-      }
-      const output = (await stream.output) as AgentOutput;
-      return { output };
+      const stream = await streamWithProgress(
+        (onStepFinish) => agent.stream({ prompt: args.prompt, onStepFinish }),
+        report,
+      );
+      return { output: (await stream.output) as AgentOutput };
     } finally {
       llmMs += performance.now() - start;
     }

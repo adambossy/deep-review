@@ -98,6 +98,7 @@ export const sliceReportSchema = z.object({
     }),
   ),
   overview: z.string(),
+  howItWorks: z.string().optional(),
   slices: z.array(
     z.object({
       id: z.string(),

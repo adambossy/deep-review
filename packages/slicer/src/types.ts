@@ -94,6 +94,11 @@ export interface SliceReport {
   tickets: LinearIssue[];
   /** The model's one-paragraph read of what the PR as a whole is doing. */
   overview: string;
+  /**
+   * The "How it works" walkthrough (a port of pstack's /how), as Markdown.
+   * Absent when it failed, or on reports written before it existed.
+   */
+  howItWorks?: string;
   /** Ordered most to least central to the PR's purpose. */
   slices: Slice[];
   model: string;

@@ -65,13 +65,13 @@ export interface SliceExplorerInput {
   number: number;
   overview: string;
   /**
-   * The PR description as authored, Markdown and all. Reached from the
-   * sidebar: what the author says the change is for, next to what it
-   * actually does. Absent or empty still gets the entry, with a note that
-   * the PR has no description — its absence is itself worth seeing.
+   * The "How it works" walkthrough written when the PR was sliced, as
+   * Markdown. Reached from the sidebar, above the slices: the mental model
+   * to bring to the diff. Absent still gets the entry, with a note saying
+   * why — a report sliced before the walkthrough existed has none.
    */
-  prDescription?: string | undefined;
-  /** The PR's author, shown alongside the description. */
+  howItWorks?: string | undefined;
+  /** The PR's author, shown alongside the walkthrough. */
   prAuthor?: string | undefined;
   slices: SliceInput[];
   /**
@@ -373,21 +373,21 @@ const SLICE_CSS = `
 
   /* The two things the sidebar can point at: the PR's prose, or one of its
      slices. Which one is showing is a single class on the body, so the
-     stage and the description never both claim the main column, and the
+     stage and the walkthrough never both claim the main column, and the
      highlight follows without any bookkeeping. */
   .doc-link { margin-bottom: 0.9rem; }
   .doc-view { display: none; height: calc(100vh - 1.6rem); overflow-y: auto; padding-right: 0.8rem; }
-  body.showing-description .doc-view { display: block; }
-  body.showing-description .stage { display: none; }
-  body.showing-description .doc-link {
+  body.showing-how .doc-view { display: block; }
+  body.showing-how .stage { display: none; }
+  body.showing-how .doc-link {
     background: var(--accent-soft); color: var(--accent); font-weight: 600;
   }
   /* The slice the deck is parked on stays named in the sidebar, but yields
-     the highlight while the description is what's on screen. */
-  body.showing-description .slice-link.on {
+     the highlight while How it works is what's on screen. */
+  body.showing-how .slice-link.on {
     background: none; color: var(--ink-soft); font-weight: 400;
   }
-  body.showing-description .slice-link.on:hover { background: var(--panel-2); color: var(--ink); }
+  body.showing-how .slice-link.on:hover { background: var(--panel-2); color: var(--ink); }
   .doc-title { font-size: 1.35rem; font-weight: 650; letter-spacing: -0.015em;
                margin: 0 0 0.4rem; max-width: 48rem; }
   .doc-meta { font-size: 0.74rem; color: var(--ink-faint); margin-bottom: 1.4rem; }
@@ -420,24 +420,22 @@ const SLICE_CSS = `
 `;
 
 /**
- * The description view: the PR as its author wrote it, plus the slicing
- * model's own one-paragraph read of it. Neither is code — the point of it
- * is to be able to check the claim against the diff without leaving the
- * page for GitHub. The sidebar names it above the slices, since it is what
- * the slices are an answer to.
+ * The "How it works" view: an architectural walkthrough of the change, plus
+ * the slicing model's own one-paragraph read of it. Neither is code — the
+ * point is to arrive at the diff already knowing how the pieces fit. The
+ * sidebar names it above the slices, since it is the frame they sit in.
  */
-function renderDescriptionView(input: SliceExplorerInput): string {
-  const description = (input.prDescription ?? "").trim();
+function renderHowView(input: SliceExplorerInput): string {
+  const how = (input.howItWorks ?? "").trim();
   return `<section class="doc-view">
-    <span class="eyebrow">Pull request</span>
+    <span class="eyebrow">How it works</span>
     <h3 class="doc-title">${esc(input.prTitle)}</h3>
     <div class="doc-meta">
       <a href="${esc(input.prUrl)}">${esc(input.repo)}#${input.number}</a>
       ${input.prAuthor ? ` · opened by ${esc(input.prAuthor)}` : ""}
     </div>
     <div class="doc-block">
-      <div class="side-label">Description</div>
-      ${description ? renderMarkdown(description, { baseUrl: input.prUrl }) : `<p class="doc-empty">This PR has no description.</p>`}
+      ${how ? renderMarkdown(how, { baseUrl: input.prUrl }) : `<p class="doc-empty">No walkthrough for this slicing run. Re-slice the PR to generate one.</p>`}
     </div>
     <div class="doc-block">
       <div class="side-label">Overview · what the slicer read</div>
@@ -447,11 +445,11 @@ function renderDescriptionView(input: SliceExplorerInput): string {
 }
 
 /**
- * Which of the sidebar's two kinds of destination is showing. Tapping the
- * description shows the prose; tapping any slice returns to the deck, whose
+ * Which of the sidebar's two kinds of destination is showing. Tapping
+ * How it works shows the prose; tapping any slice returns to the deck, whose
  * own handler (DECK_JS) then moves it — including when the slice tapped is
- * the one the deck is already parked on, which is why leaving the
- * description is handled here rather than there.
+ * the one the deck is already parked on, which is why leaving
+ * How it works is handled here rather than there.
  *
  * Neither view is rebuilt on the way in, so each keeps its scroll position
  * and the deck keeps its slice: coming back to the code lands where the
@@ -461,8 +459,8 @@ const SIDEBAR_VIEW_JS = `
 (function () {
   var body = document.body;
   document.addEventListener("click", function (e) {
-    if (e.target.closest(".doc-link")) body.classList.add("showing-description");
-    else if (e.target.closest(".slice-link")) body.classList.remove("showing-description");
+    if (e.target.closest(".doc-link")) body.classList.add("showing-how");
+    else if (e.target.closest(".slice-link")) body.classList.remove("showing-how");
   });
 })();
 `;
@@ -598,9 +596,9 @@ const DECK_JS = `
   }, { passive: false });
 
   document.addEventListener("keydown", function (e) {
-    /* Paging belongs to the slice deck; while the description is showing,
+    /* Paging belongs to the slice deck; while How it works is showing,
        the keys should scroll the prose the reader is looking at. */
-    if (document.body.classList.contains("showing-description")) return;
+    if (document.body.classList.contains("showing-how")) return;
     if (e.key === "PageDown") { e.preventDefault(); go(current + 1, "above"); }
     else if (e.key === "PageUp") { e.preventDefault(); go(current - 1, "below"); }
   });
@@ -770,7 +768,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   </div>
   <nav>
     <div class="slice-nav">
-      <button class="side-link doc-link" type="button">PR Description</button>
+      <button class="side-link doc-link" type="button">How it works</button>
     </div>
     <div class="side-label">Slices · <span class="progress-label"></span></div>
     <div class="slice-nav">${sliceLinks}</div>
@@ -793,7 +791,7 @@ export function renderSliceExplorerHtml(input: SliceExplorerInput): string {
   <button class="vrail vrail-down"></button>
   <div class="deck">${views}</div>
 </div>
-${renderDescriptionView(input)}
+${renderHowView(input)}
 </div>
 
 ${input.debugMarks ? DEBUG_MARKS_LEGEND : ""}

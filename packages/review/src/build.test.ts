@@ -35,6 +35,7 @@ function report(startLine: number, endLine: number): SliceReport {
     },
     tickets: [],
     overview: "adds constants",
+    howItWorks: "## Overview\n\nAdds **constants**.",
     // No target, so no call graph is attempted and the test stays offline.
     slices: [
       {
@@ -87,9 +88,9 @@ describe("buildSliceExplorerInput", () => {
     expect(input.slices[0]!.target).toBeUndefined();
   });
 
-  it("carries the PR's description and author through for the description tab", async () => {
+  it("carries the walkthrough and author through for the How it works tab", async () => {
     const input = await buildSliceExplorerInput({ report: report(2, 3), index });
-    expect(input.prDescription).toBe("Adds **constants**.");
+    expect(input.howItWorks).toBe("## Overview\n\nAdds **constants**.");
     expect(input.prAuthor).toBe("octocat");
   });
 
