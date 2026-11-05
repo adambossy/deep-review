@@ -184,26 +184,24 @@ describe("pollOnce", () => {
   it("survives a corrupt state file rather than refusing to start", () => {
     writeWatcherState({
       seen: { "acme/widgets#1": { updatedAt: "x", dispatchedAt: 1 } },
-      held: {},
     });
     expect(readWatcherState().seen).toHaveProperty("acme/widgets#1");
   });
 
-  it("reads a state file written before `held` existed, and holds what it saw", () => {
-    // There is a live watcher.json on any machine that ran the watcher before
-    // this field; it must load, and the PRs it had handed over must be looked
-    // after — they are on the server, and only `seen` knows it.
+  it("reads a state file that still carries the old `held` map, and drops it", () => {
+    // The server's own list replaced it; a live watcher.json may still have one.
     mkdirSync(home, { recursive: true });
     writeFileSync(
       watcherStateFile(),
       JSON.stringify({
         seen: { "acme/widgets#1": { updatedAt: "x", dispatchedAt: 1 } },
+        held: { "acme/widgets#1": { updatedAt: "x", dispatchedAt: 1 } },
         lastPollAt: 5,
       }),
     );
     const state = readWatcherState();
-    expect(Object.keys(state.held)).toEqual(["acme/widgets#1"]);
-    expect(state.seen).toEqual(state.held);
+    expect(Object.keys(state.seen)).toEqual(["acme/widgets#1"]);
+    expect(state).not.toHaveProperty("held");
     expect(state.lastPollAt).toBe(5);
   });
 });
@@ -222,43 +220,26 @@ const OPEN: PrLifecycle = { state: "open", merged: false };
 const MERGED: PrLifecycle = { state: "closed", merged: true };
 const CLOSED: PrLifecycle = { state: "closed", merged: false };
 
-function heldPr(): SeenPr {
-  return { updatedAt: "2026-09-01T10:00:00Z", dispatchedAt: 1 };
-}
-
 describe("planCleanup", () => {
-  it("finishes a held PR that has been merged", async () => {
-    const { finished, held } = await planCleanup(
-      { "acme/widgets#1": heldPr() },
-      [],
-      async () => MERGED,
-    );
-    expect(finished).toEqual(["acme/widgets#1"]);
-    expect(held).toEqual({});
+  it("finishes a PR that has been merged", async () => {
+    expect(await planCleanup(["acme/widgets#1"], [], async () => MERGED)).toEqual(["acme/widgets#1"]);
   });
 
-  it("finishes a held PR that was closed without merging", async () => {
+  it("finishes a PR that was closed without merging", async () => {
     // Closed-unmerged is as done as merged: nothing on that page is going in.
-    const { finished } = await planCleanup({ "acme/widgets#1": heldPr() }, [], async () => CLOSED);
-    expect(finished).toEqual(["acme/widgets#1"]);
+    expect(await planCleanup(["acme/widgets#1"], [], async () => CLOSED)).toEqual(["acme/widgets#1"]);
   });
 
   it("keeps a PR that left the review query but is still open", async () => {
     // Approval removes a PR from the query, and so does unassigning it or
     // turning it back into a draft; none of those finish it. Only GitHub's
     // own state may, so a PR that is gone from the query yet still open stays.
-    const { finished, held } = await planCleanup(
-      { "acme/widgets#1": heldPr() },
-      [],
-      async () => OPEN,
-    );
-    expect(finished).toEqual([]);
-    expect(Object.keys(held)).toEqual(["acme/widgets#1"]);
+    expect(await planCleanup(["acme/widgets#1"], [], async () => OPEN)).toEqual([]);
   });
 
   it("does not ask about PRs the query still lists, which are open by definition", async () => {
     const asked: PrRef[] = [];
-    await planCleanup({ "acme/widgets#1": heldPr(), "acme/widgets#2": heldPr() }, [assigned(1)], async (ref) => {
+    await planCleanup(["acme/widgets#1", "acme/widgets#2"], [assigned(1)], async (ref) => {
       asked.push(ref);
       return OPEN;
     });
@@ -268,16 +249,11 @@ describe("planCleanup", () => {
   it("keeps a PR whose check failed, and finishes the others", async () => {
     // A failed check proves nothing either way; the safe reading is "still
     // open", and the next poll asks again.
-    const { finished, held } = await planCleanup(
-      { "acme/widgets#1": heldPr(), "acme/widgets#2": heldPr() },
-      [],
-      async (ref) => {
-        if (ref.number === 1) throw new Error("502");
-        return MERGED;
-      },
-    );
+    const finished = await planCleanup(["acme/widgets#1", "acme/widgets#2"], [], async (ref) => {
+      if (ref.number === 1) throw new Error("502");
+      return MERGED;
+    });
     expect(finished).toEqual(["acme/widgets#2"]);
-    expect(Object.keys(held)).toEqual(["acme/widgets#1"]);
   });
 });
 
@@ -295,106 +271,78 @@ describe("pollOnce cleanup", () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  /** Hand PR 1 over on one poll, so a later poll has something to clean up. */
-  async function handOver(): Promise<void> {
-    await pollOnce({
-      list: async () => [assigned(1)],
-      add: async (pr) => view(pr),
-      check: async () => OPEN,
-    });
-    expect(Object.keys(readWatcherState().held)).toEqual(["acme/widgets#1"]);
-  }
-
-  it("removes a merged PR from the server and forgets it", async () => {
-    await handOver();
+  /** A poll where the query lists nothing and the server holds these PRs. */
+  async function cleanup(numbers: number[], lifecycle: PrLifecycle | (() => never)) {
     const removed: string[] = [];
-    const state = await pollOnce({
+    await pollOnce({
       list: async () => [],
-      check: async () => MERGED,
+      serverPrs: async () => numbers.map((n) => view(assigned(n))),
+      check: async () => (typeof lifecycle === "function" ? lifecycle() : lifecycle),
       remove: async (key) => {
         removed.push(key);
         return true;
       },
     });
-    expect(removed).toEqual(["acme/widgets#1"]);
-    expect(state.held).toEqual({});
-    expect(state.seen).toEqual({});
-    expect(readWatcherState().held).toEqual({});
+    return removed;
+  }
+
+  it("removes a merged PR from the server", async () => {
+    expect(await cleanup([1], MERGED)).toEqual(["acme/widgets#1"]);
   });
 
   it("removes a PR closed without merging", async () => {
-    await handOver();
-    const removed: string[] = [];
-    await pollOnce({
-      list: async () => [],
-      check: async () => CLOSED,
-      remove: async (key) => {
-        removed.push(key);
-        return true;
-      },
-    });
-    expect(removed).toEqual(["acme/widgets#1"]);
+    expect(await cleanup([1], CLOSED)).toEqual(["acme/widgets#1"]);
   });
 
-  it("leaves an approved PR on the server, held, though it left the query", async () => {
-    await handOver();
-    const removed: string[] = [];
-    const state = await pollOnce({
-      list: async () => [],
-      check: async () => OPEN,
-      remove: async (key) => {
-        removed.push(key);
-        return true;
-      },
-    });
-    expect(removed).toEqual([]);
-    // Out of `seen` — the query no longer lists it — but still held.
-    expect(state.seen).toEqual({});
-    expect(Object.keys(state.held)).toEqual(["acme/widgets#1"]);
+  it("removes a merged PR the watcher never handed over", async () => {
+    // Added by hand, or from a repo since dropped from watch.json: it is on
+    // the index all the same, and the index is what must not show it.
+    expect(readWatcherState().seen).toEqual({});
+    expect(await cleanup([7], MERGED)).toEqual(["acme/widgets#7"]);
+  });
+
+  it("leaves an approved PR on the server though it left the query", async () => {
+    expect(await cleanup([1], OPEN)).toEqual([]);
   });
 
   it("neither crashes nor removes anything when the check errors", async () => {
-    await handOver();
-    const removed: string[] = [];
-    const state = await pollOnce({
-      list: async () => [],
-      check: async () => {
-        throw new Error("GitHub 502");
-      },
-      remove: async (key) => {
-        removed.push(key);
-        return true;
-      },
+    const removed = await cleanup([1], () => {
+      throw new Error("GitHub 502");
     });
     expect(removed).toEqual([]);
-    expect(Object.keys(state.held)).toEqual(["acme/widgets#1"]);
-    expect(state.lastError).toBeUndefined();
+    expect(readWatcherState().lastError).toBeUndefined();
   });
 
-  it("still forgets a finished PR when the server could not be told", async () => {
-    // The server's registry is in memory: one that is not running holds
-    // nothing, and one that will not answer is not this poll's to fix.
-    await handOver();
-    const state = await pollOnce({
+  it("asks GitHub about nothing while no server is running", async () => {
+    // Nothing is on an index no server is serving; the first poll after one
+    // starts, with its saved registry loaded, is the one that cleans it.
+    const asked: PrRef[] = [];
+    await pollOnce({
       list: async () => [],
+      serverPrs: async () => null,
+      check: async (ref) => {
+        asked.push(ref);
+        return MERGED;
+      },
+    });
+    expect(asked).toEqual([]);
+  });
+
+  it("tries a failed removal again next poll, since the server still lists it", async () => {
+    let attempts = 0;
+    const deps = {
+      list: async () => [],
+      serverPrs: async () => (attempts < 2 ? [view(assigned(1))] : []),
       check: async () => MERGED,
       remove: async () => {
-        throw new Error("connection refused");
+        attempts += 1;
+        if (attempts === 1) throw new Error("connection refused");
+        return true;
       },
-    });
-    expect(state.held).toEqual({});
-  });
-
-  it("does not hold a PR whose handover failed", async () => {
-    // Nothing reached the server, so there is nothing there to clean up.
-    const state = await pollOnce({
-      list: async () => [assigned(1)],
-      add: async () => {
-        throw new Error("server down");
-      },
-      check: async () => OPEN,
-    });
-    expect(state.held).toEqual({});
+    };
+    await pollOnce(deps);
+    await pollOnce(deps);
+    expect(attempts).toBe(2);
   });
 });
 
@@ -447,7 +395,6 @@ describe("pollOnce across repos", () => {
     ]);
     expect(handed.sort()).toEqual(["acme/gadgets#9", "acme/widgets#1"]);
     expect(Object.keys(state.seen).sort()).toEqual(["acme/gadgets#9", "acme/widgets#1"]);
-    expect(Object.keys(state.held).sort()).toEqual(["acme/gadgets#9", "acme/widgets#1"]);
   });
 
   it("never asks about a repo the file does not name", async () => {
@@ -472,7 +419,7 @@ describe("pollOnce across repos", () => {
     });
     expect(gh.asked.map((repo) => repo.repo)).toEqual(["acme/widgets"]);
     expect(handed).toEqual(["acme/widgets#1"]);
-    expect(Object.keys(state.held)).toEqual(["acme/widgets#1"]);
+    expect(Object.keys(state.seen)).toEqual(["acme/widgets#1"]);
   });
 
   it("uses the default query for a repo that names none", async () => {
@@ -551,18 +498,12 @@ describe("pollOnce across repos", () => {
     expect(Object.keys(state.seen)).toEqual(["acme/widgets#1"]);
   });
 
-  it("still cleans up held PRs when the file has since been emptied", async () => {
-    // A PR handed over is on the server whatever the file now says; taking
-    // its repo out of the file should not strand its page there forever.
-    watching("acme/widgets");
-    await pollOnce({
-      list: async () => [inRepo("acme/widgets", 1)],
-      add: async (pr) => view(pr),
-      check: async () => OPEN,
-    });
+  it("still cleans up the server's PRs when the file has since been emptied", async () => {
+    // Taking a repo out of the file should not strand its pages on the index.
     writeFileSync(watchConfigFile(), JSON.stringify({ repos: {} }));
     const removed: string[] = [];
-    const state = await pollOnce({
+    await pollOnce({
+      serverPrs: async () => [view(inRepo("acme/widgets", 1))],
       check: async () => MERGED,
       remove: async (key) => {
         removed.push(key);
@@ -570,6 +511,5 @@ describe("pollOnce across repos", () => {
       },
     });
     expect(removed).toEqual(["acme/widgets#1"]);
-    expect(state.held).toEqual({});
   });
 });

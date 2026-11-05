@@ -21,7 +21,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fetchPrInfo, listAssignedPrs, type AssignedPr, type PrRef } from "@deep-review/pr";
-import { addPrToServer, ensureServer, findServer, removePrFromServer, stateDir } from "./daemon.js";
+import {
+  addPrToServer,
+  ensureServer,
+  findServer,
+  listServerPrs,
+  removePrFromServer,
+  stateDir,
+} from "./daemon.js";
 import { prKey, type AddOptions, type PrKey, type PrView } from "./registry.js";
 import { readWatchConfig, watchConfigFile, type WatchedRepo } from "./watchConfig.js";
 
@@ -43,15 +50,6 @@ export interface WatcherState {
    * as soon as it leaves the query, whatever the reason.
    */
   seen: Record<PrKey, SeenPr>;
-  /**
-   * Every PR handed to the server that has not since been confirmed merged
-   * or closed — the server's contents as far as the watcher knows. Unlike
-   * `seen`, leaving the review query does not remove a PR from here: an
-   * approved PR is still open, and a page for it is still worth keeping.
-   * Absent in state files written before this field existed; `seen` is
-   * folded in on read so those PRs are looked after too.
-   */
-  held: Record<PrKey, SeenPr>;
   /** The last poll that reached GitHub, for `status` to report. */
   lastPollAt?: number | undefined;
   /** Why the last poll failed, when it did; cleared by the next good one. */
@@ -60,20 +58,17 @@ export interface WatcherState {
   runner?: { pid: number; startedAt: number } | undefined;
 }
 
-const EMPTY: WatcherState = { seen: {}, held: {} };
-
 export function readWatcherState(): WatcherState {
   try {
     const parsed = JSON.parse(readFileSync(watcherStateFile(), "utf8")) as Partial<WatcherState>;
-    const seen = parsed.seen ?? {};
-    // Anything in `seen` was handed over, so it is held whether or not the
-    // file knew to say so.
-    return { ...EMPTY, ...parsed, seen, held: { ...seen, ...parsed.held } };
+    // Picked, not spread: an older file's `held` map is the server's job now.
+    const { seen = {}, lastPollAt, lastError, runner } = parsed;
+    return { seen, lastPollAt, lastError, runner };
   } catch {
     // No file, or one we cannot read: an empty memory is the safe start —
     // the worst it costs is re-dispatching PRs the server already holds,
     // and adding a PR twice is idempotent there.
-    return { ...EMPTY };
+    return { seen: {} };
   }
 }
 
@@ -137,29 +132,28 @@ export interface PrLifecycle {
 }
 
 /**
- * Which held PRs to stop holding: those GitHub confirms merged or closed.
+ * Which of the server's PRs GitHub confirms merged or closed.
  *
  * Leaving the review query is not the signal — it happens for approval, for
  * turning back into a draft, for unassignment, none of which finish the PR.
- * Only the PR's own state does, so each held PR that is no longer in the
- * query is asked about directly. The ones still in the query are open by the
- * query's own `is:open`, and are not asked about; that keeps this to a call
- * per PR that has gone quiet, not per PR per poll.
+ * Only the PR's own state does, so each PR that is not in the query is asked
+ * about directly. The ones still in the query are open by the query's own
+ * `is:open`, and are not asked about; that keeps this to a call per PR that
+ * has gone quiet, not per PR per poll.
  *
- * A check that fails proves nothing either way, so the PR stays held and is
- * asked about again next poll; the worst case is a page that outlives its PR
- * by one GitHub hiccup, which is nothing against removing one still open.
+ * A check that fails proves nothing either way, so the PR stays and is asked
+ * about again next poll; the worst case is a page that outlives its PR by
+ * one GitHub hiccup, which is nothing against removing one still open.
  */
 export async function planCleanup(
-  held: Record<PrKey, SeenPr>,
+  keys: PrKey[],
   assigned: AssignedPr[],
   check: (ref: PrRef) => Promise<PrLifecycle>,
   log: (message: string) => void = () => {},
-): Promise<{ finished: PrKey[]; held: Record<PrKey, SeenPr> }> {
+): Promise<PrKey[]> {
   const inQuery = new Set(assigned.map(prKey));
   const finished: PrKey[] = [];
-  const kept: Record<PrKey, SeenPr> = { ...held };
-  for (const key of Object.keys(held)) {
+  for (const key of keys) {
     if (inQuery.has(key)) continue;
     const ref = parsePrKey(key);
     if (!ref) {
@@ -170,14 +164,13 @@ export async function planCleanup(
       const pr = await check(ref);
       if (pr.state === "closed") {
         finished.push(key);
-        delete kept[key];
         log(`${key}: ${pr.merged ? "merged" : "closed"}.`);
       }
     } catch (error) {
       log(`${key}: could not check — ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { finished, held: kept };
+  return finished;
 }
 
 export interface PollDeps {
@@ -189,28 +182,32 @@ export interface PollDeps {
   list?: ((repo: WatchedRepo) => Promise<AssignedPr[]>) | undefined;
   /** The current state of one PR, for the merged-or-closed check. */
   check?: ((ref: PrRef) => Promise<PrLifecycle>) | undefined;
-  /**
-   * Drop one PR from the server. Defaults to asking a *running* server only:
-   * one that is not up holds nothing, and starting it to delete from it would
-   * be work for no one.
-   */
+  /** Drop one PR from the server. Defaults to the running server cleanup listed. */
   remove?: ((key: PrKey) => Promise<boolean>) | undefined;
   /** Hand one PR to the server. Defaults to starting/finding it and adding. */
   add?: ((pr: AssignedPr, options: AddOptions) => Promise<PrView>) | undefined;
+  /**
+   * Every PR on the server's index, or null when no server is running.
+   * Defaults to asking a running server only: starting one just to clean it
+   * would be work for no one, and the first poll after one starts cleans it.
+   */
+  serverPrs?: (() => Promise<PrView[] | null>) | undefined;
   options?: AddOptions | undefined;
   onProgress?: ((message: string) => void) | undefined;
 }
 
 /**
  * Hand each newly-assigned PR to the server, starting it if it is not up;
- * then take back from it each held PR that has since been merged or closed,
- * so the index shows what can still be acted on.
+ * then take back from it every PR on its index that has since been merged
+ * or closed, so the index shows what can still be acted on. The server's
+ * own list is the one checked, not a record of what the watcher handed it:
+ * a PR added by hand, or one from a repo since dropped from `watch.json`,
+ * is on the index all the same.
  *
  * The config file is read on every poll, so a repo added to it is watched
  * from the next check without restarting anything. With no repos there is
- * nothing to ask GitHub for new PRs about, and the poll says so; the held
- * PRs are still looked after, since they are on the server whatever the
- * file now says.
+ * nothing to ask GitHub for new PRs about, and the poll says so; the
+ * server's PRs are still looked after.
  *
  * The server is reached through the same `ensureServer` every CLI invocation
  * uses, so the watcher never "starts the daemon" as a separate step — it
@@ -272,12 +269,10 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
     });
 
   const dispatched: Record<PrKey, SeenPr> = { ...seen };
-  const held: Record<PrKey, SeenPr> = { ...before.held };
   for (const pr of dispatch) {
     const key = prKey(pr);
     try {
       const view = await add(pr, options);
-      held[key] = dispatched[key]!;
       log(`${key}: ${view.state}.`);
     } catch (error) {
       // Forget it, so the next poll tries again rather than losing the PR
@@ -287,22 +282,44 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
     }
   }
 
+  // Found once per poll: each lookup is a lock read and a health probe.
+  let serverUrl: Promise<string | null> | undefined;
+  const server = (): Promise<string | null> => (serverUrl ??= findServer());
+  const serverPrs =
+    deps.serverPrs ??
+    (async (): Promise<PrView[] | null> => {
+      const url = await server();
+      return url ? listServerPrs(url) : null;
+    });
+  let onServer: PrView[] | null = null;
+  try {
+    onServer = await serverPrs();
+  } catch (error) {
+    log(`could not list the server's PRs — ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   // Known, and separate: a PR that left `seen` for being approved comes back
   // into it — and re-dispatches — when a later review asks for changes.
-  const cleanup = await planCleanup(held, assigned, deps.check ?? fetchPrInfo, log);
+  const finished = onServer
+    ? await planCleanup(
+        onServer.map((pr) => pr.key),
+        assigned,
+        deps.check ?? fetchPrInfo,
+        log,
+      )
+    : [];
   const remove =
     deps.remove ??
     (async (key: PrKey): Promise<boolean> => {
-      const url = await findServer();
+      const url = await server();
       return url ? removePrFromServer(url, key) : false;
     });
-  for (const key of cleanup.finished) {
+  for (const key of finished) {
     try {
       const removed = await remove(key);
       if (removed) log(`${key}: removed from the server.`);
     } catch (error) {
-      // The PR is finished regardless; a server that would not answer is
-      // either gone, and holds nothing, or will be asked about it by hand.
+      // Still on the server's list, so the next poll finds it and tries again.
       log(`${key}: could not remove — ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -310,7 +327,6 @@ export async function pollOnce(deps: PollDeps = {}): Promise<WatcherState> {
   const state: WatcherState = {
     ...before,
     seen: dispatched,
-    held: cleanup.held,
     lastPollAt: Date.now(),
     lastError: undefined,
   };
